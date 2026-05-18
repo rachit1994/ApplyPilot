@@ -1,0 +1,22 @@
+# Referral outreach via OpenOutreach (LinkedIn connect + message).
+# Copy to ~/.applypilot/outreach.yaml and set enabled: true.
+
+enabled: false
+min_fit_score: 7
+max_job_age_hours: 72
+weekly_connect_target: 12
+max_connects_per_run: 5
+max_messages_per_run: 10
+poll_connected_every_minutes: 60
+skip_if_applied: false
+
+# Gemini drafts + per-job tailored resume (text + PDF) before messaging
+require_gemini_for_draft: true
+ensure_tailored_resume: true
+tailor_validation_mode: normal
+resume_excerpt_chars: 2500
+referral_message_max_words: 130
+
+# Override via env: OPENOUTREACH_BASE_URL, OPENOUTREACH_API_KEY, OPENOUTREACH_CAMPAIGN
+openoutreach_base_url: http://127.0.0.1:8741/v1
+openoutreach_campaign: job-referrals

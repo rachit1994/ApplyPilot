@@ -1,0 +1,31 @@
+# Copy to ~/.applypilot/inbox.yaml and set enabled: true
+enabled: false
+
+# v1: only the LinkedIn "Other" messaging tab (browser: login → messaging → Other)
+inbox_folder: other
+
+since_days: 14
+scan_limit: 50
+classify_limit: 50
+max_sends_per_run: 50
+job_confidence_threshold: 0.7
+require_gemini: true
+
+# Only Other tab (not Focused). Reply only when they asked you to apply / send CV.
+require_unanswered_inbound: true
+
+# v2: OpenOutreach Other-tab pagination (browser scroll + voyager pages)
+sync_scroll_passes: 8
+sync_max_pages: 20
+
+# v2: live send requires inbox approve (applypilot inbox approve <public_id>)
+require_approval_for_send: true
+
+# Same message sent to every thread that passes strict apply-request classification
+fixed_reply_message: >-
+  Hi. I am actively exploring senior engineering roles and would appreciate
+  hearing if you are hiring or can point me to the right person on your team.
+
+openoutreach_base_url: http://127.0.0.1:8741/v1
+openoutreach_api_key: ""
+openoutreach_campaign: null
