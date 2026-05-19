@@ -686,6 +686,73 @@ def refer(
     )
 
 
+openoutreach_app = typer.Typer(
+    help="Local OpenOutreach REST API (referral connect/message).",
+    no_args_is_help=True,
+)
+app.add_typer(openoutreach_app, name="openoutreach")
+
+
+@openoutreach_app.command("status")
+def openoutreach_status() -> None:
+    """Check whether OpenOutreach API is reachable and onboarded."""
+    _bootstrap()
+    from applypilot.outreach.config import load_outreach_config, outreach_is_configured
+    from applypilot.outreach.openoutreach_client import check_openoutreach_health
+    from applypilot.outreach.openoutreach_runtime import find_openoutreach_root, is_api_port_open
+
+    cfg = load_outreach_config()
+    if not outreach_is_configured(cfg):
+        console.print("[red]OPENOUTREACH_API_KEY not set[/red] in ~/.applypilot/.env")
+        raise typer.Exit(code=1)
+
+    root = find_openoutreach_root()
+    if root:
+        console.print(f"[dim]OpenOutreach root:[/dim] {root}")
+    else:
+        console.print("[yellow]OpenOutreach checkout not found[/yellow] (set OPENOUTREACH_ROOT)")
+
+    if is_api_port_open(cfg):
+        console.print(f"[green]Port open[/green] at {cfg.openoutreach_base_url}")
+    else:
+        console.print(f"[red]Port closed[/red] at {cfg.openoutreach_base_url}")
+
+    ok, note = check_openoutreach_health(cfg.openoutreach_base_url, cfg.openoutreach_api_key)
+    if ok:
+        console.print(f"[green]Health OK[/green] — {note}")
+    else:
+        console.print(f"[red]Health failed[/red] — {note}")
+        raise typer.Exit(code=1)
+
+
+@openoutreach_app.command("start")
+def openoutreach_start(
+    no_wait: bool = typer.Option(False, "--no-wait", help="Return after spawning, do not wait for health."),
+) -> None:
+    """Start OpenOutreach API on 127.0.0.1:8741 using keys from ~/.applypilot/.env."""
+    _bootstrap()
+    from applypilot.outreach.openoutreach_runtime import start_api_server
+
+    ok, note = start_api_server(background=True, wait=not no_wait)
+    if ok:
+        console.print(f"[green]{note}[/green]")
+    else:
+        console.print(f"[red]{note}[/red]")
+        raise typer.Exit(code=1)
+
+
+@openoutreach_app.command("stop")
+def openoutreach_stop() -> None:
+    """Stop OpenOutreach API started via applypilot openoutreach start."""
+    from applypilot.outreach.openoutreach_runtime import stop_api_server
+
+    ok, note = stop_api_server()
+    if ok:
+        console.print(f"[green]{note}[/green]")
+    else:
+        console.print(f"[yellow]{note}[/yellow]")
+
+
 @app.command()
 def dashboard() -> None:
     """Generate and open the HTML dashboard in your browser."""
@@ -802,10 +869,14 @@ def doctor() -> None:
                 outreach_cfg.openoutreach_base_url,
                 outreach_cfg.openoutreach_api_key,
             )
+            if oo_ok:
+                oo_note_out = oo_note
+            else:
+                oo_note_out = f"{oo_note} — run: applypilot openoutreach start"
             results.append((
                 "OpenOutreach API",
                 ok_mark if oo_ok else fail_mark,
-                oo_note,
+                oo_note_out,
             ))
         else:
             results.append((

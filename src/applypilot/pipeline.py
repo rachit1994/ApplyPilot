@@ -16,6 +16,7 @@ import logging
 import threading
 import time
 from datetime import datetime
+from typing import Any
 
 from rich.console import Console
 from rich.panel import Panel
@@ -177,6 +178,19 @@ def _run_refer() -> dict:
         summary = run_referral_pipeline()
         if summary.get("error"):
             return {"status": f"error: {summary['error']}"}
+        connect = summary.get("connect") or {}
+        message = summary.get("message") or {}
+        if connect.get("skipped") == "openoutreach_unreachable" or message.get(
+            "skipped"
+        ) == "openoutreach_unreachable":
+            detail = connect.get("detail") or message.get("detail") or "OpenOutreach unreachable"
+            log.warning("Referral connect/message skipped: %s", detail)
+            return {"status": "skipped", "reason": detail, **summary}
+        for stage_name in ("connect", "message"):
+            stage = summary.get(stage_name) or {}
+            if stage.get("error"):
+                log.warning("Referral %s stage error: %s", stage_name, stage["error"])
+                return {"status": f"error: {stage_name}: {stage['error']}", **summary}
         return {"status": "ok", **summary}
     except Exception as e:
         log.error("Referral outreach failed: %s", e)
@@ -289,6 +303,11 @@ _STREAM_POLL_INTERVAL = 10
 
 def _count_pending(stage: str, min_score: int = 7) -> int:
     """Count pending work items for a stage."""
+    if stage == "pdf":
+        from applypilot.scoring.pdf import pending_pdf_conversions
+
+        return pending_pdf_conversions()
+
     sql = _PENDING_SQL.get(stage)
     if sql is None:
         return 0
@@ -296,6 +315,154 @@ def _count_pending(stage: str, min_score: int = 7) -> int:
     if "?" in sql:
         return conn.execute(sql, (min_score,)).fetchone()[0]
     return conn.execute(sql).fetchone()[0]
+
+
+def _progress_percent(done: int, denom: int) -> int | None:
+    if denom <= 0:
+        return None
+    return min(100, max(0, int(round(100 * done / denom))))
+
+
+def _stage_progress_snapshot(stage: str, min_score: int = 7) -> dict[str, Any]:
+    """Job counts for dashboard stage_progress events."""
+    stats = get_stats()
+    total = int(stats.get("total") or 0)
+
+    if stage == "discover":
+        return {
+            "stage": stage,
+            "total": total,
+            "detail": "JobSpy, Workday, and smart extract",
+        }
+
+    if stage == "enrich":
+        done = int(stats.get("with_description") or 0)
+        pending = int(stats.get("pending_detail") or 0)
+        denom = total if total > 0 else done + pending
+        return {
+            "stage": stage,
+            "done": done,
+            "pending": pending,
+            "total": denom,
+            "percent": _progress_percent(done, denom),
+            "detail": f"{done}/{denom} with descriptions · {pending} left",
+        }
+
+    if stage == "score":
+        done = int(stats.get("scored") or 0)
+        pending = int(stats.get("unscored") or 0)
+        denom = done + pending
+        return {
+            "stage": stage,
+            "done": done,
+            "pending": pending,
+            "total": denom,
+            "percent": _progress_percent(done, denom),
+            "detail": f"{done} scored · {pending} waiting",
+        }
+
+    if stage == "tailor":
+        done = int(stats.get("tailored") or 0)
+        pending = _count_pending("tailor", min_score)
+        denom = done + pending
+        return {
+            "stage": stage,
+            "done": done,
+            "pending": pending,
+            "total": denom,
+            "percent": _progress_percent(done, denom),
+            "detail": f"{done} tailored · {pending} left (score ≥ {min_score})",
+        }
+
+    if stage == "cover":
+        done = int(stats.get("with_cover_letter") or 0)
+        pending = _count_pending("cover", min_score)
+        denom = done + pending
+        return {
+            "stage": stage,
+            "done": done,
+            "pending": pending,
+            "total": denom,
+            "percent": _progress_percent(done, denom),
+            "detail": f"{done} cover letters · {pending} left",
+        }
+
+    if stage == "pdf":
+        pending = _count_pending("pdf", min_score)
+        tailored = int(stats.get("tailored") or 0)
+        done = max(0, tailored - pending)
+        denom = tailored
+        return {
+            "stage": stage,
+            "done": done,
+            "pending": pending,
+            "total": denom,
+            "percent": _progress_percent(done, denom),
+            "detail": f"{done} PDFs ready · {pending} pending",
+        }
+
+    if stage == "refer":
+        done = int(stats.get("referral_message_sent") or 0)
+        pending = _count_pending("refer", min_score)
+        denom = done + pending
+        return {
+            "stage": stage,
+            "done": done,
+            "pending": pending,
+            "total": denom,
+            "percent": _progress_percent(done, denom) if denom else None,
+            "detail": f"{done} messages sent · {pending} in outreach queue",
+        }
+
+    pending = _count_pending(stage, min_score)
+    return {
+        "stage": stage,
+        "pending": pending,
+        "detail": f"{pending} pending",
+    }
+
+
+def _emit_stage_progress(
+    stage: str,
+    min_score: int = 7,
+    *,
+    waiting_upstream: bool = False,
+) -> dict[str, Any] | None:
+    try:
+        snap = _stage_progress_snapshot(stage, min_score)
+        if waiting_upstream:
+            snap["waiting_upstream"] = True
+            snap["detail"] = f"{snap.get('detail', '')} · waiting on upstream"
+        detail = str(snap.get("detail") or "")
+        return emit_run_event(
+            "stage_progress", stage=stage, message=detail, payload=snap
+        )
+    except Exception:
+        return None
+
+
+def _progress_reporter_loop(stage: str, min_score: int, stop: threading.Event) -> None:
+    while True:
+        _emit_stage_progress(stage, min_score)
+        if stop.wait(_STREAM_POLL_INTERVAL):
+            break
+
+
+def _run_with_progress_reporter(stage: str, min_score: int, fn):
+    """Run blocking stage work while emitting stage_progress every poll interval."""
+    stop = threading.Event()
+    reporter = threading.Thread(
+        target=_progress_reporter_loop,
+        args=(stage, min_score, stop),
+        name=f"progress-{stage}",
+        daemon=True,
+    )
+    reporter.start()
+    try:
+        return fn()
+    finally:
+        stop.set()
+        reporter.join(timeout=2.0)
 
 
 def _run_stage_streaming(
@@ -324,9 +491,15 @@ def _run_stage_streaming(
 
     if stage == "discover":
         emit_run_event("stage_start", stage=stage)
+        _emit_stage_progress(stage, min_score)
         try:
-            result = runner(**kwargs)
+            result = _run_with_progress_reporter(
+                stage,
+                min_score,
+                lambda: runner(**kwargs),
+            )
             tracker.mark_done(stage, result)
+            _emit_stage_progress(stage, min_score)
             emit_run_event("stage_end", stage=stage, payload=result if isinstance(result, dict) else {})
         except Exception as e:
             log.exception("Stage '%s' crashed", stage)
@@ -335,6 +508,7 @@ def _run_stage_streaming(
         return
 
     emit_run_event("stage_start", stage=stage)
+    _emit_stage_progress(stage, min_score)
     # For downstream stages: loop until upstream done + no pending work
     passes = 0
     while not stop_event.is_set():
@@ -344,10 +518,20 @@ def _run_stage_streaming(
             tracker.wait(upstream, timeout=_STREAM_POLL_INTERVAL)
 
         pending = _count_pending(stage, min_score)
+        waiting_upstream = (
+            pending == 0
+            and upstream is not None
+            and not tracker.is_done(upstream)
+        )
+        _emit_stage_progress(stage, min_score, waiting_upstream=waiting_upstream)
 
         if pending > 0:
             try:
-                runner(**kwargs)
+                _run_with_progress_reporter(
+                    stage,
+                    min_score,
+                    lambda: runner(**kwargs),
+                )
                 passes += 1
             except Exception as e:
                 log.error("Stage '%s' error (pass %d): %s", stage, passes, e)
@@ -362,6 +546,7 @@ def _run_stage_streaming(
             if stop_event.wait(timeout=_STREAM_POLL_INTERVAL):
                 break  # Stop requested
 
+    _emit_stage_progress(stage, min_score)
     tracker.mark_done(stage, {"status": "ok", "passes": passes})
     emit_run_event(
         "stage_end",
@@ -402,6 +587,7 @@ def _run_sequential(ordered: list[str], min_score: int, workers: int = 1,
         t0 = time.time()
         runner = _STAGE_RUNNERS[name]
         emit_run_event("stage_start", stage=name)
+        _emit_stage_progress(name, min_score)
 
         try:
             kwargs: dict = {}
@@ -410,7 +596,11 @@ def _run_sequential(ordered: list[str], min_score: int, workers: int = 1,
                 kwargs["validation_mode"] = validation_mode
             if name in ("discover", "enrich"):
                 kwargs["workers"] = workers
-            result = runner(**kwargs)
+            result = _run_with_progress_reporter(
+                name,
+                min_score,
+                lambda: runner(**kwargs),
+            )
             elapsed = time.time() - t0
 
             status = "ok"

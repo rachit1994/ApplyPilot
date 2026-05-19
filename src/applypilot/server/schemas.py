@@ -44,7 +44,35 @@ class JobRow(BaseModel):
     score_reasoning: str | None = None
     discovered_at: str | None = None
     scored_at: str | None = None
+    activity_at: str | None = None
     detail_error: str | None = None
+
+
+class ApplicationRow(BaseModel):
+    url: str
+    title: str | None = None
+    site: str | None = None
+    location: str | None = None
+    salary: str | None = None
+    fit_score: int | None = None
+    application_url: str | None = None
+    apply_status: str | None = None
+    apply_error: str | None = None
+    applied_at: str | None = None
+    last_attempted_at: str | None = None
+    apply_duration_ms: int | None = None
+    apply_attempts: int | None = None
+    apply_log_path: str | None = None
+    verification_confidence: str | None = None
+
+
+class ApplicationsResponse(BaseModel):
+    applications: list[ApplicationRow]
+    total: int
+
+
+class ApplicationDetailResponse(BaseModel):
+    application: dict[str, Any]
 
 
 class JobsResponse(BaseModel):

@@ -186,6 +186,7 @@ _ALL_COLUMNS: dict[str, str] = {
     "apply_duration_ms": "INTEGER",
     "apply_task_id": "TEXT",
     "verification_confidence": "TEXT",
+    "apply_log_path": "TEXT",
     # Referral outreach (OpenOutreach)
     "recruiter_public_id": "TEXT",
     "recruiter_linkedin_url": "TEXT",

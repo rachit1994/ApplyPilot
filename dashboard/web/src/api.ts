@@ -33,7 +33,53 @@ export type Job = {
   score_reasoning: string | null;
   discovered_at: string | null;
   scored_at: string | null;
+  activity_at: string | null;
   detail_error: string | null;
+};
+
+export type Application = {
+  url: string;
+  title: string | null;
+  site: string | null;
+  location: string | null;
+  salary: string | null;
+  fit_score: number | null;
+  application_url: string | null;
+  apply_status: string | null;
+  apply_error: string | null;
+  applied_at: string | null;
+  last_attempted_at: string | null;
+  apply_duration_ms: number | null;
+  apply_attempts: number | null;
+  apply_log_path: string | null;
+  verification_confidence: string | null;
+};
+
+export type FormFieldSnapshot = {
+  label: string;
+  value: string;
+  empty?: boolean;
+};
+
+export type ParsedApplyLog = {
+  fields?: FormFieldSnapshot[];
+  fill_actions?: string[];
+  result_line?: string | null;
+  form_url?: string | null;
+  visible_errors?: string[];
+};
+
+export type ApplicationLogDetail = {
+  log_path?: string | null;
+  log_excerpt?: string | null;
+  parsed?: ParsedApplyLog | null;
+};
+
+export type ApplicationDetail = Application & {
+  score_reasoning?: string | null;
+  tailored_resume_path?: string | null;
+  cover_letter_path?: string | null;
+  log_detail?: ApplicationLogDetail | null;
 };
 
 export type SiteCount = {
@@ -114,9 +160,32 @@ export async function fetchJobs(params: {
   if (params.sort) q.set("sort", params.sort);
   if (params.limit) q.set("limit", String(params.limit));
   if (params.offset != null) q.set("offset", String(params.offset));
+  if (!params.sort) q.set("sort", "activity_desc");
   const res = await fetch(`${API}/jobs?${q}`);
   if (!res.ok) throw new Error("Failed to load jobs");
   return res.json();
+}
+
+export async function fetchApplications(params: {
+  limit?: number;
+  offset?: number;
+  include_failed?: boolean;
+}): Promise<{ applications: Application[]; total: number }> {
+  const q = new URLSearchParams();
+  if (params.limit) q.set("limit", String(params.limit));
+  if (params.offset != null) q.set("offset", String(params.offset));
+  if (params.include_failed) q.set("include_failed", "true");
+  const res = await fetch(`${API}/applications?${q}`);
+  if (!res.ok) throw new Error("Failed to load applications");
+  return res.json();
+}
+
+export async function fetchApplicationDetail(url: string): Promise<ApplicationDetail> {
+  const q = new URLSearchParams({ url });
+  const res = await fetch(`${API}/applications/detail?${q}`);
+  if (!res.ok) throw new Error("Failed to load application detail");
+  const data = await res.json();
+  return data.application as ApplicationDetail;
 }
 
 export async function fetchRecentJobs(minutes = 60): Promise<Job[]> {

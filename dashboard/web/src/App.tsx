@@ -19,11 +19,15 @@ import { PhaseStepper } from "./components/PhaseStepper";
 import { LogConsole } from "./components/LogConsole";
 import { StatsRow } from "./components/StatsRow";
 import { JobsTable } from "./components/JobsTable";
+import { ApplicationsPage } from "./components/ApplicationsPage";
 import { RunHistory } from "./components/RunHistory";
 import { RunBanner } from "./components/RunBanner";
 import { ConnectionStatus } from "./components/ConnectionStatus";
 
+type DashboardPage = "pipeline" | "applications";
+
 export default function App() {
+  const [page, setPage] = useState<DashboardPage>("pipeline");
   const queryClient = useQueryClient();
   const [activeRun, setActiveRun] = useState<Run | null>(null);
   const [events, setEvents] = useState<RunEvent[]>([]);
@@ -73,6 +77,7 @@ export default function App() {
       fetchJobs({
         min_score: minScoreFilter,
         search: jobSearch.trim() || undefined,
+        sort: "activity_desc",
         limit: 150,
       }),
   });
@@ -124,7 +129,7 @@ export default function App() {
           if (next.length > 2000) return next.slice(-1500);
           return next;
         });
-        if (event.event_type === "stats_tick") {
+        if (event.event_type === "stats_tick" || event.event_type === "stage_progress") {
           queryClient.invalidateQueries({ queryKey: ["stats"] });
           queryClient.invalidateQueries({ queryKey: ["jobs"] });
           queryClient.invalidateQueries({ queryKey: ["jobs-recent"] });
@@ -179,10 +184,7 @@ export default function App() {
   }, [stageOrder, activeRun?.current_stage, events]);
 
   const errors = useMemo(
-    () =>
-      events.filter(
-        (e) => e.level === "error" || e.event_type === "stage_error",
-      ),
+    () => events.filter((e) => e.event_type === "stage_error"),
     [events],
   );
 
@@ -257,12 +259,39 @@ export default function App() {
           </div>
         </div>
 
+        <nav className="flex flex-col gap-1 px-3 pt-2">
+          <button
+            type="button"
+            onClick={() => setPage("pipeline")}
+            className={`rounded-lg px-3 py-2 text-left text-sm ${
+              page === "pipeline"
+                ? "bg-zinc-800 text-zinc-100"
+                : "text-zinc-500 hover:bg-zinc-900 hover:text-zinc-300"
+            }`}
+          >
+            Pipeline
+          </button>
+          <button
+            type="button"
+            onClick={() => setPage("applications")}
+            className={`rounded-lg px-3 py-2 text-left text-sm ${
+              page === "applications"
+                ? "bg-zinc-800 text-zinc-100"
+                : "text-zinc-500 hover:bg-zinc-900 hover:text-zinc-300"
+            }`}
+          >
+            Applications
+          </button>
+        </nav>
+
         <div className="flex flex-1 flex-col gap-3 overflow-hidden p-3">
           <ConnectionStatus />
-          <RunHistory
-            activeRunId={activeRun?.id ?? null}
-            onSelectRun={handleSelectHistoryRun}
-          />
+          {page === "pipeline" && (
+            <RunHistory
+              activeRunId={activeRun?.id ?? null}
+              onSelectRun={handleSelectHistoryRun}
+            />
+          )}
         </div>
 
         <footer className="border-t border-zinc-800/80 px-4 py-3 text-[10px] text-zinc-600">
@@ -272,15 +301,22 @@ export default function App() {
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <header className="shrink-0 border-b border-zinc-800/80 bg-zinc-950/50 px-6 py-4 backdrop-blur-sm">
-          <h2 className="text-lg font-semibold text-zinc-100">Pipeline dashboard</h2>
+          <h2 className="text-lg font-semibold text-zinc-100">
+            {page === "applications" ? "Applications" : "Pipeline dashboard"}
+          </h2>
           <p className="mt-0.5 text-sm text-zinc-500">
-            Discover, score, and tailor jobs — watch each stage live.
+            {page === "applications"
+              ? "Applied jobs with form values and errors from session logs."
+              : "Discover, score, and tailor jobs — watch each stage live."}
           </p>
         </header>
 
-        <main className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden p-6">
-          <div className="scroll-thin max-h-[26vh] shrink-0 space-y-4 overflow-y-auto">
-            {error && (
+        <main className="scroll-thin min-h-0 flex-1 space-y-4 overflow-y-auto p-6">
+          {page === "applications" ? (
+            <ApplicationsPage />
+          ) : (
+          <>
+          {error && (
             <div
               role="alert"
               className="rounded-lg border border-red-800/60 bg-red-950/40 px-4 py-3 text-sm text-red-200"
@@ -317,17 +353,18 @@ export default function App() {
             activeRun={activeRun}
           />
 
-            <StatsRow stats={stats} isLoading={statsLoading} />
+          <StatsRow stats={stats} isLoading={statsLoading} />
 
-            <PhaseStepper
-              stageOrder={displayStages}
-              stageMeta={stagesMeta?.meta ?? {}}
-              stageStates={stageStates}
-              events={events}
-            />
-          </div>
+          <PhaseStepper
+            stageOrder={displayStages}
+            stageMeta={stagesMeta?.meta ?? {}}
+            stageStates={stageStates}
+            events={events}
+            stats={stats}
+            minScore={pipelineMinScore}
+          />
 
-          <div className="grid min-h-[58vh] flex-1 gap-4 overflow-hidden xl:grid-cols-2">
+          <div className="grid gap-4 pb-4 xl:grid-cols-2">
             <LogConsole events={events} errors={errors} />
             <JobsTable
               jobs={jobsData?.jobs ?? []}
@@ -340,6 +377,8 @@ export default function App() {
               isLoading={jobsLoading}
             />
           </div>
+          </>
+          )}
         </main>
       </div>
     </div>

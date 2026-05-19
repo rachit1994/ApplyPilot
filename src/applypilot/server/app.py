@@ -14,7 +14,15 @@ from applypilot.database import init_db
 from applypilot.server import events as events_routes
 from applypilot.server import jobs as jobs_module
 from applypilot.server import runs as runs_routes
-from applypilot.server.schemas import JobRow, JobsResponse, StatsResponse
+from applypilot.server import applications as applications_module
+from applypilot.server.schemas import (
+    ApplicationDetailResponse,
+    ApplicationRow,
+    ApplicationsResponse,
+    JobRow,
+    JobsResponse,
+    StatsResponse,
+)
 from applypilot.server.stats import fetch_stats
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -54,7 +62,7 @@ def create_app() -> FastAPI:
         min_score: int | None = None,
         site: str | None = None,
         search: str | None = None,
-        sort: str = "fit_score_desc",
+        sort: str = "activity_desc",
         limit: int = 100,
         offset: int = 0,
     ) -> JobsResponse:
@@ -72,6 +80,31 @@ def create_app() -> FastAPI:
     def api_jobs_recent(minutes: int = 60, limit: int = 50) -> JobsResponse:
         rows = jobs_module.query_recent_jobs(minutes=minutes, limit=min(limit, 200))
         return JobsResponse(jobs=[JobRow(**r) for r in rows], total=len(rows))
+
+    @api.get("/applications", response_model=ApplicationsResponse)
+    def api_applications(
+        limit: int = 100,
+        offset: int = 0,
+        include_failed: bool = False,
+    ) -> ApplicationsResponse:
+        rows, total = applications_module.query_applied_jobs(
+            limit=min(limit, 500),
+            offset=offset,
+            include_failed=include_failed,
+        )
+        return ApplicationsResponse(
+            applications=[ApplicationRow(**r) for r in rows],
+            total=total,
+        )
+
+    @api.get("/applications/detail", response_model=ApplicationDetailResponse)
+    def api_application_detail(url: str) -> ApplicationDetailResponse:
+        row = applications_module.get_application_detail(url)
+        if not row:
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=404, detail="Application not found")
+        return ApplicationDetailResponse(application=row)
 
     @api.get("/meta/stages")
     def api_stages() -> dict:

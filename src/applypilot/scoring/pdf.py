@@ -390,11 +390,33 @@ def convert_to_pdf(
     return out
 
 
+def _txt_files_needing_pdf(limit: int | None = None) -> list[Path]:
+    """Return tailored .txt files that do not yet have a sibling .pdf."""
+    if not TAILORED_DIR.exists():
+        return []
+
+    need_pdf: list[Path] = []
+    for path in sorted(TAILORED_DIR.glob("*.txt")):
+        if path.name.endswith("_JOB.txt"):
+            continue
+        if path.with_suffix(".pdf").exists():
+            continue
+        need_pdf.append(path)
+        if limit is not None and len(need_pdf) >= limit:
+            break
+    return need_pdf
+
+
+def pending_pdf_conversions() -> int:
+    """Count tailored .txt files missing a sibling PDF (filesystem truth)."""
+    return len(_txt_files_needing_pdf())
+
+
 def batch_convert(limit: int = 50) -> int:
     """Convert .txt files in TAILORED_DIR that don't have corresponding PDFs.
 
-    Scans for .txt files (excluding _JOB.txt and _REPORT.json), checks if a
-    .pdf with the same stem already exists, and converts any that are missing.
+    Scans for .txt files (excluding _JOB.txt), checks if a .pdf with the same
+    stem already exists, and converts any that are missing.
 
     Args:
         limit: Maximum number of files to convert.
@@ -406,25 +428,9 @@ def batch_convert(limit: int = 50) -> int:
         log.warning("Tailored directory does not exist: %s", TAILORED_DIR)
         return 0
 
-    txt_files = sorted(TAILORED_DIR.glob("*.txt"))
-    # Exclude _JOB.txt and _CL.txt files from resume conversion
-    # (they get their own conversion calls)
-    candidates = [
-        f for f in txt_files
-        if not f.name.endswith("_JOB.txt")
-    ]
-
-    # Filter to those without a corresponding PDF
-    to_convert: list[Path] = []
-    for f in candidates:
-        pdf_path = f.with_suffix(".pdf")
-        if not pdf_path.exists():
-            to_convert.append(f)
-        if len(to_convert) >= limit:
-            break
-
+    to_convert = _txt_files_needing_pdf(limit=limit)
     if not to_convert:
-        log.info("All text files already have PDFs.")
+        log.debug("All text files already have PDFs.")
         return 0
 
     log.info("Converting %d files to PDF...", len(to_convert))

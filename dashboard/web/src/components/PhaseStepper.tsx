@@ -1,14 +1,22 @@
 import { useEffect, useMemo, useState, type ReactElement } from "react";
-import type { RunEvent } from "../api";
+import type { RunEvent, Stats } from "../api";
 import { formatDuration } from "../utils/format";
-
-type StageState = "pending" | "active" | "done" | "error";
+import {
+  formatStageProgressLine,
+  latestProgressByStage,
+  pipelineOverallProgress,
+  resolveStageProgress,
+  type StageProgressSnapshot,
+  type StageState,
+} from "../utils/stageProgress";
 
 type Props = {
   stageOrder: string[];
   stageMeta: Record<string, { desc: string }>;
   stageStates: Record<string, StageState>;
   events?: RunEvent[];
+  stats?: Stats;
+  minScore?: number;
 };
 
 const STAGE_ICONS: Record<string, (props: { className?: string }) => ReactElement> = {
@@ -18,6 +26,7 @@ const STAGE_ICONS: Record<string, (props: { className?: string }) => ReactElemen
   tailor: IconScissors,
   cover: IconMail,
   pdf: IconPdf,
+  refer: IconUsers,
 };
 
 function IconSearch({ className }: { className?: string }) {
@@ -68,6 +77,14 @@ function IconPdf({ className }: { className?: string }) {
   );
 }
 
+function IconUsers({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 0 0 2.625.372 9.337 9.337 0 0 0 4.121-.952 4.125 4.125 0 0 0-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 0 1 8.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0 1 11.964-3.07M12 6.375a3.375 3.375 0 1 1-6.75 0 3.375 3.375 0 0 1 6.75 0Zm8.25 2.25a2.625 2.625 0 1 1-5.25 0 2.625 2.625 0 0 1 5.25 0Z" />
+    </svg>
+  );
+}
+
 function IconDefault({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
@@ -95,8 +112,97 @@ function connectorClass(leftState: StageState, _rightState: StageState): string 
   return "bg-zinc-700/60";
 }
 
-export function PhaseStepper({ stageOrder, stageMeta, stageStates, events = [] }: Props) {
+function MiniProgressBar({ percent }: { percent: number | null | undefined }) {
+  if (percent == null) {
+    return (
+      <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-zinc-800">
+        <div className="h-full w-1/3 animate-pulse rounded-full bg-blue-500/50" />
+      </div>
+    );
+  }
+  return (
+    <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-zinc-800">
+      <div
+        className="h-full rounded-full bg-blue-500/80 transition-all duration-500"
+        style={{ width: `${percent}%` }}
+      />
+    </div>
+  );
+}
+
+function ProgressBanner({
+  activeStage,
+  stageIndex,
+  stageTotal,
+  elapsed,
+  progress,
+  overallPercent,
+  completedStages,
+}: {
+  activeStage: string;
+  stageIndex: number;
+  stageTotal: number;
+  elapsed: string | null;
+  progress: StageProgressSnapshot | null;
+  overallPercent: number | null;
+  completedStages: number;
+}) {
+  const line = formatStageProgressLine(progress);
+  const stagePercent = progress?.percent;
+
+  return (
+    <div className="mb-4 rounded-lg border border-blue-500/30 bg-blue-950/25 px-4 py-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <p className="text-sm font-medium text-blue-100">
+          In progress:{" "}
+          <span className="capitalize">{activeStage}</span>
+          <span className="font-normal text-blue-300/80">
+            {" "}
+            · stage {stageIndex + 1} of {stageTotal}
+          </span>
+        </p>
+        <div className="flex items-center gap-3 text-xs text-blue-300/90">
+          {stagePercent != null && (
+            <span className="font-mono tabular-nums">{stagePercent}%</span>
+          )}
+          {elapsed && <span className="font-mono tabular-nums">{elapsed}</span>}
+        </div>
+      </div>
+      {line && <p className="mt-1 text-xs text-zinc-400">{line}</p>}
+      {progress?.waiting_upstream && (
+        <p className="mt-1 text-[11px] text-amber-400/90">Waiting for upstream stage to finish</p>
+      )}
+      {overallPercent != null && (
+        <div className="mt-3">
+          <div className="mb-1 flex justify-between text-[10px] uppercase tracking-wide text-zinc-500">
+            <span>Run overall</span>
+            <span className="font-mono tabular-nums">
+              {completedStages}/{stageTotal} stages · {overallPercent}%
+            </span>
+          </div>
+          <MiniProgressBar percent={overallPercent} />
+        </div>
+      )}
+      {stagePercent != null && (
+        <div className="mt-2">
+          <MiniProgressBar percent={stagePercent} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function PhaseStepper({
+  stageOrder,
+  stageMeta,
+  stageStates,
+  events = [],
+  stats,
+  minScore = 7,
+}: Props) {
   const [, tick] = useState(0);
+
+  const progressByStage = useMemo(() => latestProgressByStage(events), [events]);
 
   const stageStartedAt = useMemo(() => {
     const map: Record<string, number> = {};
@@ -108,7 +214,20 @@ export function PhaseStepper({ stageOrder, stageMeta, stageStates, events = [] }
     return map;
   }, [events]);
 
-  const hasActive = stageOrder.some((s) => stageStates[s] === "active");
+  const activeStage = stageOrder.find((s) => stageStates[s] === "active");
+  const hasActive = Boolean(activeStage);
+
+  const activeProgress = activeStage
+    ? resolveStageProgress(
+        activeStage,
+        "active",
+        progressByStage[activeStage],
+        stats,
+        minScore,
+      )
+    : null;
+
+  const overall = pipelineOverallProgress(stageOrder, stageStates, activeProgress);
 
   useEffect(() => {
     if (!hasActive) return;
@@ -118,19 +237,44 @@ export function PhaseStepper({ stageOrder, stageMeta, stageStates, events = [] }
 
   if (stageOrder.length === 0) return null;
 
+  const activeIndex = activeStage ? stageOrder.indexOf(activeStage) : -1;
+  const activeElapsed =
+    activeStage && stageStartedAt[activeStage]
+      ? formatDuration(Date.now() - stageStartedAt[activeStage])
+      : null;
+
   return (
     <section className="panel p-4">
       <h2 className="panel-title mb-4">Pipeline</h2>
+
+      {activeStage && activeIndex >= 0 && (
+        <ProgressBanner
+          activeStage={activeStage}
+          stageIndex={activeIndex}
+          completedStages={overall.completed}
+          stageTotal={overall.total}
+          elapsed={activeElapsed}
+          progress={activeProgress}
+          overallPercent={overall.percent}
+        />
+      )}
+
       <ol className="flex flex-row items-start gap-0 overflow-x-auto">
         {stageOrder.map((stage, i) => {
           const state = stageStates[stage] ?? "pending";
           const Icon = STAGE_ICONS[stage] ?? IconDefault;
           const started = stageStartedAt[stage];
           const elapsed =
-            state === "active" && started
-              ? formatDuration(Date.now() - started)
-              : null;
+            state === "active" && started ? formatDuration(Date.now() - started) : null;
           const prevState = i > 0 ? (stageStates[stageOrder[i - 1]] ?? "pending") : "pending";
+          const snap = resolveStageProgress(
+            stage,
+            state,
+            progressByStage[stage],
+            stats,
+            minScore,
+          );
+          const progressLine = formatStageProgressLine(snap);
 
           return (
             <li key={stage} className="flex flex-1 flex-col items-stretch sm:min-w-0">
@@ -143,17 +287,30 @@ export function PhaseStepper({ stageOrder, stageMeta, stageStates, events = [] }
                 )}
                 <div
                   title={stageMeta[stage]?.desc ?? stage}
-                  className={`relative z-10 flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 sm:w-auto sm:min-w-[7rem] sm:flex-col sm:px-3 sm:py-3 ${stateRing(state)}`}
+                  className={`relative z-10 flex w-full flex-col items-stretch rounded-xl border px-3 py-2.5 sm:w-auto sm:min-w-[7.5rem] ${stateRing(state)}`}
                 >
-                  <Icon className="h-5 w-5 shrink-0 opacity-90" />
-                  <div className="min-w-0 text-center">
-                    <div className="text-sm font-semibold capitalize">{stage}</div>
-                    <div className="text-[10px] uppercase tracking-wide opacity-70">
-                      {state === "active" && elapsed ? elapsed : state}
+                  <div className="flex items-center gap-3 sm:flex-col sm:gap-1">
+                    <Icon className="h-5 w-5 shrink-0 opacity-90" />
+                    <div className="min-w-0 flex-1 text-left sm:text-center">
+                      <div className="text-sm font-semibold capitalize">{stage}</div>
+                      <div className="text-[10px] uppercase tracking-wide opacity-70">
+                        {state === "active" && elapsed ? elapsed : state}
+                      </div>
                     </div>
+                    {state === "active" && (
+                      <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-blue-400 animate-pulse" />
+                    )}
                   </div>
-                  {state === "active" && (
-                    <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-blue-400 animate-pulse" />
+                  {progressLine && state !== "pending" && (
+                    <div className="mt-2 border-t border-current/10 pt-2 text-[10px] leading-snug opacity-80 sm:text-center">
+                      {snap?.percent != null && (
+                        <span className="mb-1 block font-mono tabular-nums">{snap.percent}%</span>
+                      )}
+                      {progressLine}
+                    </div>
+                  )}
+                  {state === "active" && snap?.percent != null && (
+                    <MiniProgressBar percent={snap.percent} />
                   )}
                 </div>
               </div>

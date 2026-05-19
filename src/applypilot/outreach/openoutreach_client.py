@@ -19,6 +19,15 @@ class OpenOutreachError(Exception):
         self.code = code
 
 
+def _format_request_error(exc: httpx.RequestError, *, base_url: str) -> str:
+    if isinstance(exc, httpx.ConnectError):
+        return (
+            f"cannot connect to OpenOutreach at {base_url} ({exc}). "
+            "Run `applypilot openoutreach start`, then `applypilot doctor` to verify."
+        )
+    return f"OpenOutreach request failed: {exc}"
+
+
 class OpenOutreachClient:
     def __init__(self, base_url: str, api_key: str, *, timeout: float = 180.0):
         self.base_url = base_url.rstrip("/")
@@ -34,8 +43,11 @@ class OpenOutreachClient:
         params: dict | None = None,
     ) -> Any:
         url = f"{self.base_url}{path}"
-        with httpx.Client(timeout=self._timeout, headers=self._headers) as client:
-            response = client.request(method, url, json=json, params=params)
+        try:
+            with httpx.Client(timeout=self._timeout, headers=self._headers) as client:
+                response = client.request(method, url, json=json, params=params)
+        except httpx.RequestError as exc:
+            raise OpenOutreachError(_format_request_error(exc, base_url=self.base_url)) from exc
         if response.status_code >= 400:
             body: dict = {}
             try:
@@ -160,5 +172,3 @@ def check_openoutreach_health(base_url: str, api_key: str) -> tuple[bool, str]:
         return False, f"health check failed: {body}"
     except OpenOutreachError as exc:
         return False, str(exc)
-    except httpx.HTTPError as exc:
-        return False, f"cannot reach OpenOutreach: {exc}"

@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Job } from "../api";
+import { formatTime } from "../utils/format";
+import { VirtualGrid } from "./VirtualScroll";
 
 type Props = {
   jobs: Job[];
@@ -12,6 +14,16 @@ type Props = {
   isLoading?: boolean;
 };
 
+/** Match Live logs scroll body height. */
+const JOBS_BODY_MAX_CLASS = "scroll-thin max-h-80 overflow-y-auto";
+
+const JOB_GRID_CLASS =
+  "grid grid-cols-[3.5rem_minmax(0,1fr)_7rem_8rem] items-center border-t border-zinc-800/60 text-sm transition-colors hover:bg-zinc-800/30";
+
+const JOB_HEADER_CLASS = `${JOB_GRID_CLASS} border-b border-zinc-800 text-[10px] font-medium uppercase tracking-wide text-zinc-500`;
+
+const JOB_ROW_ESTIMATE_PX = 56;
+
 function scoreBadge(score: number | null) {
   if (score == null) return <span className="text-zinc-600">—</span>;
   const color =
@@ -23,21 +35,59 @@ function TableSkeleton() {
   return (
     <>
       {Array.from({ length: 8 }).map((_, i) => (
-        <tr key={i} className="border-t border-zinc-800/50">
-          <td className="px-4 py-3">
+        <div key={i} className={`${JOB_GRID_CLASS} hover:bg-transparent`}>
+          <div className="px-4 py-3">
             <div className="skeleton h-4 w-6" />
-          </td>
-          <td className="px-4 py-3">
+          </div>
+          <div className="px-4 py-3">
             <div className="skeleton h-4 w-full max-w-[200px]" />
-          </td>
-          <td className="px-4 py-3">
+          </div>
+          <div className="px-4 py-3">
             <div className="skeleton h-4 w-16" />
-          </td>
-        </tr>
+          </div>
+          <div className="px-4 py-3">
+            <div className="skeleton h-4 w-20" />
+          </div>
+        </div>
       ))}
     </>
   );
 }
+
+function JobRow({ job }: { job: Job }) {
+  return (
+    <>
+      <div className="px-4 py-2.5">{scoreBadge(job.fit_score)}</div>
+      <div className="min-w-0 px-4 py-2.5">
+        <a
+          href={job.url}
+          target="_blank"
+          rel="noreferrer"
+          className="block truncate text-blue-400 hover:text-blue-300 hover:underline"
+          title={job.score_reasoning ?? job.title ?? job.url}
+        >
+          {job.title ?? "Untitled"}
+        </a>
+        {job.location && (
+          <p className="truncate text-[10px] text-zinc-600">{job.location}</p>
+        )}
+      </div>
+      <div className="px-4 py-2.5 text-xs text-zinc-500">{job.site ?? "—"}</div>
+      <div className="px-4 py-2.5 text-xs tabular-nums text-zinc-500">
+        {formatTime(job.activity_at ?? job.scored_at ?? job.discovered_at)}
+      </div>
+    </>
+  );
+}
+
+const jobHeader = (
+  <>
+    <span className="px-4 py-2.5">Score</span>
+    <span className="px-4 py-2.5">Role</span>
+    <span className="px-4 py-2.5">Source</span>
+    <span className="px-4 py-2.5">Date</span>
+  </>
+);
 
 export function JobsTable({
   jobs,
@@ -59,7 +109,7 @@ export function JobsTable({
   const showEmpty = !isLoading && jobs.length === 0;
 
   return (
-    <section className="panel flex h-full min-h-0 flex-col overflow-hidden">
+    <section className="panel flex flex-col overflow-hidden">
       <header className="panel-header flex-wrap">
         <h2 className="panel-title">Jobs</h2>
         <span className="text-[10px] text-zinc-600">{total} matching</span>
@@ -105,55 +155,36 @@ export function JobsTable({
         </div>
       )}
 
-      <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">
-        <table className="w-full text-left text-sm">
-          <thead className="sticky top-0 z-10 bg-zinc-950/95 text-[10px] font-medium uppercase tracking-wide text-zinc-500 backdrop-blur">
-            <tr className="border-b border-zinc-800">
-              <th className="px-4 py-2.5 w-14">Score</th>
-              <th className="px-4 py-2.5">Role</th>
-              <th className="px-4 py-2.5 w-28">Source</th>
-            </tr>
-          </thead>
-          <tbody>
-            {isLoading && <TableSkeleton />}
-            {!isLoading &&
-              jobs.map((j) => (
-                <tr
-                  key={j.url}
-                  className="border-t border-zinc-800/60 transition-colors hover:bg-zinc-800/30"
-                >
-                  <td className="px-4 py-2.5">{scoreBadge(j.fit_score)}</td>
-                  <td className="max-w-[240px] px-4 py-2.5">
-                    <a
-                      href={j.url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="block truncate text-blue-400 hover:text-blue-300 hover:underline"
-                      title={j.score_reasoning ?? j.title ?? j.url}
-                    >
-                      {j.title ?? "Untitled"}
-                    </a>
-                    {j.location && (
-                      <p className="truncate text-[10px] text-zinc-600">{j.location}</p>
-                    )}
-                  </td>
-                  <td className="px-4 py-2.5 text-xs text-zinc-500">{j.site ?? "—"}</td>
-                </tr>
-              ))}
-          </tbody>
-        </table>
-
-        {showEmpty && (
-          <div className="flex flex-col items-center justify-center px-6 py-16 text-center">
-            <p className="text-sm font-medium text-zinc-400">No jobs match</p>
-            <p className="mt-1 max-w-xs text-xs text-zinc-600">
-              {debouncedSearch
-                ? "Try a different search or lower the minimum score."
-                : "Run the pipeline to discover and score roles."}
-            </p>
-          </div>
-        )}
-      </div>
+      {isLoading ? (
+        <div className={JOBS_BODY_MAX_CLASS}>
+          <div className={JOB_HEADER_CLASS}>{jobHeader}</div>
+          <TableSkeleton />
+        </div>
+      ) : (
+        <VirtualGrid
+          items={jobs}
+          getItemKey={(j) => j.url}
+          estimateSize={JOB_ROW_ESTIMATE_PX}
+          gridClassName={JOB_GRID_CLASS}
+          headerClassName={JOB_HEADER_CLASS}
+          header={jobHeader}
+          className={JOBS_BODY_MAX_CLASS}
+          empty={
+            showEmpty ? (
+              <div className="flex flex-col items-center justify-center px-6 py-16 text-center">
+                <p className="text-sm font-medium text-zinc-400">No jobs match</p>
+                <p className="mt-1 max-w-xs text-xs text-zinc-600">
+                  {debouncedSearch
+                    ? "Try a different search or lower the minimum score."
+                    : "Run the pipeline to discover and score roles."}
+                </p>
+              </div>
+            ) : null
+          }
+        >
+          {(j) => <JobRow job={j} />}
+        </VirtualGrid>
+      )}
     </section>
   );
 }

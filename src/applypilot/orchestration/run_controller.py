@@ -170,9 +170,14 @@ def infer_log_level(line: str, stream_label: str = "stdout") -> str:
         return "info"
 
     lowered = line.lower()
-    if "error:" in lowered or re.search(r"\berror\b", lowered):
+    if (
+        "traceback (most recent call last)" in lowered
+        or lowered.startswith("error:")
+        or " exception:" in lowered
+        or re.search(r"\s-\s+(error|critical)\s+-\s+", lowered)
+    ):
         return "error"
-    if "warning" in lowered:
+    if "warning" in lowered or re.search(r"\s-\s+warning\s+-\s+", lowered):
         return "warning"
     if stream_label == "stderr":
         return "warning"

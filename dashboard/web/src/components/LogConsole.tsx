@@ -1,5 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { RunEvent } from "../api";
+import { effectiveLogLevel, isLogError } from "../utils/logLevel";
+import { VirtualScroll } from "./VirtualScroll";
 
 type Props = {
   events: RunEvent[];
@@ -8,20 +10,20 @@ type Props = {
 
 type LevelFilter = "all" | "info" | "warning" | "error";
 
-function levelClass(level?: string, eventType?: string): string {
-  if (eventType === "stage_error" || level === "error") return "text-red-300";
+function levelClass(event: RunEvent): string {
+  const level = effectiveLogLevel(event);
+  if (level === "error") return "text-red-300";
   if (level === "warning" || level === "info") return "text-amber-300";
-  if (eventType?.startsWith("stage_")) return "text-sky-300";
+  if (event.event_type?.startsWith("stage_")) return "text-sky-300";
   return "text-zinc-300";
 }
 
 function matchesFilter(e: RunEvent, filter: LevelFilter): boolean {
+  const level = effectiveLogLevel(e);
   if (filter === "all") return true;
-  if (filter === "error") {
-    return e.level === "error" || e.event_type === "stage_error";
-  }
-  if (filter === "warning") return e.level === "warning";
-  return e.level !== "error" && e.level !== "warning" && e.event_type !== "stage_error";
+  if (filter === "error") return level === "error";
+  if (filter === "warning") return level === "warning";
+  return level === "info";
 }
 
 function formatLine(e: RunEvent): string {
@@ -33,20 +35,50 @@ function formatLine(e: RunEvent): string {
   return parts.join(" ");
 }
 
-export function LogConsole({ events, errors }: Props) {
+const LOG_SCROLL_TAIL_PX = 80;
+const LOG_BODY_CLASS =
+  "scroll-thin max-h-80 overflow-y-auto p-3 font-mono text-[11px] leading-relaxed";
+const LOG_LINE_ESTIMATE_PX = 20;
+
+export function LogConsole({ events, errors: stageErrors }: Props) {
   const [levelFilter, setLevelFilter] = useState<LevelFilter>("all");
   const [errorsOpen, setErrorsOpen] = useState(true);
   const [copied, setCopied] = useState(false);
+  const [stickToBottom, setStickToBottom] = useState(true);
+  const logsScrollRef = useRef<HTMLDivElement>(null);
 
   const logEvents = useMemo(
-    () => events.filter((e) => e.event_type === "log" || e.message),
+    () => events.filter((e) => e.event_type === "log"),
     [events],
+  );
+
+  const logErrors = useMemo(
+    () => logEvents.filter((e) => isLogError(e)),
+    [logEvents],
   );
 
   const filtered = useMemo(
     () => logEvents.filter((e) => matchesFilter(e, levelFilter)),
     [logEvents, levelFilter],
   );
+
+  const combinedErrors = useMemo(
+    () => [...stageErrors, ...logErrors],
+    [stageErrors, logErrors],
+  );
+
+  useEffect(() => {
+    if (logEvents.length === 0) {
+      setStickToBottom(true);
+    }
+  }, [logEvents.length]);
+
+  const syncStickToBottom = () => {
+    const el = logsScrollRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    setStickToBottom(distanceFromBottom <= LOG_SCROLL_TAIL_PX);
+  };
 
   const copyLogs = async () => {
     const text = filtered.map(formatLine).join("\n");
@@ -67,7 +99,7 @@ export function LogConsole({ events, errors }: Props) {
   ];
 
   return (
-    <section className="panel flex h-full min-h-0 flex-col overflow-hidden">
+    <section className="panel flex flex-col overflow-hidden">
       <header className="panel-header shrink-0">
         <h2 className="panel-title">Live logs</h2>
         <div className="flex items-center gap-2">
@@ -83,7 +115,7 @@ export function LogConsole({ events, errors }: Props) {
         </div>
       </header>
 
-      {errors.length > 0 && (
+      {combinedErrors.length > 0 && (
         <div className="shrink-0 border-b border-red-900/40">
           <button
             type="button"
@@ -91,18 +123,20 @@ export function LogConsole({ events, errors }: Props) {
             className="flex w-full items-center justify-between px-4 py-2 text-left text-xs font-medium text-red-300 hover:bg-red-950/20"
           >
             <span>
-              {errors.length} error{errors.length === 1 ? "" : "s"}
+              {combinedErrors.length} error
+              {combinedErrors.length === 1 ? "" : "s"}
             </span>
             <span className="text-red-500/80">{errorsOpen ? "▼" : "▶"}</span>
           </button>
           {errorsOpen && (
-            <div className="scroll-thin max-h-32 overflow-y-auto border-t border-red-900/30 bg-red-950/20 px-4 py-2 font-mono text-[11px] leading-relaxed text-red-200">
-              {errors.map((e, i) => (
-                <div key={e.id ?? `err-${i}`} className="mb-1">
-                  {formatLine(e)}
-                </div>
-              ))}
-            </div>
+            <VirtualScroll
+              items={combinedErrors}
+              getItemKey={(e, i) => e.id ?? `err-${i}`}
+              estimateSize={LOG_LINE_ESTIMATE_PX}
+              className="scroll-thin max-h-32 overflow-y-auto border-t border-red-900/30 bg-red-950/20 px-4 py-2 font-mono text-[11px] leading-relaxed text-red-200"
+            >
+              {(e) => <div className="mb-1">{formatLine(e)}</div>}
+            </VirtualScroll>
           )}
         </div>
       )}
@@ -124,24 +158,29 @@ export function LogConsole({ events, errors }: Props) {
         ))}
       </div>
 
-      <div className="scroll-thin min-h-0 flex-1 overflow-y-auto p-3 font-mono text-[11px] leading-relaxed">
-        {filtered.length === 0 ? (
-          <p className="text-zinc-500">Start a run to stream logs here.</p>
-        ) : (
-          filtered.map((e, i) => (
-            <div key={e.id ?? i} className={levelClass(e.level, e.event_type)}>
-              {e.created_at && (
-                <span className="text-zinc-600">{e.created_at.slice(11, 19)} </span>
-              )}
-              {e.stage && <span className="text-zinc-500">[{e.stage}] </span>}
-              {e.event_type !== "log" && (
-                <span className="text-zinc-500">{e.event_type}: </span>
-              )}
-              {e.message}
-            </div>
-          ))
+      <VirtualScroll
+        scrollRef={logsScrollRef}
+        items={filtered}
+        getItemKey={(e, i) => e.id ?? i}
+        estimateSize={LOG_LINE_ESTIMATE_PX}
+        className={LOG_BODY_CLASS}
+        onScroll={syncStickToBottom}
+        stickToBottom={stickToBottom}
+        empty={<p className="text-zinc-500">Start a run to stream logs here.</p>}
+      >
+        {(e) => (
+          <div className={levelClass(e)}>
+            {e.created_at && (
+              <span className="text-zinc-600">{e.created_at.slice(11, 19)} </span>
+            )}
+            {e.stage && <span className="text-zinc-500">[{e.stage}] </span>}
+            {e.event_type !== "log" && (
+              <span className="text-zinc-500">{e.event_type}: </span>
+            )}
+            {e.message}
+          </div>
         )}
-      </div>
+      </VirtualScroll>
     </section>
   );
 }

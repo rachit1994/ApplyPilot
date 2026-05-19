@@ -7,8 +7,9 @@ from typing import Any
 from applypilot.database import get_connection, init_db
 
 _SORT_ORDERS: dict[str, str] = {
-    "fit_score_desc": "COALESCE(fit_score, 0) DESC, discovered_at DESC",
-    "fit_score_asc": "COALESCE(fit_score, 0) ASC, discovered_at DESC",
+    "activity_desc": "datetime(COALESCE(scored_at, discovered_at)) DESC, COALESCE(fit_score, 0) DESC",
+    "fit_score_desc": "COALESCE(fit_score, 0) DESC, datetime(COALESCE(scored_at, discovered_at)) DESC",
+    "fit_score_asc": "COALESCE(fit_score, 0) ASC, datetime(COALESCE(scored_at, discovered_at)) DESC",
     "discovered_at_desc": "discovered_at DESC",
     "discovered_at_asc": "discovered_at ASC",
     "scored_at_desc": "COALESCE(scored_at, '') DESC, discovered_at DESC",
@@ -21,7 +22,7 @@ def query_jobs(
     min_score: int | None = None,
     site: str | None = None,
     search: str | None = None,
-    sort: str = "fit_score_desc",
+    sort: str = "activity_desc",
     limit: int = 100,
     offset: int = 0,
 ) -> tuple[list[dict[str, Any]], int]:
@@ -52,7 +53,8 @@ def query_jobs(
     rows = conn.execute(
         f"""
         SELECT url, title, site, location, salary, fit_score, score_reasoning,
-               discovered_at, scored_at, detail_error
+               discovered_at, scored_at, detail_error,
+               COALESCE(scored_at, discovered_at) AS activity_at
         FROM jobs
         {where}
         ORDER BY {order_by}
@@ -71,7 +73,8 @@ def query_recent_jobs(minutes: int = 60, limit: int = 50) -> list[dict[str, Any]
     rows = conn.execute(
         """
         SELECT url, title, site, location, salary, fit_score, score_reasoning,
-               discovered_at, scored_at, detail_error
+               discovered_at, scored_at, detail_error,
+               COALESCE(scored_at, discovered_at) AS activity_at
         FROM jobs
         WHERE (
             discovered_at >= datetime('now', ?)

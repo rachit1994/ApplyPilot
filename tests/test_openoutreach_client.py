@@ -2,6 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
 from applypilot.outreach.openoutreach_client import (
@@ -79,3 +80,19 @@ def test_check_health_missing_key() -> None:
     ok, note = check_openoutreach_health("http://127.0.0.1:8741/v1", "")
     assert ok is False
     assert "OPENOUTREACH_API_KEY" in note
+
+
+@patch("applypilot.outreach.openoutreach_client.httpx.Client")
+def test_connection_refused_raises_openoutreach_error(mock_client_cls: MagicMock) -> None:
+    mock_client = MagicMock()
+    mock_client_cls.return_value.__enter__.return_value = mock_client
+    mock_client.request.side_effect = httpx.ConnectError(
+        "[Errno 61] Connection refused",
+        request=httpx.Request("GET", "http://127.0.0.1:8741/v1/health"),
+    )
+
+    client = OpenOutreachClient("http://127.0.0.1:8741/v1", "secret")
+    with pytest.raises(OpenOutreachError) as exc:
+        client.health()
+    assert "cannot connect to OpenOutreach" in str(exc.value)
+    assert "applypilot openoutreach start" in str(exc.value)
