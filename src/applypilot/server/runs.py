@@ -69,9 +69,17 @@ def api_start_run(
             workers=body.workers,
             validation_mode=body.validation_mode,
             force=body.force,
+            limit=body.limit,
+            watch=body.watch,
+            pace=body.pace,
+            headless=body.headless,
+            continuous=body.continuous,
+            inbox_action=body.inbox_action,
         )
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
     return _to_response(run)
 
 

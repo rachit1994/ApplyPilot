@@ -14,6 +14,7 @@ placeholders replaced from the user's search configuration.
 
 import json
 import logging
+import os
 import re
 import sqlite3
 import sys
@@ -29,6 +30,12 @@ from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 
 from applypilot import config
+from applypilot.discovery.site_priority import (
+    is_priority_site_name,
+    prioritize_site_dicts,
+    prioritize_target_dicts,
+    site_order_key,
+)
 from applypilot.config import CONFIG_DIR
 from applypilot.database import get_connection, init_db, store_jobs, get_stats
 from applypilot.llm import get_client
@@ -52,9 +59,7 @@ def _load_location_filter(search_cfg: dict | None = None):
     """Load location accept/reject lists from search config."""
     if search_cfg is None:
         search_cfg = config.load_search_config()
-    accept = search_cfg.get("location_accept", [])
-    reject = search_cfg.get("location_reject_non_remote", [])
-    return accept, reject
+    return config.load_location_filter_patterns(search_cfg)
 
 
 def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> bool:
@@ -82,7 +87,29 @@ def load_sites() -> list[dict]:
         log.warning("sites.yaml not found at %s", path)
         return []
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    return data.get("sites", [])
+    return prioritize_site_dicts(data.get("sites", []))
+
+
+def partition_sites_by_mode(sites: list[dict] | None = None) -> tuple[list[dict], list[dict]]:
+    """Split sites into (agent_only, smartextract) by mode field."""
+    if sites is None:
+        sites = load_sites()
+    agent: list[dict] = []
+    smart: list[dict] = []
+    for site in sites:
+        if (site.get("mode") or "").strip().lower() == "agent":
+            agent.append(
+                {
+                    "name": site.get("name") or "Unknown",
+                    "url": site.get("url") or "",
+                    "type": site.get("type", "static"),
+                    "mode": "agent",
+                    "source": "sites_yaml",
+                }
+            )
+        else:
+            smart.append(site)
+    return agent, smart
 
 
 def _store_jobs_filtered(
@@ -104,6 +131,11 @@ def _store_jobs_filtered(
         if not url:
             continue
         if not _location_ok(job.get("location"), accept_locs, reject_locs):
+            filtered += 1
+            continue
+        from applypilot.discovery._filters import title_passes
+
+        if not title_passes(job.get("title")):
             filtered += 1
             continue
         try:
@@ -393,7 +425,12 @@ def judge_api_responses(api_responses: list[dict]) -> list[dict]:
         )
 
         try:
-            raw = client.ask(prompt, temperature=0.0, max_tokens=1024)
+            raw = client.ask(
+                prompt,
+                temperature=0.0,
+                max_tokens=1024,
+                operation="smart_extract_judge",
+            )
             verdict = extract_json(raw)
             is_relevant = verdict.get("relevant", False)
             reason = verdict.get("reason", "?")
@@ -642,7 +679,12 @@ def ask_llm(prompt: str) -> tuple[str, float, dict]:
     """Send prompt to LLM. Returns (response_text, seconds_taken, metadata)."""
     client = get_client()
     t0 = time.time()
-    text = client.ask(prompt, temperature=0.0, max_tokens=4096)
+    text = client.ask(
+        prompt,
+        temperature=0.0,
+        max_tokens=4096,
+        operation="smart_extract",
+    )
     elapsed = time.time() - t0
     meta = {
         "finish_reason": "stop",
@@ -847,6 +889,42 @@ def execute_css_selectors(intel: dict) -> tuple[dict, list[dict]]:
 
 # -- Main per-site extraction ------------------------------------------------
 
+def run_one_site_with_fallback(
+    name: str,
+    url: str,
+    *,
+    agent_fallback_enabled: bool = False,
+    agent_max_pages: int = 3,
+    agent_headless: bool = False,
+) -> dict:
+    """SmartExtract pipeline with optional agent browse when zero jobs."""
+    result = _run_one_site(name, url)
+    jobs = result.get("jobs") or []
+    if jobs or not agent_fallback_enabled:
+        return result
+    log.info("%s: SmartExtract returned 0 jobs — trying agent browse", name)
+    try:
+        from applypilot.discovery.agent_browse import run_agent_discover
+
+        agent_jobs = run_agent_discover(
+            site_name=name,
+            start_url=url,
+            max_pages=agent_max_pages,
+            headless=agent_headless,
+        )
+    except Exception as exc:
+        log.error("Agent fallback failed for %s: %s", name, exc)
+        return result
+    if not agent_jobs:
+        return result
+    result["jobs"] = agent_jobs
+    result["strategy"] = "agent_browse"
+    result["total"] = len(agent_jobs)
+    result["titles"] = sum(1 for j in agent_jobs if j.get("title"))
+    result["status"] = "PASS" if agent_jobs else result.get("status", "FAIL")
+    return result
+
+
 def _run_one_site(name: str, url: str) -> dict:
     """Run full smart extraction pipeline on one site URL."""
     log.info("=" * 60)
@@ -954,6 +1032,38 @@ def _run_one_site(name: str, url: str) -> dict:
     }
 
 
+def _emit_site_progress(
+    site_name: str,
+    result: dict,
+    *,
+    index: int,
+    total: int,
+    new_jobs: int = 0,
+) -> None:
+    """Per-site discover progress for the dashboard (Naukri, Wellfound, etc.)."""
+    run_id = os.environ.get("APPLYPILOT_RUN_ID", "").strip()
+    if not run_id:
+        return
+    from applypilot.orchestration.events import emit_run_event
+
+    status = str(result.get("status", "?"))
+    emit_run_event(
+        "source_progress",
+        stage="discover",
+        run_id=run_id,
+        message=f"{site_name}: {status}",
+        payload={
+            "source": site_name,
+            "status": status,
+            "new_jobs": new_jobs,
+            "index": index,
+            "total": total,
+            "priority": is_priority_site_name(site_name),
+            "detail": f"{site_name} — {status}",
+        },
+    )
+
+
 # -- Target building --------------------------------------------------------
 
 def build_scrape_targets(
@@ -1007,7 +1117,7 @@ def build_scrape_targets(
                 "query": None,
             })
 
-    return targets
+    return prioritize_target_dicts(targets)
 
 
 # -- Run all sites -----------------------------------------------------------
@@ -1017,6 +1127,10 @@ def _run_all(
     accept_locs: list[str],
     reject_locs: list[str],
     workers: int = 1,
+    *,
+    agent_fallback_enabled: bool = False,
+    agent_max_pages: int = 3,
+    agent_headless: bool = False,
 ) -> dict:
     """Run smart extract on all targets.
 
@@ -1031,10 +1145,14 @@ def _run_all(
     results: list[dict] = []
     total_new = 0
     total_existing = 0
+    total_targets = len(targets)
+    progress_index = 0
 
     def _process_result(r: dict, target: dict) -> None:
-        nonlocal total_new, total_existing
+        nonlocal total_new, total_existing, progress_index
         jobs = r.get("jobs", [])
+        new = 0
+        existing = 0
         if jobs:
             new, existing = _store_jobs_filtered(conn, jobs, target["name"],
                                                   r.get("strategy", "?"),
@@ -1042,17 +1160,38 @@ def _run_all(
             total_new += new
             total_existing += existing
             log.info("DB: +%d new, %d already existed", new, existing)
+        progress_index += 1
+        _emit_site_progress(
+            target["name"],
+            r,
+            index=progress_index,
+            total=total_targets,
+            new_jobs=new,
+        )
 
     if workers > 1 and len(targets) > 1:
         # Parallel mode
         with ThreadPoolExecutor(max_workers=min(workers, len(targets))) as pool:
             future_to_target = {
-                pool.submit(_run_one_site, target["name"], target["url"]): target
+                pool.submit(
+                    run_one_site_with_fallback,
+                    target["name"],
+                    target["url"],
+                    agent_fallback_enabled=agent_fallback_enabled,
+                    agent_max_pages=agent_max_pages,
+                    agent_headless=agent_headless,
+                ): target
                 for target in targets
             }
+            completed: list[tuple[dict, dict]] = []
             for future in as_completed(future_to_target):
                 target = future_to_target[future]
                 r = future.result()
+                completed.append((target, r))
+            completed.sort(
+                key=lambda pair: site_order_key(str(pair[0].get("name") or "")),
+            )
+            for target, r in completed:
                 results.append(r)
                 _process_result(r, target)
     else:
@@ -1063,7 +1202,13 @@ def _run_all(
                 label = f"{target['name']} [{target['query']}]"
             log.info("[%d/%d] %s", i + 1, len(targets), label)
 
-            r = _run_one_site(target["name"], target["url"])
+            r = run_one_site_with_fallback(
+                target["name"],
+                target["url"],
+                agent_fallback_enabled=agent_fallback_enabled,
+                agent_max_pages=agent_max_pages,
+                agent_headless=agent_headless,
+            )
             results.append(r)
             _process_result(r, target)
 
@@ -1088,6 +1233,10 @@ def _run_all(
 def run_smart_extract(
     sites: list[dict] | None = None,
     workers: int = 1,
+    *,
+    agent_fallback_enabled: bool = False,
+    agent_max_pages: int = 3,
+    agent_headless: bool = False,
 ) -> dict:
     """Main entry point for AI-powered smart extraction.
 
@@ -1115,4 +1264,12 @@ def run_smart_extract(
     log.info("Sites: %d searchable, %d static | Total targets: %d (workers=%d)",
              search_sites, static_sites, len(targets), workers)
 
-    return _run_all(targets, accept_locs, reject_locs, workers=workers)
+    return _run_all(
+        targets,
+        accept_locs,
+        reject_locs,
+        workers=workers,
+        agent_fallback_enabled=agent_fallback_enabled,
+        agent_max_pages=agent_max_pages,
+        agent_headless=agent_headless,
+    )

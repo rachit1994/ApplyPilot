@@ -22,6 +22,8 @@ class OutreachSettings:
     max_messages_per_run: int
     poll_connected_every_minutes: int
     skip_if_applied: bool
+    require_applied_before_send: bool
+    referral_message_template: str
     openoutreach_base_url: str
     openoutreach_api_key: str
     openoutreach_campaign: str | None
@@ -67,6 +69,8 @@ def load_outreach_config() -> OutreachSettings:
         max_messages_per_run=int(data.get("max_messages_per_run", 10)),
         poll_connected_every_minutes=int(data.get("poll_connected_every_minutes", 60)),
         skip_if_applied=bool(data.get("skip_if_applied", False)),
+        require_applied_before_send=bool(data.get("require_applied_before_send", True)),
+        referral_message_template=str(data.get("referral_message_template", "") or "").strip(),
         openoutreach_base_url=base_url,
         openoutreach_api_key=api_key or "",
         openoutreach_campaign=campaign,

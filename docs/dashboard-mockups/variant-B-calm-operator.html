@@ -1,0 +1,942 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=1440" />
+<title>ApplyPilot — Calm Operator</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600&family=Inter+Tight:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+/* ====================================================================
+   CALM OPERATOR — ApplyPilot dashboard v2 mockup
+   Single self-contained HTML. 1440px target. No JS.
+   ==================================================================== */
+:root{
+  --bg:#0a0a0c; --bg-warm:#0c0a08;
+  --panel:rgba(255,255,255,0.022); --panel-2:rgba(255,255,255,0.038); --panel-3:rgba(255,255,255,0.06);
+  --hairline:rgba(255,255,255,0.07); --hairline-2:rgba(255,255,255,0.10); --hairline-3:rgba(255,255,255,0.16);
+  --ink-1:rgba(255,255,255,0.86); --ink-2:rgba(255,255,255,0.62); --ink-3:rgba(255,255,255,0.42);
+  --ink-4:rgba(255,255,255,0.26); --ink-5:rgba(255,255,255,0.14);
+  --accent:#fb923c; --accent-soft:rgba(251,146,60,0.14); --accent-line:rgba(251,146,60,0.34); --accent-ink:#ffd5b0;
+  --ok:#6fae84; --ok-soft:rgba(111,174,132,0.13);
+  --warn:#c89a4f; --warn-soft:rgba(200,154,79,0.14);
+  --bad:#b8624f; --bad-soft:rgba(184,98,79,0.13);
+  --idle:#8a8d96;
+  --display:"Fraunces","Newsreader","Crimson Pro",Georgia,serif;
+  --ui:"Inter Tight",-apple-system,"SF Pro Text","Helvetica Neue",system-ui,sans-serif;
+  --mono:"JetBrains Mono","IBM Plex Mono","Berkeley Mono",ui-monospace,Menlo,monospace;
+}
+*,*::before,*::after{ box-sizing:border-box; }
+html,body{ margin:0; padding:0; background:var(--bg); color:var(--ink-1); font-family:var(--ui); font-size:14px; line-height:1.55; font-feature-settings:"ss01","cv02","cv03","cv11"; -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale; }
+body{ min-height:100vh; background-image:radial-gradient(1200px 600px at 20% -200px,rgba(251,146,60,0.05),transparent 60%),linear-gradient(180deg,var(--bg-warm),var(--bg) 540px); }
+.num,.num *,[data-num],[data-num] *{ font-variant-numeric:tabular-nums; font-feature-settings:"tnum","lnum"; }
+h1,h2,h3,h4{ text-wrap:balance; margin:0; font-family:var(--display); font-weight:400; letter-spacing:-0.01em; }
+p{ margin:0; } a{ color:inherit; text-decoration:none; }
+button{ font:inherit; color:inherit; background:none; border:0; cursor:pointer; padding:0; }
+
+/* ---------- shell ---------- */
+.shell{ display:grid; grid-template-columns:60px 1fr; min-height:100vh; }
+
+/* ---------- left rail ---------- */
+.rail{ position:sticky; top:0; height:100vh; border-right:1px solid var(--hairline); display:flex; flex-direction:column; align-items:center; padding:18px 0; background:rgba(0,0,0,0.18); }
+.rail .mark{ width:28px; height:28px; border:1px solid var(--hairline-3); border-radius:6px; display:grid; place-items:center; font-family:var(--display); font-size:16px; color:var(--accent); margin-bottom:26px; }
+.rail nav{ display:flex; flex-direction:column; gap:4px; }
+.rail a.icon{ width:36px; height:36px; display:grid; place-items:center; border-radius:8px; color:var(--ink-3); transition:color .15s,background .15s; }
+.rail a.icon:hover{ color:var(--ink-1); background:var(--panel); }
+.rail a.icon.is-active{ color:var(--ink-1); background:var(--panel-2); box-shadow:inset 0 0 0 1px var(--hairline-2); }
+.rail svg{ width:18px; height:18px; }
+.rail .spacer{ flex:1; }
+.rail .badge{ position:relative; }
+.rail .badge::after{ content:""; position:absolute; top:6px; right:6px; width:6px; height:6px; border-radius:99px; background:var(--accent); box-shadow:0 0 0 2px rgba(10,10,12,1); }
+
+/* ---------- content column ---------- */
+.col{ min-width:0; }
+
+/* ---------- header ---------- */
+.header{ padding:22px 36px 0; display:flex; flex-direction:column; gap:18px; }
+.header-top{ display:flex; align-items:flex-end; justify-content:space-between; gap:32px; }
+.wordmark{ font-family:var(--display); font-size:22px; letter-spacing:-0.015em; color:var(--ink-1); display:flex; align-items:baseline; gap:10px; }
+.wordmark .dot{ width:6px; height:6px; border-radius:99px; background:var(--accent); display:inline-block; transform:translateY(-3px); animation:pulse 2.4s ease-in-out infinite; }
+.wordmark small{ font-family:var(--ui); font-size:11px; text-transform:uppercase; letter-spacing:0.12em; color:var(--ink-3); font-weight:500; }
+@keyframes pulse{ 0%,100%{ opacity:1; transform:translateY(-3px) scale(1); } 50%{ opacity:0.5; transform:translateY(-3px) scale(0.85); } }
+
+.primary-tabs{ display:flex; gap:28px; align-items:center; }
+.primary-tabs a{ font-size:12px; color:var(--ink-3); text-transform:uppercase; letter-spacing:0.14em; padding-bottom:4px; border-bottom:1px solid transparent; transition:color .15s; }
+.primary-tabs a:hover{ color:var(--ink-1); }
+.primary-tabs a.is-active{ color:var(--ink-1); border-color:var(--accent); }
+
+.stop-btn{ display:inline-flex; align-items:center; gap:8px; padding:8px 14px 8px 12px; border-radius:8px; color:#f7c7be; background:rgba(184,98,79,0.10); box-shadow:inset 0 0 0 1px rgba(184,98,79,0.35); font-size:12px; letter-spacing:0.08em; text-transform:uppercase; font-weight:500; }
+.stop-btn .glyph{ width:8px; height:8px; background:#d8745d; border-radius:1px; }
+
+/* ---------- counters strip ---------- */
+.counters{ display:grid; grid-template-columns:2fr 1.1fr 0.9fr 0.9fr 0.9fr; align-items:end; padding-top:6px; border-top:1px solid var(--hairline); padding-bottom:28px; }
+.counters .cell{ padding:18px 28px 4px 0; border-right:1px solid var(--hairline); min-width:0; }
+.counters .cell:last-child{ border-right:0; padding-right:0; }
+.counters .cell:first-child{ padding-left:0; }
+.counters .label{ font-size:10px; letter-spacing:0.18em; text-transform:uppercase; color:var(--ink-3); font-weight:500; margin-bottom:8px; }
+.counters .big{ font-family:var(--display); font-size:54px; line-height:1; letter-spacing:-0.025em; color:var(--ink-1); font-weight:400; font-feature-settings:"tnum","lnum"; }
+.counters .big .of{ color:var(--ink-3); font-size:22px; margin-left:4px; letter-spacing:-0.02em; }
+.counters .med{ font-family:var(--display); font-size:38px; line-height:1; letter-spacing:-0.02em; color:var(--ink-1); font-feature-settings:"tnum","lnum"; }
+.counters .med .of{ color:var(--ink-3); font-size:18px; margin-left:3px; }
+.counters .small{ font-family:var(--display); font-size:26px; line-height:1; letter-spacing:-0.015em; font-feature-settings:"tnum","lnum"; }
+.counters .small.warn{ color:var(--warn); }
+.counters .sub{ margin-top:8px; font-size:11px; color:var(--ink-3); letter-spacing:0.02em; }
+.counters .meter{ margin-top:10px; width:130px; height:3px; background:var(--panel-2); border-radius:99px; overflow:hidden; }
+.counters .meter > i{ display:block; height:100%; background:var(--accent); border-radius:99px; }
+.counters .meter.muted > i{ background:var(--ink-3); }
+
+/* ---------- page body ---------- */
+.page{ padding:0 36px 60px; display:flex; flex-direction:column; gap:32px; }
+.section-head{ display:flex; align-items:baseline; justify-content:space-between; margin-bottom:14px; }
+.section-head h2{ font-size:28px; color:var(--ink-1); letter-spacing:-0.02em; }
+.section-head .eyebrow{ font-size:10px; text-transform:uppercase; letter-spacing:0.22em; color:var(--ink-3); font-weight:500; }
+.section-head .meta{ font-size:12px; color:var(--ink-3); font-family:var(--mono); }
+
+/* ---------- Now panel (hero) ---------- */
+.now{ background:var(--panel); border-radius:14px; display:grid; grid-template-columns:1fr 380px; min-height:440px; box-shadow:inset 0 0 0 1px var(--hairline); overflow:hidden; }
+.now-left{ padding:28px 32px 24px; display:flex; flex-direction:column; gap:24px; border-right:1px solid var(--hairline); }
+.now-top{ display:flex; align-items:baseline; justify-content:space-between; }
+.now-top .eyebrow{ font-size:10px; text-transform:uppercase; letter-spacing:0.22em; color:var(--accent); font-weight:500; }
+.now-top .run-id{ font-family:var(--mono); font-size:11px; color:var(--ink-3); }
+
+.stepper{ display:grid; grid-template-columns:repeat(7,1fr); gap:0; margin-top:2px; }
+.stepper .step{ position:relative; padding:0 14px 14px 0; }
+.stepper .step + .step{ padding-left:14px; border-left:1px solid var(--hairline); }
+.stepper .step .n{ font-family:var(--mono); font-size:10px; color:var(--ink-4); letter-spacing:0.05em; margin-bottom:8px; }
+.stepper .step .name{ font-family:var(--display); font-size:17px; color:var(--ink-3); letter-spacing:-0.01em; }
+.stepper .step .stat{ margin-top:6px; font-family:var(--mono); font-size:11px; color:var(--ink-4); font-feature-settings:"tnum","lnum"; }
+.stepper .step.done .name{ color:var(--ink-2); }
+.stepper .step.done .n{ color:var(--ok); }
+.stepper .step.done .stat{ color:var(--ink-3); }
+.stepper .step.active{ border-left:1px solid var(--accent-line); }
+.stepper .step.active .name{ color:var(--accent-ink); }
+.stepper .step.active .n{ color:var(--accent); }
+.stepper .step.active .stat{ color:var(--accent); }
+.stepper .step.active::before{ content:""; position:absolute; left:-1px; top:0; width:1px; height:14px; background:var(--accent); }
+
+.sub-step{ margin-top:4px; padding:18px 0 4px; }
+.sub-step .label{ font-size:10px; text-transform:uppercase; letter-spacing:0.2em; color:var(--ink-3); margin-bottom:10px; }
+.sub-step .text{ font-family:var(--display); font-size:26px; line-height:1.25; letter-spacing:-0.015em; color:var(--ink-1); font-weight:400; max-width:70ch; }
+.sub-step .text em{ font-style:normal; color:var(--accent-ink); font-family:var(--mono); font-size:21px; letter-spacing:0; }
+.sub-step .ticker{ margin-top:14px; display:flex; gap:18px; font-family:var(--mono); font-size:12px; color:var(--ink-3); }
+.sub-step .ticker b{ color:var(--ink-1); font-weight:500; }
+
+.workers{ display:grid; grid-template-columns:repeat(2,1fr); gap:14px; margin-top:auto; }
+.worker{ padding:16px 18px; border-radius:10px; background:var(--panel-2); box-shadow:inset 0 0 0 1px var(--hairline); display:flex; flex-direction:column; gap:10px; position:relative; overflow:hidden; }
+.worker.is-active{ box-shadow:inset 0 0 0 1px var(--accent-line); background:linear-gradient(180deg,var(--accent-soft),var(--panel-2) 60%); }
+.worker .w-head{ display:flex; align-items:baseline; justify-content:space-between; }
+.worker .w-name{ font-family:var(--mono); font-size:11px; color:var(--ink-3); letter-spacing:0.05em; }
+.worker.is-active .w-name{ color:var(--accent); }
+.worker .w-elapsed{ font-family:var(--mono); font-size:11px; color:var(--ink-3); }
+.worker .w-title{ font-family:var(--display); font-size:19px; color:var(--ink-1); letter-spacing:-0.015em; line-height:1.2; }
+.worker .w-company{ font-size:13px; color:var(--ink-2); margin-top:-2px; }
+.worker .w-foot{ display:flex; justify-content:space-between; align-items:center; margin-top:4px; padding-top:10px; border-top:1px solid var(--hairline); font-family:var(--mono); font-size:11px; color:var(--ink-3); }
+.worker .w-foot .ats,.worker .w-foot .cost{ color:var(--ink-2); }
+.worker .pulse{ position:absolute; top:18px; right:18px; width:6px; height:6px; border-radius:99px; background:var(--accent); animation:pulse 2.2s ease-in-out infinite; }
+.worker:not(.is-active) .pulse{ background:var(--idle); animation:none; opacity:0.5; }
+
+/* form snapshot (right of Now) */
+.snapshot{ padding:24px 24px 22px; display:flex; flex-direction:column; gap:14px; min-width:0; }
+.snap-head{ display:flex; justify-content:space-between; align-items:baseline; }
+.snap-head .eyebrow{ font-size:10px; text-transform:uppercase; letter-spacing:0.2em; color:var(--ink-3); }
+.snap-head .url{ font-family:var(--mono); font-size:11px; color:var(--ink-3); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:200px; }
+.snap-title{ font-family:var(--display); font-size:18px; color:var(--ink-1); letter-spacing:-0.015em; line-height:1.25; }
+.snap-title small{ display:block; font-family:var(--ui); font-size:11px; color:var(--ink-3); margin-top:4px; text-transform:uppercase; letter-spacing:0.1em; }
+.fields{ margin-top:2px; display:flex; flex-direction:column; border-top:1px solid var(--hairline); }
+.field{ display:grid; grid-template-columns:88px 1fr; gap:14px; padding:10px 0; border-bottom:1px solid var(--hairline); align-items:baseline; }
+.field .k{ font-family:var(--mono); font-size:11px; color:var(--ink-3); letter-spacing:0.02em; line-height:1.4; }
+.field .v{ font-family:var(--mono); font-size:12px; color:var(--ink-1); line-height:1.5; word-break:break-word; }
+.field.is-typing .v{ color:var(--accent-ink); position:relative; }
+.field.is-typing .v::after{ content:""; display:inline-block; width:7px; height:14px; background:var(--accent); vertical-align:-2px; margin-left:3px; animation:caret 1s steps(2) infinite; }
+@keyframes caret{ 50%{ opacity:0; } }
+.field.is-empty .v{ color:var(--ink-4); font-style:italic; }
+.field.is-warning .v{ color:var(--warn); }
+.field .v .ok-mark{ color:var(--ok); font-family:var(--mono); margin-right:6px; }
+
+/* ---------- timeline ---------- */
+.timeline{ background:var(--panel); border-radius:10px; box-shadow:inset 0 0 0 1px var(--hairline); padding:14px 22px 18px; }
+.timeline-top{ display:flex; justify-content:space-between; align-items:baseline; margin-bottom:10px; }
+.timeline-top .eyebrow{ font-size:10px; text-transform:uppercase; letter-spacing:0.2em; color:var(--ink-3); font-weight:500; }
+.timeline-top .hint{ font-family:var(--mono); font-size:11px; color:var(--ink-3); }
+.ribbon{ position:relative; height:24px; }
+.ribbon .axis{ position:absolute; top:11px; left:0; right:0; height:1px; background:var(--hairline-2); }
+.ribbon .seg{ position:absolute; top:9px; height:5px; border-radius:99px; }
+.ribbon .ev{ position:absolute; top:8px; width:7px; height:7px; border-radius:99px; transform:translateX(-50%); box-shadow:0 0 0 2px var(--bg); }
+.ribbon .ev.now{ width:9px; height:9px; top:7px; background:var(--accent); box-shadow:0 0 0 3px rgba(251,146,60,0.18),0 0 0 1px rgba(10,10,12,1); }
+.ribbon .marks{ position:absolute; left:0; right:0; top:18px; display:flex; justify-content:space-between; font-family:var(--mono); font-size:10px; color:var(--ink-4); letter-spacing:0.02em; }
+
+/* ---------- queue ---------- */
+.queue{ display:flex; flex-direction:column; gap:1px; background:var(--hairline); border-radius:12px; overflow:hidden; box-shadow:inset 0 0 0 1px var(--hairline); }
+.qrow{ background:var(--bg); padding:22px 26px; display:grid; grid-template-columns:56px 1fr 120px 140px 110px 110px; align-items:center; gap:24px; transition:background .15s; }
+.qrow:hover{ background:var(--panel); }
+.qrow .order{ font-family:var(--mono); font-size:11px; color:var(--ink-4); letter-spacing:0.05em; }
+.qrow .title{ font-family:var(--display); font-size:19px; color:var(--ink-1); letter-spacing:-0.015em; line-height:1.25; }
+.qrow .company{ font-size:13px; color:var(--ink-3); margin-top:2px; }
+.qrow .company a.prompt-link{ color:var(--ink-3); border-bottom:1px dashed var(--hairline-3); padding-bottom:1px; margin-left:10px; transition:color .15s,border-color .15s; }
+.qrow .company a.prompt-link:hover{ color:var(--accent); border-color:var(--accent-line); }
+.qrow .ats{ font-family:var(--mono); font-size:11px; color:var(--ink-2); letter-spacing:0.04em; text-transform:uppercase; }
+.qrow .ats .chip{ display:inline-block; padding:3px 8px; border-radius:4px; background:var(--panel-2); box-shadow:inset 0 0 0 1px var(--hairline-2); margin-right:6px; }
+.qrow .duration{ font-family:var(--mono); font-size:12px; color:var(--ink-3); }
+.qrow .score{ font-family:var(--display); font-size:24px; color:var(--ink-1); letter-spacing:-0.02em; font-feature-settings:"tnum","lnum"; }
+.qrow .score small{ color:var(--ink-3); font-size:13px; margin-left:1px; }
+.qrow .badge-row{ display:flex; gap:6px; flex-wrap:wrap; }
+.qbadge{ display:inline-block; font-family:var(--mono); font-size:10px; color:var(--ink-2); padding:3px 7px; border-radius:4px; background:var(--panel); box-shadow:inset 0 0 0 1px var(--hairline); letter-spacing:0.05em; text-transform:uppercase; }
+.qbadge.referred{ color:var(--accent-ink); box-shadow:inset 0 0 0 1px var(--accent-line); }
+
+/* ---------- log feed ---------- */
+.log-wrap{ background:var(--panel); border-radius:12px; box-shadow:inset 0 0 0 1px var(--hairline); padding:14px 18px 18px; }
+.log-top{ display:flex; justify-content:space-between; align-items:center; padding-bottom:12px; }
+.log-filters{ display:flex; gap:6px; }
+.filt{ font-family:var(--mono); font-size:10px; color:var(--ink-3); padding:4px 9px; border-radius:4px; background:transparent; box-shadow:inset 0 0 0 1px var(--hairline); letter-spacing:0.05em; text-transform:uppercase; cursor:pointer; }
+.filt.is-on{ color:var(--ink-1); background:var(--panel-2); box-shadow:inset 0 0 0 1px var(--hairline-3); }
+.log{ display:flex; flex-direction:column; font-family:var(--mono); font-size:12.5px; line-height:1.85; color:var(--ink-2); letter-spacing:0.005em; }
+.log .line{ display:grid; grid-template-columns:78px 56px 56px 1fr; gap:18px; align-items:baseline; padding:0 2px; }
+.log .time{ color:var(--ink-4); font-size:11.5px; }
+.log .lvl{ font-size:10px; letter-spacing:0.08em; text-transform:uppercase; color:var(--ink-3); }
+.log .lvl.info{ color:var(--ink-3); } .log .lvl.ok{ color:var(--ok); } .log .lvl.warn{ color:var(--warn); } .log .lvl.err{ color:var(--bad); }
+.log .who{ color:var(--ink-3); font-size:11px; letter-spacing:0.04em; }
+.log .who.w1{ color:#cdaa84; } .log .who.w2{ color:#84b4cd; } .log .who.sys{ color:var(--ink-4); }
+.log .msg{ color:var(--ink-1); }
+.log .msg .dim{ color:var(--ink-3); } .log .msg .acc{ color:var(--accent-ink); }
+.log .msg .url{ color:var(--ink-3); border-bottom:1px dotted var(--hairline-3); }
+
+/* ---------- applications ---------- */
+.apps-shell{ display:grid; grid-template-columns:1fr 440px; gap:28px; align-items:start; }
+.apps-ledger{ display:flex; flex-direction:column; gap:22px; }
+.day-head{ font-family:var(--display); font-size:30px; letter-spacing:-0.02em; color:var(--ink-1); display:flex; align-items:baseline; gap:14px; margin-bottom:2px; }
+.day-head small{ font-family:var(--ui); font-size:11px; color:var(--ink-3); letter-spacing:0.18em; text-transform:uppercase; font-weight:500; }
+.day-head .pill{ font-family:var(--mono); font-size:11px; color:var(--ink-3); padding:3px 9px; border-radius:99px; background:var(--panel); box-shadow:inset 0 0 0 1px var(--hairline); letter-spacing:0.05em; text-transform:none; }
+.app-list{ display:flex; flex-direction:column; background:var(--panel); border-radius:12px; box-shadow:inset 0 0 0 1px var(--hairline); overflow:hidden; }
+.app{ padding:18px 24px; display:grid; grid-template-columns:130px 1fr 180px 110px 130px; align-items:center; gap:22px; border-bottom:1px solid var(--hairline); }
+.app:last-child{ border-bottom:0; }
+.app:hover{ background:var(--panel-2); }
+.app .stchip{ display:inline-flex; align-items:center; gap:8px; font-family:var(--mono); font-size:11px; letter-spacing:0.06em; text-transform:uppercase; color:var(--ink-2); }
+.app .stchip .glyph{ width:8px; height:8px; border-radius:99px; background:var(--idle); flex-shrink:0; }
+.stchip.applied .glyph{ background:var(--ok); } .stchip.applied{ color:var(--ok); }
+.stchip.unverified .glyph{ background:var(--warn); animation:pulse 2s ease-in-out infinite; } .stchip.unverified{ color:var(--warn); }
+.stchip.failed .glyph{ background:var(--bad); } .stchip.failed{ color:var(--bad); }
+.stchip.paused .glyph{ background:var(--accent); animation:pulse 2s ease-in-out infinite; } .stchip.paused{ color:var(--accent); }
+.app .a-title{ font-family:var(--display); font-size:17px; color:var(--ink-1); letter-spacing:-0.015em; line-height:1.25; }
+.app .a-co{ font-size:12px; color:var(--ink-3); margin-top:2px; font-family:var(--ui); }
+.app .a-co .ats{ font-family:var(--mono); color:var(--ink-3); margin-left:6px; opacity:0.7; }
+.app .a-meta{ font-family:var(--mono); font-size:11px; color:var(--ink-3); }
+.app .a-score{ font-family:var(--display); font-size:19px; color:var(--ink-2); letter-spacing:-0.02em; }
+.app .a-actions{ display:flex; gap:6px; justify-content:flex-end; }
+.a-btn{ font-family:var(--ui); font-size:11px; padding:6px 10px; border-radius:6px; background:var(--panel-2); box-shadow:inset 0 0 0 1px var(--hairline-2); color:var(--ink-1); letter-spacing:0.02em; }
+.a-btn.subtle{ color:var(--ink-3); background:transparent; }
+.a-btn.primary{ background:var(--accent-soft); color:var(--accent-ink); box-shadow:inset 0 0 0 1px var(--accent-line); }
+.verif-reasons{ grid-column:1 / -1; margin-top:14px; padding:12px 16px; background:rgba(200,154,79,0.06); border-radius:8px; box-shadow:inset 0 0 0 1px rgba(200,154,79,0.20); display:flex; flex-direction:column; gap:6px; }
+.verif-reasons .vlabel{ font-size:10px; color:var(--warn); text-transform:uppercase; letter-spacing:0.18em; margin-bottom:2px; }
+.verif-reasons ul{ margin:0; padding:0; display:flex; flex-direction:column; gap:3px; }
+.verif-reasons li{ list-style:none; font-family:var(--mono); font-size:12px; color:var(--ink-2); line-height:1.55; position:relative; padding-left:18px; }
+.verif-reasons li::before{ content:"—"; position:absolute; left:0; color:var(--warn); }
+
+/* drawer */
+.drawer{ background:var(--panel); border-radius:14px; box-shadow:inset 0 0 0 1px var(--hairline-2); overflow:hidden; position:sticky; top:24px; }
+.drawer-head{ padding:22px 24px 14px; border-bottom:1px solid var(--hairline); }
+.drawer-head .eyebrow{ font-size:10px; text-transform:uppercase; letter-spacing:0.2em; color:var(--warn); margin-bottom:8px; font-weight:500; }
+.drawer-head h3{ font-size:22px; line-height:1.2; color:var(--ink-1); }
+.drawer-head .co{ margin-top:6px; font-family:var(--mono); font-size:11px; color:var(--ink-3); }
+.drawer-body{ padding:18px 24px 20px; display:flex; flex-direction:column; gap:18px; }
+.shot{ background:linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.015)); border-radius:8px; height:180px; box-shadow:inset 0 0 0 1px var(--hairline); position:relative; overflow:hidden; display:grid; place-items:center; }
+.shot .scaffold{ position:absolute; inset:14px; border-radius:4px; background:linear-gradient(180deg,rgba(255,255,255,0.04) 0 30px,transparent 30px),repeating-linear-gradient(180deg,transparent 0 16px,rgba(255,255,255,0.04) 16px 17px); opacity:0.7; }
+.shot .lbl{ font-family:var(--mono); font-size:10px; letter-spacing:0.18em; text-transform:uppercase; color:var(--ink-4); background:var(--bg); padding:4px 8px; border-radius:4px; z-index:2; box-shadow:inset 0 0 0 1px var(--hairline); }
+.ddesc{ font-size:10px; text-transform:uppercase; letter-spacing:0.2em; color:var(--ink-3); margin-bottom:8px; }
+.dfields{ display:flex; flex-direction:column; }
+.dfield{ display:grid; grid-template-columns:90px 1fr; padding:7px 0; border-bottom:1px solid var(--hairline); gap:14px; font-family:var(--mono); font-size:12px; }
+.dfield .k{ color:var(--ink-3); } .dfield .v{ color:var(--ink-1); }
+.dlog{ font-family:var(--mono); font-size:11.5px; line-height:1.7; color:var(--ink-2); background:rgba(0,0,0,0.18); border-radius:6px; box-shadow:inset 0 0 0 1px var(--hairline); padding:12px 14px; max-height:148px; overflow:hidden; }
+.dlog .ok{ color:var(--ok); } .dlog .warn{ color:var(--warn); } .dlog .dim{ color:var(--ink-3); }
+.drawer-actions{ display:grid; grid-template-columns:1fr 1fr; gap:10px; padding:14px 24px 24px; border-top:1px solid var(--hairline); background:rgba(0,0,0,0.15); }
+.big-btn{ padding:14px 16px; border-radius:9px; font-size:13px; letter-spacing:0.04em; text-align:center; background:var(--panel-2); box-shadow:inset 0 0 0 1px var(--hairline-2); color:var(--ink-1); text-transform:uppercase; font-weight:500; }
+.big-btn.primary{ background:var(--accent); box-shadow:inset 0 0 0 1px var(--accent); color:#1b0d02; }
+
+/* ---------- sites ---------- */
+.sites{ display:grid; grid-template-columns:repeat(3,1fr); gap:14px; }
+.site{ background:var(--panel); border-radius:12px; box-shadow:inset 0 0 0 1px var(--hairline); padding:22px 22px 16px; height:180px; display:flex; flex-direction:column; gap:8px; position:relative; overflow:hidden; }
+.site .s-head{ display:flex; justify-content:space-between; align-items:baseline; }
+.site .s-name{ font-family:var(--display); font-size:24px; color:var(--ink-1); letter-spacing:-0.02em; }
+.site .s-status{ display:inline-flex; align-items:center; gap:6px; font-family:var(--mono); font-size:11px; letter-spacing:0.04em; color:var(--ink-2); text-transform:uppercase; }
+.site .s-status .glyph{ width:7px; height:7px; border-radius:99px; background:var(--idle); }
+.site.fresh .s-status{ color:var(--ok); } .site.fresh .s-status .glyph{ background:var(--ok); }
+.site.stale .s-status{ color:var(--warn); } .site.stale .s-status .glyph{ background:var(--warn); }
+.site.never .s-status{ color:var(--ink-3); } .site.never .s-status .glyph{ background:var(--ink-4); }
+.site .s-meta{ font-family:var(--mono); font-size:11px; color:var(--ink-3); line-height:1.7; }
+.site .s-meta b{ color:var(--ink-2); font-weight:500; }
+.site .s-bottom{ margin-top:auto; display:flex; justify-content:space-between; align-items:flex-end; }
+.site .s-rate{ font-family:var(--display); font-size:38px; line-height:1; color:var(--ink-1); letter-spacing:-0.025em; font-feature-settings:"tnum","lnum"; }
+.site .s-rate small{ font-family:var(--ui); font-size:11px; color:var(--ink-3); margin-left:4px; }
+.site .s-rate .nope{ color:var(--ink-4); }
+.site .s-action{ font-family:var(--ui); font-size:11px; padding:8px 12px; border-radius:7px; color:var(--ink-1); background:var(--panel-2); box-shadow:inset 0 0 0 1px var(--hairline-2); letter-spacing:0.04em; text-transform:uppercase; }
+.site.stale .s-action{ color:#ffd5b0; background:var(--accent-soft); box-shadow:inset 0 0 0 1px var(--accent-line); }
+
+/* ---------- run plan ---------- */
+.plan{ background:var(--panel); border-radius:14px; box-shadow:inset 0 0 0 1px var(--hairline); padding:28px 32px 30px; }
+.plan-head{ display:flex; justify-content:space-between; align-items:baseline; margin-bottom:22px; }
+.plan-head h3{ font-size:26px; color:var(--ink-1); letter-spacing:-0.02em; }
+.plan-head .eyebrow{ font-size:10px; text-transform:uppercase; letter-spacing:0.2em; color:var(--ink-3); }
+.plan-body{ display:grid; grid-template-columns:1.4fr 1fr; gap:36px; }
+.plan-section h4{ font-size:11px; text-transform:uppercase; letter-spacing:0.2em; color:var(--ink-3); font-family:var(--ui); font-weight:500; margin-bottom:12px; }
+.stages{ display:flex; flex-wrap:wrap; gap:8px; }
+.stage-pill{ display:inline-flex; align-items:center; gap:8px; padding:8px 14px 8px 10px; border-radius:99px; font-family:var(--ui); font-size:12px; color:var(--ink-2); background:var(--panel-2); box-shadow:inset 0 0 0 1px var(--hairline); cursor:pointer; user-select:none; letter-spacing:0.02em; }
+.stage-pill .box{ width:14px; height:14px; border-radius:4px; background:var(--panel-3); box-shadow:inset 0 0 0 1px var(--hairline-3); display:grid; place-items:center; }
+.stage-pill.on{ color:var(--ink-1); box-shadow:inset 0 0 0 1px var(--hairline-3); background:var(--panel-3); }
+.stage-pill.on .box{ background:var(--accent); box-shadow:inset 0 0 0 1px var(--accent); }
+.stage-pill.on .box::after{ content:""; width:7px; height:4px; border-left:1.4px solid #1b0d02; border-bottom:1.4px solid #1b0d02; transform:rotate(-45deg) translateY(-1px); }
+.stage-pill.off{ color:var(--ink-3); opacity:0.75; }
+.sliders{ display:flex; flex-direction:column; gap:18px; }
+.slider{ display:flex; flex-direction:column; gap:6px; }
+.slider .top{ display:flex; justify-content:space-between; align-items:baseline; font-family:var(--ui); font-size:12px; color:var(--ink-3); letter-spacing:0.02em; }
+.slider .top b{ font-family:var(--display); font-size:18px; letter-spacing:-0.015em; color:var(--ink-1); font-weight:400; font-feature-settings:"tnum","lnum"; }
+.slider .bar{ position:relative; height:4px; background:var(--panel-2); border-radius:99px; box-shadow:inset 0 0 0 1px var(--hairline); }
+.slider .bar .fill{ position:absolute; top:0; left:0; height:100%; background:var(--accent); border-radius:99px; }
+.slider .bar .knob{ position:absolute; top:50%; width:14px; height:14px; background:#fff; border-radius:99px; transform:translate(-50%,-50%); box-shadow:0 0 0 4px rgba(251,146,60,0.18); }
+.slider .ends{ display:flex; justify-content:space-between; font-family:var(--mono); font-size:10px; color:var(--ink-4); margin-top:1px; }
+.plan-foot{ margin-top:26px; padding-top:22px; border-top:1px solid var(--hairline); display:grid; grid-template-columns:1fr auto; align-items:end; gap:30px; }
+.plan-summary{ display:grid; grid-template-columns:repeat(3,1fr); gap:18px; }
+.plan-summary .pcell .label{ font-size:10px; text-transform:uppercase; letter-spacing:0.2em; color:var(--ink-3); margin-bottom:8px; }
+.plan-summary .pcell .val{ font-family:var(--display); font-size:42px; line-height:1; color:var(--ink-1); letter-spacing:-0.025em; font-feature-settings:"tnum","lnum"; }
+.plan-summary .pcell .val small{ font-family:var(--ui); font-size:13px; color:var(--ink-3); margin-left:4px; }
+.plan-summary .pcell .sub{ font-family:var(--mono); font-size:11px; color:var(--ink-3); margin-top:6px; }
+.plan-actions{ display:flex; gap:10px; }
+.plan-actions .cancel{ padding:14px 22px; border-radius:9px; color:var(--ink-2); background:transparent; box-shadow:inset 0 0 0 1px var(--hairline-2); font-size:12px; text-transform:uppercase; letter-spacing:0.08em; }
+.plan-actions .start{ padding:14px 26px; border-radius:9px; background:var(--accent); color:#1b0d02; font-size:12px; text-transform:uppercase; letter-spacing:0.08em; font-weight:600; }
+</style>
+</head>
+<body>
+
+<div class="shell">
+
+  <!-- LEFT RAIL -->
+  <aside class="rail">
+    <div class="mark">A</div>
+    <nav>
+      <a class="icon is-active" title="Pipeline"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 7h6m6 0h6M3 12h18M3 17h6m6 0h6"/></svg></a>
+      <a class="icon badge" title="Applications"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M5 4h11l3 3v13H5z"/><path d="M8 9h8M8 13h8M8 17h5"/></svg></a>
+      <a class="icon" title="Sites"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg></a>
+      <a class="icon" title="Jobs"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="7" width="18" height="13" rx="1"/><path d="M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/></svg></a>
+      <a class="icon" title="Inbox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 13l3-8h12l3 8v6H3z"/><path d="M3 13h6l1 2h4l1-2h6"/></svg></a>
+      <a class="icon" title="Profile"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 5-6 8-6s7 2 8 6"/></svg></a>
+      <a class="icon" title="Searches"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="11" cy="11" r="7"/><path d="M21 21l-5-5"/></svg></a>
+      <a class="icon" title="History"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 8v5l3 2"/></svg></a>
+    </nav>
+    <div class="spacer"></div>
+    <nav>
+      <a class="icon" title="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.2-1.7l2-1.5-2-3.4-2.4.9a7 7 0 0 0-3-1.7L13 2h-2l-.4 2.6a7 7 0 0 0-3 1.7l-2.4-.9-2 3.4 2 1.5A7 7 0 0 0 5 12c0 .6.1 1.2.2 1.7l-2 1.5 2 3.4 2.4-.9a7 7 0 0 0 3 1.7L11 22h2l.4-2.6a7 7 0 0 0 3-1.7l2.4.9 2-3.4-2-1.5c.1-.5.2-1.1.2-1.7z"/></svg></a>
+    </nav>
+  </aside>
+
+  <!-- CONTENT -->
+  <main class="col">
+
+    <!-- HEADER -->
+    <header class="header">
+      <div class="header-top">
+        <div class="wordmark">ApplyPilot <span class="dot"></span> <small>RUN 042 &nbsp;&middot;&nbsp; LIVE</small></div>
+        <nav class="primary-tabs">
+          <a class="is-active">Pipeline</a><a>Applications</a><a>Sites</a><a>Jobs</a>
+          <a>Inbox</a><a>Profile</a><a>Searches</a><a>History</a>
+        </nav>
+        <button class="stop-btn"><span class="glyph"></span> Stop run</button>
+      </div>
+
+      <div class="counters">
+        <div class="cell">
+          <div class="label">Applied today</div>
+          <div class="big num">14<span class="of">/25</span></div>
+          <div class="meter"><i style="width:56%"></i></div>
+          <div class="sub">6 verified &middot; 3 needs check &middot; 5 in flight</div>
+        </div>
+        <div class="cell">
+          <div class="label">Spend today</div>
+          <div class="med num">$1.84<span class="of">/$5.00</span></div>
+          <div class="meter muted"><i style="width:37%"></i></div>
+          <div class="sub">Projected month $42.10 / $120 ceiling</div>
+        </div>
+        <div class="cell">
+          <div class="label">Workers</div>
+          <div class="small num">2<span style="color:var(--ink-3); font-size:14px;">/3</span></div>
+          <div class="sub">W1 Camber &middot; W2 Anthropic &middot; W3 idle</div>
+        </div>
+        <div class="cell">
+          <div class="label">Queue</div>
+          <div class="small num">47</div>
+          <div class="sub">Next: Nova Credit &middot; est. 1m 42s</div>
+        </div>
+        <div class="cell">
+          <div class="label">Needs check</div>
+          <div class="small warn num">3</div>
+          <div class="sub" style="color:var(--warn);">Submit click never observed</div>
+        </div>
+      </div>
+    </header>
+
+    <div class="page">
+
+      <!-- NOW PANEL -->
+      <section>
+        <div class="section-head">
+          <div>
+            <div class="eyebrow">Live</div>
+            <h2>What is happening right now</h2>
+          </div>
+          <div class="meta">started 22:14:03 PT &middot; uptime 1h 47m &middot; CPU 38%</div>
+        </div>
+
+        <div class="now">
+          <div class="now-left">
+            <div class="now-top">
+              <div class="eyebrow">Run 042 &middot; phase 5 of 7</div>
+              <div class="run-id">run_2026-05-23_2214 &middot; profile=base+anthropic</div>
+            </div>
+
+            <div class="stepper">
+              <div class="step done"><div class="n">01</div><div class="name">Discover</div><div class="stat">387 jobs &middot; 4m 02s</div></div>
+              <div class="step done"><div class="n">02</div><div class="name">Enrich</div><div class="stat">312 / 387 done</div></div>
+              <div class="step done"><div class="n">03</div><div class="name">Score</div><div class="stat">312 &middot; 38 &ge; 7</div></div>
+              <div class="step done"><div class="n">04</div><div class="name">Tailor</div><div class="stat">30 / 30</div></div>
+              <div class="step active"><div class="n">05</div><div class="name">Cover</div><div class="stat">17 / 30 &middot; 47s</div></div>
+              <div class="step"><div class="n">06</div><div class="name">PDF</div><div class="stat">queued</div></div>
+              <div class="step"><div class="n">07</div><div class="name">Refer</div><div class="stat">8 pending</div></div>
+            </div>
+
+            <div class="sub-step">
+              <div class="label">Worker 2 &middot; sub-step</div>
+              <div class="text">Filling <em>“Why Anthropic?”</em> field on the Greenhouse application — attempt 1 of 1, 23 seconds in.</div>
+              <div class="ticker">
+                <span>elapsed&nbsp;&nbsp;<b>00:23</b></span>
+                <span>tokens&nbsp;&nbsp;<b>4,182 in / 1,910 out</b></span>
+                <span>cost&nbsp;&nbsp;<b>$0.041</b></span>
+                <span>page&nbsp;&nbsp;<b>boards.greenhouse.io/anthropic</b></span>
+              </div>
+            </div>
+
+            <div class="workers">
+              <div class="worker is-active">
+                <div class="pulse"></div>
+                <div class="w-head"><div class="w-name">W2 &middot; APPLY</div><div class="w-elapsed">00:23 elapsed</div></div>
+                <div class="w-title">Member of Technical Staff, Frontiers</div>
+                <div class="w-company">Anthropic &middot; San Francisco</div>
+                <div class="w-foot"><span class="ats">Greenhouse</span><span class="cost">$0.041 &middot; fit 9.1</span></div>
+              </div>
+              <div class="worker is-active">
+                <div class="pulse"></div>
+                <div class="w-head"><div class="w-name">W1 &middot; APPLY</div><div class="w-elapsed">01:11 elapsed</div></div>
+                <div class="w-title">Senior Software Engineer, Platform</div>
+                <div class="w-company">Camber &middot; Remote (US)</div>
+                <div class="w-foot"><span class="ats">Lever</span><span class="cost">$0.062 &middot; fit 8.4</span></div>
+              </div>
+            </div>
+          </div>
+
+          <aside class="snapshot">
+            <div class="snap-head">
+              <div class="eyebrow">Form snapshot &middot; W2</div>
+              <div class="url">…/anthropic/jobs/4719423</div>
+            </div>
+            <div class="snap-title">Anthropic — Member of Technical Staff<small>Greenhouse &middot; page 2 of 3</small></div>
+
+            <div class="fields">
+              <div class="field"><div class="k">first_name</div><div class="v"><span class="ok-mark">&check;</span>Rachit</div></div>
+              <div class="field"><div class="k">last_name</div><div class="v"><span class="ok-mark">&check;</span>Srivastava</div></div>
+              <div class="field"><div class="k">email</div><div class="v"><span class="ok-mark">&check;</span>rachit.srivastava1994@gmail.com</div></div>
+              <div class="field"><div class="k">resume</div><div class="v"><span class="ok-mark">&check;</span>rachit_srivastava__anthropic_mts.pdf</div></div>
+              <div class="field"><div class="k">linkedin</div><div class="v"><span class="ok-mark">&check;</span>linkedin.com/in/rachit-srivastava</div></div>
+              <div class="field is-typing"><div class="k">why_us</div><div class="v">I&rsquo;ve been building with Claude since the 2.1 release and the interpretability work coming out of</div></div>
+              <div class="field is-empty"><div class="k">us_work_auth</div><div class="v">pending — radio group not yet selected</div></div>
+              <div class="field is-warning"><div class="k">salary_min</div><div class="v">$185,000 (floor; posted band $180k–$340k)</div></div>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <!-- TIMELINE -->
+      <section>
+        <div class="timeline">
+          <div class="timeline-top">
+            <div class="eyebrow">Last 30 minutes</div>
+            <div class="hint">22:14 — 22:44 &middot; hover for events</div>
+          </div>
+          <div class="ribbon">
+            <div class="axis"></div>
+            <div class="seg" style="left:0%;  width:14%; background:var(--ink-4);"></div>
+            <div class="seg" style="left:14%; width:8%;  background:var(--ink-3);"></div>
+            <div class="seg" style="left:22%; width:6%;  background:var(--ok);"></div>
+            <div class="seg" style="left:28%; width:11%; background:var(--ink-3);"></div>
+            <div class="seg" style="left:39%; width:13%; background:var(--accent);"></div>
+            <div class="seg" style="left:52%; width:9%;  background:var(--ok);"></div>
+            <div class="seg" style="left:61%; width:7%;  background:var(--warn);"></div>
+            <div class="seg" style="left:68%; width:14%; background:var(--accent);"></div>
+            <div class="seg" style="left:82%; width:12%; background:var(--accent); opacity:0.85;"></div>
+            <div class="ev" style="left:3%;  background:var(--ok);"></div>
+            <div class="ev" style="left:9%;  background:var(--ink-3);"></div>
+            <div class="ev" style="left:18%; background:var(--ok);"></div>
+            <div class="ev" style="left:24%; background:var(--ok);"></div>
+            <div class="ev" style="left:33%; background:var(--ok);"></div>
+            <div class="ev" style="left:41%; background:var(--ok);"></div>
+            <div class="ev" style="left:48%; background:var(--warn);"></div>
+            <div class="ev" style="left:55%; background:var(--ok);"></div>
+            <div class="ev" style="left:63%; background:var(--bad);"></div>
+            <div class="ev" style="left:71%; background:var(--ok);"></div>
+            <div class="ev" style="left:78%; background:var(--warn);"></div>
+            <div class="ev" style="left:86%; background:var(--ok);"></div>
+            <div class="ev now" style="left:94%;"></div>
+            <div class="marks">
+              <span>30m ago</span><span>25m</span><span>20m</span><span>15m</span><span>10m</span><span>5m</span><span>now</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- QUEUE -->
+      <section>
+        <div class="section-head">
+          <div>
+            <div class="eyebrow">Up next</div>
+            <h2>The queue — next 8 of 47</h2>
+          </div>
+          <div class="meta">sorted by fit_score desc &middot; min 7.0</div>
+        </div>
+
+        <div class="queue">
+          <div class="qrow">
+            <div class="order">01</div>
+            <div><div class="title">Staff Engineer, Applied ML</div><div class="company">Nova Credit &nbsp;&middot;&nbsp; New York / Remote <a class="prompt-link">View prompt</a></div></div>
+            <div class="ats"><span class="chip">Greenhouse</span></div>
+            <div class="badge-row"><span class="qbadge">us_only</span><span class="qbadge referred">referral ready</span></div>
+            <div class="duration">~1m 42s</div>
+            <div class="score num">9.4<small>/10</small></div>
+          </div>
+          <div class="qrow">
+            <div class="order">02</div>
+            <div><div class="title">Senior Product Engineer</div><div class="company">Pine Park Health &nbsp;&middot;&nbsp; Remote (US) <a class="prompt-link">View prompt</a></div></div>
+            <div class="ats"><span class="chip">Lever</span></div>
+            <div class="badge-row"><span class="qbadge">us_only</span></div>
+            <div class="duration">~1m 12s</div>
+            <div class="score num">9.1<small>/10</small></div>
+          </div>
+          <div class="qrow">
+            <div class="order">03</div>
+            <div><div class="title">Founding Engineer, Voice AI</div><div class="company">BillionToOne &nbsp;&middot;&nbsp; Menlo Park <a class="prompt-link">View prompt</a></div></div>
+            <div class="ats"><span class="chip">Ashby</span></div>
+            <div class="badge-row"><span class="qbadge">eng_first</span></div>
+            <div class="duration">~2m 08s</div>
+            <div class="score num">8.8<small>/10</small></div>
+          </div>
+          <div class="qrow">
+            <div class="order">04</div>
+            <div><div class="title">Software Engineer, Infrastructure</div><div class="company">Aqua &nbsp;&middot;&nbsp; Seattle / Remote <a class="prompt-link">View prompt</a></div></div>
+            <div class="ats"><span class="chip">Workday</span></div>
+            <div class="badge-row"><span class="qbadge">us_only</span><span class="qbadge">careers_v3</span></div>
+            <div class="duration">~2m 50s</div>
+            <div class="score num">8.6<small>/10</small></div>
+          </div>
+          <div class="qrow">
+            <div class="order">05</div>
+            <div><div class="title">Frontend Engineer, Growth</div><div class="company">Camber &nbsp;&middot;&nbsp; San Francisco / Hybrid <a class="prompt-link">View prompt</a></div></div>
+            <div class="ats"><span class="chip">WaaS</span></div>
+            <div class="badge-row"><span class="qbadge referred">referral ready</span></div>
+            <div class="duration">~1m 28s</div>
+            <div class="score num">8.4<small>/10</small></div>
+          </div>
+          <div class="qrow">
+            <div class="order">06</div>
+            <div><div class="title">Senior Backend Engineer, Data</div><div class="company">Hex &nbsp;&middot;&nbsp; San Francisco <a class="prompt-link">View prompt</a></div></div>
+            <div class="ats"><span class="chip">Ashby</span></div>
+            <div class="badge-row"><span class="qbadge">eng_first</span></div>
+            <div class="duration">~1m 35s</div>
+            <div class="score num">8.2<small>/10</small></div>
+          </div>
+          <div class="qrow">
+            <div class="order">07</div>
+            <div><div class="title">Member of Technical Staff, Inference</div><div class="company">Together AI &nbsp;&middot;&nbsp; Remote (US) <a class="prompt-link">View prompt</a></div></div>
+            <div class="ats"><span class="chip">Greenhouse</span></div>
+            <div class="badge-row"><span class="qbadge">us_only</span></div>
+            <div class="duration">~1m 56s</div>
+            <div class="score num">7.9<small>/10</small></div>
+          </div>
+          <div class="qrow">
+            <div class="order">08</div>
+            <div><div class="title">Software Engineer (Generalist)</div><div class="company">Linear &nbsp;&middot;&nbsp; Remote (Worldwide) <a class="prompt-link">View prompt</a></div></div>
+            <div class="ats"><span class="chip">Ashby</span></div>
+            <div class="badge-row"><span class="qbadge">small_team</span></div>
+            <div class="duration">~1m 22s</div>
+            <div class="score num">7.6<small>/10</small></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- LOG FEED -->
+      <section>
+        <div class="section-head">
+          <div>
+            <div class="eyebrow">Event feed</div>
+            <h2>Log — last 18 lines</h2>
+          </div>
+          <div class="meta">tail -f live &middot; 3,219 lines today</div>
+        </div>
+
+        <div class="log-wrap">
+          <div class="log-top">
+            <div class="log-filters">
+              <button class="filt is-on">ALL</button><button class="filt">INFO</button><button class="filt">WARN</button><button class="filt">ERROR</button>
+              <button class="filt is-on">W1</button><button class="filt is-on">W2</button><button class="filt">SYS</button>
+              <button class="filt">APPLY</button><button class="filt">DISCOVER</button>
+            </div>
+            <div class="log-filters">
+              <button class="filt">Copy last</button><button class="filt">Pause feed</button>
+            </div>
+          </div>
+
+          <div class="log">
+            <div class="line"><span class="time">22:43:51</span><span class="lvl info">info</span><span class="who w2">W2</span><span class="msg">apply.fill <span class="dim">field=</span>why_us <span class="dim">attempt=</span>1 <span class="dim">chars=</span>184</span></div>
+            <div class="line"><span class="time">22:43:47</span><span class="lvl info">info</span><span class="who w2">W2</span><span class="msg">apply.observe <span class="dim">page=</span><span class="url">boards.greenhouse.io/anthropic/jobs/4719423</span> <span class="dim">stage=</span>2/3</span></div>
+            <div class="line"><span class="time">22:43:32</span><span class="lvl ok">ok</span><span class="who w1">W1</span><span class="msg">apply.field <span class="dim">name=</span>"phone" <span class="acc">+1 (415) 555-0188</span> <span class="dim">verified=</span>true</span></div>
+            <div class="line"><span class="time">22:43:30</span><span class="lvl info">info</span><span class="who w1">W1</span><span class="msg">apply.observe <span class="dim">page=</span><span class="url">jobs.lever.co/camber/se-platform</span> <span class="dim">stage=</span>1/2</span></div>
+            <div class="line"><span class="time">22:43:22</span><span class="lvl info">info</span><span class="who sys">sys</span><span class="msg">cover.generated <span class="dim">job=</span>nova_credit_staff_ml <span class="dim">tokens=</span>3,121 <span class="dim">$</span>0.029</span></div>
+            <div class="line"><span class="time">22:43:18</span><span class="lvl warn">warn</span><span class="who w2">W2</span><span class="msg">apply.verification <span class="dim">job=</span>billiontoone_voice <span class="acc">submitted_unverified</span> — submit button click never observed in DOM trace</span></div>
+            <div class="line"><span class="time">22:42:55</span><span class="lvl ok">ok</span><span class="who w2">W2</span><span class="msg">apply.completed <span class="dim">job=</span>pine_park_product <span class="dim">duration=</span>1m 18s <span class="dim">$</span>0.054</span></div>
+            <div class="line"><span class="time">22:42:51</span><span class="lvl info">info</span><span class="who w2">W2</span><span class="msg">apply.submit_click <span class="dim">selector=</span>button[type=submit] <span class="dim">visible=</span>true</span></div>
+            <div class="line"><span class="time">22:42:11</span><span class="lvl err">error</span><span class="who w1">W1</span><span class="msg">apply.failed <span class="dim">job=</span>aqua_se_infra <span class="acc">reason=</span>workday_auth_required — cookie jar empty for myworkdayjobs.com</span></div>
+            <div class="line"><span class="time">22:41:50</span><span class="lvl info">info</span><span class="who w1">W1</span><span class="msg">apply.start <span class="dim">job=</span>aqua_se_infra <span class="dim">url=</span><span class="url">aqua.wd1.myworkdayjobs.com/&hellip;</span></span></div>
+            <div class="line"><span class="time">22:41:42</span><span class="lvl ok">ok</span><span class="who sys">sys</span><span class="msg">score.completed <span class="dim">batch=</span>312 <span class="dim">&ge;7=</span>38 <span class="dim">&ge;8=</span>21 <span class="dim">&ge;9=</span>6 <span class="dim">$</span>0.41</span></div>
+            <div class="line"><span class="time">22:41:30</span><span class="lvl info">info</span><span class="who sys">sys</span><span class="msg">tailor.completed <span class="dim">resumes=</span>30 <span class="dim">duration=</span>2m 04s <span class="dim">$</span>0.18</span></div>
+            <div class="line"><span class="time">22:40:58</span><span class="lvl ok">ok</span><span class="who w2">W2</span><span class="msg">apply.completed <span class="dim">job=</span>camber_frontend <span class="dim">duration=</span>1m 33s <span class="dim">$</span>0.046 <span class="dim">verified=</span>true</span></div>
+            <div class="line"><span class="time">22:40:20</span><span class="lvl info">info</span><span class="who w2">W2</span><span class="msg">apply.start <span class="dim">job=</span>camber_frontend <span class="dim">ats=</span>WaaS</span></div>
+            <div class="line"><span class="time">22:39:48</span><span class="lvl warn">warn</span><span class="who w1">W1</span><span class="msg">apply.eligibility <span class="dim">job=</span>oscar_health_eng <span class="acc">skipped</span> — posted salary $115k below $185k floor</span></div>
+            <div class="line"><span class="time">22:39:15</span><span class="lvl info">info</span><span class="who sys">sys</span><span class="msg">discover.completed <span class="dim">sources=</span>6/6 <span class="dim">new=</span>387 <span class="dim">dedup=</span>52 <span class="dim">duration=</span>4m 02s</span></div>
+            <div class="line"><span class="time">22:38:39</span><span class="lvl info">info</span><span class="who sys">sys</span><span class="msg">discover.source <span class="dim">workday=</span>done <span class="dim">jobs=</span>112 <span class="dim">duration=</span>1m 51s</span></div>
+            <div class="line"><span class="time">22:38:11</span><span class="lvl info">info</span><span class="who sys">sys</span><span class="msg">discover.source <span class="dim">jobspy=</span>done <span class="dim">jobs=</span>208 <span class="dim">duration=</span>1m 14s</span></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- APPLICATIONS -->
+      <section>
+        <div class="section-head">
+          <div>
+            <div class="eyebrow">Page preview &middot; below the fold</div>
+            <h2>Applications — the ledger</h2>
+          </div>
+          <div class="meta">241 total &middot; 14 today &middot; 3 needs check</div>
+        </div>
+
+        <div class="apps-shell">
+          <div class="apps-ledger">
+
+            <div>
+              <div class="day-head">Today <small>May 23, 2026</small> <span class="pill">14 applies &middot; 3 needs check</span></div>
+              <div class="app-list">
+
+                <div class="app" style="background:rgba(200,154,79,0.05); box-shadow:inset 3px 0 0 var(--warn);">
+                  <div class="stchip unverified"><span class="glyph"></span> Needs check</div>
+                  <div><div class="a-title">Founding Engineer, Voice AI</div><div class="a-co">BillionToOne &middot; Menlo Park <span class="ats">ashby</span></div></div>
+                  <div class="a-meta">22:43:18 &middot; 1m 04s &middot; $0.038</div>
+                  <div class="a-score num">8.8</div>
+                  <div class="a-actions"><button class="a-btn primary">Confirm</button><button class="a-btn">Retry</button></div>
+                  <div class="verif-reasons">
+                    <div class="vlabel">Why this needs your eyes</div>
+                    <ul>
+                      <li>Submit button click was emitted by the agent but never observed in the DOM trace</li>
+                      <li>No confirmation page detected within 8s of submit (expected: <span style="color:var(--ink-1);">/applications/thank-you</span>)</li>
+                      <li>No confirmation email landed in inbox.alias <span style="color:var(--ink-3);">(checked 4 times over 90s)</span></li>
+                    </ul>
+                  </div>
+                </div>
+
+                <div class="app">
+                  <div class="stchip unverified"><span class="glyph"></span> Needs check</div>
+                  <div><div class="a-title">Senior Software Engineer, Infrastructure</div><div class="a-co">Aqua &middot; Seattle <span class="ats">workday</span></div></div>
+                  <div class="a-meta">22:31:04 &middot; 2m 51s &middot; $0.072</div>
+                  <div class="a-score num">8.6</div>
+                  <div class="a-actions"><button class="a-btn primary">Confirm</button><button class="a-btn">Retry</button></div>
+                </div>
+
+                <div class="app">
+                  <div class="stchip unverified"><span class="glyph"></span> Needs check</div>
+                  <div><div class="a-title">Staff Engineer, Platform</div><div class="a-co">Nova Credit &middot; New York <span class="ats">greenhouse</span></div></div>
+                  <div class="a-meta">22:22:51 &middot; 1m 33s &middot; $0.051</div>
+                  <div class="a-score num">9.4</div>
+                  <div class="a-actions"><button class="a-btn primary">Confirm</button><button class="a-btn">Retry</button></div>
+                </div>
+
+                <div class="app" style="background:rgba(251,146,60,0.05); box-shadow:inset 3px 0 0 var(--accent);">
+                  <div class="stchip paused"><span class="glyph"></span> Paused — you</div>
+                  <div><div class="a-title">Senior Product Engineer</div><div class="a-co">Notion &middot; San Francisco <span class="ats">greenhouse</span> &middot; <span style="color:var(--accent-ink);">CAPTCHA detected</span></div></div>
+                  <div class="a-meta">22:18:32 &middot; paused 4m 11s</div>
+                  <div class="a-score num">8.1</div>
+                  <div class="a-actions"><button class="a-btn primary">I did it</button><button class="a-btn subtle">Skip</button></div>
+                </div>
+
+                <div class="app">
+                  <div class="stchip applied"><span class="glyph"></span> Applied</div>
+                  <div><div class="a-title">Senior Software Engineer, Platform</div><div class="a-co">Camber &middot; Remote (US) <span class="ats">lever</span></div></div>
+                  <div class="a-meta">22:12:08 &middot; 1m 18s &middot; $0.054</div>
+                  <div class="a-score num">8.4</div>
+                  <div class="a-actions"><button class="a-btn">View</button></div>
+                </div>
+
+                <div class="app">
+                  <div class="stchip applied"><span class="glyph"></span> Applied</div>
+                  <div><div class="a-title">Frontend Engineer, Growth</div><div class="a-co">Camber &middot; San Francisco <span class="ats">waas</span></div></div>
+                  <div class="a-meta">21:54:18 &middot; 1m 33s &middot; $0.046</div>
+                  <div class="a-score num">8.4</div>
+                  <div class="a-actions"><button class="a-btn">View</button></div>
+                </div>
+
+                <div class="app">
+                  <div class="stchip failed"><span class="glyph"></span> Failed</div>
+                  <div><div class="a-title">Software Engineer, Infrastructure</div><div class="a-co">Aqua &middot; Seattle <span class="ats">workday</span> &middot; <span style="color:var(--bad);">cookies expired</span></div></div>
+                  <div class="a-meta">21:41:50 &middot; 12s &middot; $0.004</div>
+                  <div class="a-score num">8.6</div>
+                  <div class="a-actions"><button class="a-btn primary">Re-auth</button><button class="a-btn">Retry</button></div>
+                </div>
+
+                <div class="app">
+                  <div class="stchip applied"><span class="glyph"></span> Applied</div>
+                  <div><div class="a-title">Engineering Manager, Search</div><div class="a-co">Hex &middot; San Francisco <span class="ats">ashby</span></div></div>
+                  <div class="a-meta">21:28:11 &middot; 1m 05s &middot; $0.041</div>
+                  <div class="a-score num">7.9</div>
+                  <div class="a-actions"><button class="a-btn">View</button></div>
+                </div>
+
+                <div class="app">
+                  <div class="stchip applied"><span class="glyph"></span> Applied</div>
+                  <div><div class="a-title">Senior Engineer, Voice</div><div class="a-co">Pine Park Health &middot; Remote <span class="ats">lever</span></div></div>
+                  <div class="a-meta">21:14:38 &middot; 1m 41s &middot; $0.058</div>
+                  <div class="a-score num">9.1</div>
+                  <div class="a-actions"><button class="a-btn">View</button></div>
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <div class="day-head">Yesterday <small>May 22, 2026</small> <span class="pill">11 applies &middot; all verified</span></div>
+              <div class="app-list">
+                <div class="app">
+                  <div class="stchip applied"><span class="glyph"></span> Applied</div>
+                  <div><div class="a-title">Software Engineer (Generalist)</div><div class="a-co">Linear &middot; Remote <span class="ats">ashby</span></div></div>
+                  <div class="a-meta">May 22 &middot; 23:08 &middot; 1m 22s</div>
+                  <div class="a-score num">7.6</div>
+                  <div class="a-actions"><button class="a-btn">View</button></div>
+                </div>
+                <div class="app">
+                  <div class="stchip applied"><span class="glyph"></span> Applied</div>
+                  <div><div class="a-title">MTS, Inference Performance</div><div class="a-co">Together AI &middot; Remote <span class="ats">greenhouse</span></div></div>
+                  <div class="a-meta">May 22 &middot; 21:43 &middot; 1m 56s</div>
+                  <div class="a-score num">7.9</div>
+                  <div class="a-actions"><button class="a-btn">View</button></div>
+                </div>
+                <div class="app">
+                  <div class="stchip failed"><span class="glyph"></span> Failed</div>
+                  <div><div class="a-title">Founding Engineer</div><div class="a-co">Stealth Health Co &middot; SF <span class="ats">smartrecruiters</span> &middot; <span style="color:var(--bad);">form schema changed</span></div></div>
+                  <div class="a-meta">May 22 &middot; 20:11 &middot; 22s</div>
+                  <div class="a-score num">7.4</div>
+                  <div class="a-actions"><button class="a-btn primary">Retry</button></div>
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <div class="day-head">May 21 <small>Tuesday</small> <span class="pill">15 applies</span></div>
+            </div>
+
+          </div>
+
+          <!-- DRAWER -->
+          <aside class="drawer">
+            <div class="drawer-head">
+              <div class="eyebrow">Needs check &middot; selected</div>
+              <h3>Founding Engineer, Voice AI</h3>
+              <div class="co">BillionToOne &middot; Ashby &middot; applied 22:43:18 &middot; W2</div>
+            </div>
+
+            <div class="drawer-body">
+              <div class="shot">
+                <div class="scaffold"></div>
+                <div class="lbl">Tap to expand screenshot</div>
+              </div>
+
+              <div>
+                <div class="ddesc">Filled fields (12 of 12)</div>
+                <div class="dfields">
+                  <div class="dfield"><span class="k">first_name</span><span class="v">Rachit</span></div>
+                  <div class="dfield"><span class="k">last_name</span><span class="v">Srivastava</span></div>
+                  <div class="dfield"><span class="k">email</span><span class="v">rachit.srivastava1994@gmail.com</span></div>
+                  <div class="dfield"><span class="k">phone</span><span class="v">+1 (415) 555-0188</span></div>
+                  <div class="dfield"><span class="k">resume</span><span class="v">rs__billiontoone.pdf</span></div>
+                  <div class="dfield"><span class="k">cover</span><span class="v">cover_billiontoone.pdf</span></div>
+                  <div class="dfield"><span class="k">why_us</span><span class="v">462 chars</span></div>
+                  <div class="dfield"><span class="k">us_work_auth</span><span class="v">Yes (US Citizen)</span></div>
+                </div>
+              </div>
+
+              <div>
+                <div class="ddesc">Agent log excerpt</div>
+                <div class="dlog">
+22:43:14  <span class="dim">apply.fill</span>      field=us_work_auth <span class="ok">ok</span><br/>
+22:43:15  <span class="dim">apply.review</span>    page=3/3 fields=12/12<br/>
+22:43:16  <span class="dim">apply.submit</span>    selector=button[type=submit]<br/>
+22:43:17  <span class="warn">apply.observe</span>   url unchanged after 1s<br/>
+22:43:18  <span class="warn">apply.verify</span>   no confirmation_url match<br/>
+22:43:18  <span class="warn">RESULT</span>         <span class="warn">submitted_unverified</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="drawer-actions">
+              <button class="big-btn primary">Confirm applied</button>
+              <button class="big-btn">Retry from start</button>
+            </div>
+          </aside>
+
+        </div>
+      </section>
+
+      <!-- SITES -->
+      <section>
+        <div class="section-head">
+          <div>
+            <div class="eyebrow">Page preview &middot; below the fold</div>
+            <h2>Sites — login warmers</h2>
+          </div>
+          <div class="meta">8 ATSes &middot; 6 connected &middot; 1 stale &middot; 1 never</div>
+        </div>
+
+        <div class="sites">
+          <div class="site fresh">
+            <div class="s-head"><div class="s-name">Greenhouse</div><div class="s-status"><span class="glyph"></span> Fresh</div></div>
+            <div class="s-meta">Last verified <b>6h ago</b> &middot; cookies valid<br/><b>87</b> applies &middot; profile auto-detected</div>
+            <div class="s-bottom"><div class="s-rate num">94<small>%</small></div><button class="s-action">Test</button></div>
+          </div>
+          <div class="site stale">
+            <div class="s-head"><div class="s-name">Lever</div><div class="s-status"><span class="glyph"></span> Stale (6d)</div></div>
+            <div class="s-meta">Last verified <b>May 17, 22:14</b><br/><b>34</b> applies &middot; refresh recommended</div>
+            <div class="s-bottom"><div class="s-rate num">88<small>%</small></div><button class="s-action">Refresh login</button></div>
+          </div>
+          <div class="site fresh">
+            <div class="s-head"><div class="s-name">Ashby</div><div class="s-status"><span class="glyph"></span> Fresh</div></div>
+            <div class="s-meta">Last verified <b>2h ago</b> &middot; cookies valid<br/><b>41</b> applies</div>
+            <div class="s-bottom"><div class="s-rate num">91<small>%</small></div><button class="s-action">Test</button></div>
+          </div>
+          <div class="site fresh">
+            <div class="s-head"><div class="s-name">Workday</div><div class="s-status"><span class="glyph"></span> Fresh</div></div>
+            <div class="s-meta">Last verified <b>11h ago</b> &middot; SSO chain holds<br/><b>22</b> applies &middot; flaky on 4 tenants</div>
+            <div class="s-bottom"><div class="s-rate num">71<small>%</small></div><button class="s-action">Test</button></div>
+          </div>
+          <div class="site fresh">
+            <div class="s-head"><div class="s-name">WorkAtAStartup</div><div class="s-status"><span class="glyph"></span> Fresh</div></div>
+            <div class="s-meta">Last verified <b>1h ago</b> &middot; YC login active<br/><b>58</b> applies &middot; via founders message</div>
+            <div class="s-bottom"><div class="s-rate num">96<small>%</small></div><button class="s-action">Test</button></div>
+          </div>
+          <div class="site never">
+            <div class="s-head"><div class="s-name">iCIMS</div><div class="s-status"><span class="glyph"></span> Never</div></div>
+            <div class="s-meta">Not configured &middot; <b>3</b> queued jobs blocked<br/>First-time login walks you through it</div>
+            <div class="s-bottom"><div class="s-rate num"><span class="nope">&mdash;</span></div><button class="s-action">Log in</button></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- RUN PLAN -->
+      <section>
+        <div class="section-head">
+          <div>
+            <div class="eyebrow">Pre-launch preview</div>
+            <h2>Run plan — before you press start</h2>
+          </div>
+          <div class="meta">draft &middot; saves to history on launch</div>
+        </div>
+
+        <div class="plan">
+          <div class="plan-head">
+            <h3>Apply to &ge;7.0 fits across 6 sources, 3 workers</h3>
+            <div class="eyebrow">Editable &middot; recomputed live</div>
+          </div>
+
+          <div class="plan-body">
+            <div class="plan-section">
+              <h4>Stages — toggle to skip</h4>
+              <div class="stages">
+                <label class="stage-pill on"><span class="box"></span>Discover</label>
+                <label class="stage-pill on"><span class="box"></span>Enrich</label>
+                <label class="stage-pill on"><span class="box"></span>Score</label>
+                <label class="stage-pill on"><span class="box"></span>Tailor</label>
+                <label class="stage-pill on"><span class="box"></span>Cover</label>
+                <label class="stage-pill on"><span class="box"></span>PDF</label>
+                <label class="stage-pill on"><span class="box"></span>Apply</label>
+                <label class="stage-pill off"><span class="box"></span>Refer (off)</label>
+              </div>
+
+              <h4 style="margin-top:24px;">Sources</h4>
+              <div class="stages">
+                <label class="stage-pill on"><span class="box"></span>JobSpy (LI + Indeed)</label>
+                <label class="stage-pill on"><span class="box"></span>WaaS</label>
+                <label class="stage-pill on"><span class="box"></span>Workday tenants</label>
+                <label class="stage-pill on"><span class="box"></span>Greenhouse direct</label>
+                <label class="stage-pill on"><span class="box"></span>Lever direct</label>
+                <label class="stage-pill on"><span class="box"></span>Ashby watchlist</label>
+                <label class="stage-pill off"><span class="box"></span>SmartRecruiters</label>
+              </div>
+            </div>
+
+            <div class="plan-section">
+              <h4>Pace &amp; safety</h4>
+              <div class="sliders">
+                <div class="slider">
+                  <div class="top"><span>Workers</span><b><span class="num">3</span></b></div>
+                  <div class="bar"><div class="fill" style="width:60%"></div><div class="knob" style="left:60%"></div></div>
+                  <div class="ends"><span>1</span><span>5</span></div>
+                </div>
+                <div class="slider">
+                  <div class="top"><span>Pace</span><b><span class="num">5</span> apps / min</b></div>
+                  <div class="bar"><div class="fill" style="width:50%"></div><div class="knob" style="left:50%"></div></div>
+                  <div class="ends"><span>1</span><span>10</span></div>
+                </div>
+                <div class="slider">
+                  <div class="top"><span>Min fit score</span><b><span class="num">7.0</span></b></div>
+                  <div class="bar"><div class="fill" style="width:70%"></div><div class="knob" style="left:70%"></div></div>
+                  <div class="ends"><span>5.0</span><span>10.0</span></div>
+                </div>
+                <div class="slider">
+                  <div class="top"><span>Daily cap</span><b><span class="num">25</span> applies</b></div>
+                  <div class="bar"><div class="fill" style="width:50%"></div><div class="knob" style="left:50%"></div></div>
+                  <div class="ends"><span>1</span><span>50</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="plan-foot">
+            <div class="plan-summary">
+              <div class="pcell">
+                <div class="label">Will apply to</div>
+                <div class="val num">~28<small>jobs</small></div>
+                <div class="sub">of 387 discovered &middot; &ge; 7.0</div>
+              </div>
+              <div class="pcell">
+                <div class="label">Estimated time</div>
+                <div class="val num">18<small>min</small></div>
+                <div class="sub">3 workers &middot; pace 5/min</div>
+              </div>
+              <div class="pcell">
+                <div class="label">Estimated cost</div>
+                <div class="val num">$1.42</div>
+                <div class="sub">$0.051 per apply &middot; sonnet-4.7</div>
+              </div>
+            </div>
+
+            <div class="plan-actions">
+              <button class="cancel">Cancel</button>
+              <button class="start">Start run</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+</body>
+</html>

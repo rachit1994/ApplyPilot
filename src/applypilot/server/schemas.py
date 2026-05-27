@@ -16,6 +16,12 @@ class StartRunRequest(BaseModel):
     workers: int = 1
     validation_mode: str = "normal"
     force: bool = False
+    limit: int | None = None
+    watch: bool = False
+    pace: bool = False
+    headless: bool = False
+    continuous: bool = False
+    inbox_action: str = "pipeline"
 
 
 class RunResponse(BaseModel):
@@ -40,12 +46,28 @@ class JobRow(BaseModel):
     site: str | None = None
     location: str | None = None
     salary: str | None = None
+    strategy: str | None = None
     fit_score: int | None = None
     score_reasoning: str | None = None
     discovered_at: str | None = None
     scored_at: str | None = None
     activity_at: str | None = None
     detail_error: str | None = None
+    full_description: str | None = None
+    detail_scraped_at: str | None = None
+    application_url: str | None = None
+    tailored_resume_path: str | None = None
+    tailored_at: str | None = None
+    tailor_attempts: int | None = None
+    cover_letter_path: str | None = None
+    cover_letter_at: str | None = None
+    cover_attempts: int | None = None
+    applied_at: str | None = None
+    apply_status: str | None = None
+    apply_error: str | None = None
+    apply_attempts: int | None = None
+    last_attempted_at: str | None = None
+    verification_confidence: str | None = None
 
 
 class ApplicationRow(BaseModel):
@@ -69,6 +91,21 @@ class ApplicationRow(BaseModel):
 class ApplicationsResponse(BaseModel):
     applications: list[ApplicationRow]
     total: int
+
+
+class AttentionApplicationsResponse(BaseModel):
+    applications: list[ApplicationRow]
+    total: int
+
+
+class ApplyErrorSummaryRow(BaseModel):
+    apply_error: str
+    apply_status: str | None = None
+    count: int
+
+
+class ApplyErrorSummaryResponse(BaseModel):
+    groups: list[ApplyErrorSummaryRow]
 
 
 class ApplicationDetailResponse(BaseModel):
@@ -104,6 +141,8 @@ class StatsPayload(BaseModel):
     tailored: int = 0
     ready_to_apply: int = 0
     applied: int = 0
+    priority_boards: list[str] = Field(default_factory=list)
+    apply_queue_order: str = ""
     by_site: list[SiteCount] = Field(default_factory=list)
     score_distribution: list[ScoreDistributionItem] = Field(default_factory=list)
     score_buckets: list[ScoreBucket] = Field(default_factory=list)
@@ -114,3 +153,60 @@ class StatsPayload(BaseModel):
 
 class StatsResponse(BaseModel):
     stats: StatsPayload
+
+
+class SourceStatsRow(BaseModel):
+    source: str
+    discovered: int = 0
+    passed_filter: int = 0
+    scored_ge7: int = 0
+    tailored: int = 0
+    efficiency: float = 0.0
+
+
+class SourceStatsResponse(BaseModel):
+    sources: list[SourceStatsRow] = Field(default_factory=list)
+
+
+class ReferralRow(BaseModel):
+    url: str
+    title: str | None = None
+    company: str | None = None
+    site: str | None = None
+    location: str | None = None
+    fit_score: int | None = None
+    recruiter_name: str | None = None
+    recruiter_public_id: str | None = None
+    recruiter_scrape_error: str | None = None
+    referral_message: str | None = None
+    referral_status: str | None = None
+    referral_error: str | None = None
+    applied_at: str | None = None
+    referral_resume_path: str | None = None
+    can_scrape: bool = False
+    can_template: bool = False
+    can_connect: bool = False
+    can_message: bool = False
+
+
+class ReferralsResponse(BaseModel):
+    referrals: list[ReferralRow]
+    total: int
+    meta: dict[str, Any] = Field(default_factory=dict)
+
+
+class ReferralActionRequest(BaseModel):
+    action: str
+    urls: list[str] = Field(default_factory=list)
+
+
+class ReferralActionResult(BaseModel):
+    url: str
+    ok: bool
+    error: str | None = None
+
+
+class ReferralActionResponse(BaseModel):
+    action: str
+    results: list[ReferralActionResult]
+    summary: dict[str, Any] = Field(default_factory=dict)

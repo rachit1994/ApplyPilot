@@ -102,7 +102,7 @@ function stateRing(state: StageState): string {
     case "error":
       return "border-red-600/50 bg-red-950/30 text-red-200";
     default:
-      return "border-zinc-700/80 bg-zinc-900/40 text-zinc-500";
+      return "border-panel-border-strong/80 bg-zinc-900/40 text-ink-4";
   }
 }
 
@@ -115,13 +115,13 @@ function connectorClass(leftState: StageState, _rightState: StageState): string 
 function MiniProgressBar({ percent }: { percent: number | null | undefined }) {
   if (percent == null) {
     return (
-      <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-zinc-800">
+      <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-panel-muted">
         <div className="h-full w-1/3 animate-pulse rounded-full bg-blue-500/50" />
       </div>
     );
   }
   return (
-    <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-zinc-800">
+    <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-panel-muted">
       <div
         className="h-full rounded-full bg-blue-500/80 transition-all duration-500"
         style={{ width: `${percent}%` }}
@@ -168,13 +168,13 @@ function ProgressBanner({
           {elapsed && <span className="font-mono tabular-nums">{elapsed}</span>}
         </div>
       </div>
-      {line && <p className="mt-1 text-xs text-zinc-400">{line}</p>}
+      {line && <p className="mt-1 text-xs text-ink-3">{line}</p>}
       {progress?.waiting_upstream && (
-        <p className="mt-1 text-[11px] text-amber-400/90">Waiting for upstream stage to finish</p>
+        <p className="mt-1 text-[11px] text-warning/90">Waiting for upstream stage to finish</p>
       )}
       {overallPercent != null && (
         <div className="mt-3">
-          <div className="mb-1 flex justify-between text-[10px] uppercase tracking-wide text-zinc-500">
+          <div className="mb-1 flex justify-between text-[10px] uppercase tracking-wide text-ink-4">
             <span>Run overall</span>
             <span className="font-mono tabular-nums">
               {completedStages}/{stageTotal} stages · {overallPercent}%

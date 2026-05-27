@@ -10,14 +10,65 @@ search configuration YAML (searches.yaml) rather than being hardcoded.
 import logging
 import sqlite3
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 from jobspy import scrape_jobs
 
 from applypilot import config
+from applypilot.apply.apply_url_extract import (
+    coerce_application_url,
+    extract_best_apply_url_from_text,
+)
 from applypilot.database import get_connection, init_db, store_jobs
 
 log = logging.getLogger(__name__)
+
+# Glassdoor location strings are picky; map common India queries to names GD accepts.
+_DEFAULT_GLASSDOOR_LOCATION_MAP: dict[str, str] = {
+    "Bengaluru, Karnataka": "Bangalore",
+    "Bangalore, Karnataka": "Bangalore",
+    "Bengaluru": "Bangalore",
+    "Bangalore": "Bangalore",
+    "Remote": "India",
+}
+
+
+def _jobspy_country(search_cfg: dict, defaults: dict | None = None) -> str:
+    """JobSpy country for Indeed/LinkedIn/Glassdoor (searches.yaml `country` or defaults.country_indeed)."""
+    defaults = defaults or {}
+    raw = search_cfg.get("country") or defaults.get("country_indeed") or "usa"
+    return str(raw).strip()
+
+
+def _jobspy_boards(search_cfg: dict, sites: list[str] | None) -> list[str]:
+    """Board list minus optional skip_boards (e.g. glassdoor when its API is down)."""
+    boards = list(sites or search_cfg.get("sites") or search_cfg.get("boards") or [])
+    skip = {str(s).strip().lower() for s in (search_cfg.get("skip_boards") or []) if s}
+    if not skip:
+        return boards
+    filtered = [b for b in boards if str(b).strip().lower() not in skip]
+    removed = [b for b in boards if str(b).strip().lower() in skip]
+    if removed:
+        log.info("JobSpy skipping boards (skip_boards): %s", ", ".join(removed))
+    return filtered
+
+
+def _glassdoor_location(jobspy_location: str, glassdoor_map: dict) -> str:
+    merged = {**_DEFAULT_GLASSDOOR_LOCATION_MAP, **(glassdoor_map or {})}
+    return merged.get(jobspy_location, jobspy_location.split(",")[0])
+
+
+@contextmanager
+def _quiet_jobspy_glassdoor_logger():
+    """Hide noisy JobSpy ERROR lines; ApplyPilot logs a single actionable warning."""
+    gd_log = logging.getLogger("JobSpy:Glassdoor")
+    prev = gd_log.level
+    gd_log.setLevel(logging.CRITICAL)
+    try:
+        yield
+    finally:
+        gd_log.setLevel(prev)
 
 
 # -- Proxy parsing -----------------------------------------------------------
@@ -77,13 +128,15 @@ def _scrape_with_retry(kwargs: dict, max_retries: int = 2, backoff: float = 5.0)
 # -- Location filtering ------------------------------------------------------
 
 def _load_location_config(search_cfg: dict) -> tuple[list[str], list[str]]:
-    """Extract accept/reject location lists from search config.
+    """Extract accept/reject location lists from search config."""
+    return config.load_location_filter_patterns(search_cfg)
 
-    Falls back to sensible defaults if not defined in the YAML.
-    """
-    accept = search_cfg.get("location_accept", [])
-    reject = search_cfg.get("location_reject_non_remote", [])
-    return accept, reject
+
+def _title_excluded(title: str | None, exclude_titles: list[str]) -> bool:
+    if not title:
+        return False
+    lower = title.lower()
+    return any(sub.lower() in lower for sub in exclude_titles if sub)
 
 
 def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> bool:
@@ -163,8 +216,12 @@ def store_jobspy_results(conn: sqlite3.Connection, df, source_label: str) -> tup
             full_description = description
             detail_scraped_at = now
 
-        # Extract apply URL if JobSpy provided it
-        apply_url = str(row.get("job_url_direct", "")) if str(row.get("job_url_direct", "")) != "nan" else None
+        # Extract apply URL: JobSpy direct link, else ATS URL embedded in description
+        apply_url = coerce_application_url(row.get("job_url_direct"))
+        if not apply_url and full_description:
+            apply_url = extract_best_apply_url_from_text(full_description)
+        if not apply_url and description:
+            apply_url = extract_best_apply_url_from_text(description)
 
         try:
             conn.execute(
@@ -184,6 +241,13 @@ def store_jobspy_results(conn: sqlite3.Connection, df, source_label: str) -> tup
 
 # -- Single search execution -------------------------------------------------
 
+def _jobspy_location_for_search(search: dict, defaults: dict) -> str:
+    """JobSpy location string. Bare 'Remote' breaks country parsing — use a real region."""
+    if search.get("remote"):
+        return str(defaults.get("remote_search_location", "India"))
+    return search["location"]
+
+
 def _run_one_search(
     search: dict,
     sites: list[str],
@@ -195,15 +259,18 @@ def _run_one_search(
     accept_locs: list[str],
     reject_locs: list[str],
     glassdoor_map: dict,
+    search_cfg: dict,
 ) -> dict:
     """Run a single search query and store results in DB."""
     s = search
+    jobspy_location = _jobspy_location_for_search(s, defaults)
+    country_indeed = _jobspy_country(search_cfg, defaults)
     label = f"\"{s['query']}\" in {s['location']} {'(remote)' if s.get('remote') else ''}"
     if "tier" in s:
         label += f" [tier {s['tier']}]"
 
     # Split sites: Glassdoor needs simplified location, others use original
-    gd_location = glassdoor_map.get(s["location"], s["location"].split(",")[0])
+    gd_location = _glassdoor_location(jobspy_location, glassdoor_map)
     has_glassdoor = "glassdoor" in sites
     other_sites = [si for si in sites if si != "glassdoor"]
 
@@ -214,11 +281,11 @@ def _run_one_search(
         kwargs = {
             "site_name": other_sites,
             "search_term": s["query"],
-            "location": s["location"],
+            "location": jobspy_location,
             "results_wanted": results_per_site,
             "hours_old": hours_old,
             "description_format": "markdown",
-            "country_indeed": defaults.get("country_indeed", "usa"),
+            "country_indeed": country_indeed,
             "verbose": 0,
         }
         if s.get("remote"):
@@ -242,6 +309,7 @@ def _run_one_search(
             "results_wanted": results_per_site,
             "hours_old": hours_old,
             "description_format": "markdown",
+            "country_indeed": country_indeed,
             "verbose": 0,
         }
         if s.get("remote"):
@@ -249,10 +317,19 @@ def _run_one_search(
         if proxy_config:
             gd_kwargs["proxies"] = [proxy_config["jobspy"]]
         try:
-            gd_df = _scrape_with_retry(gd_kwargs, max_retries=max_retries)
-            all_dfs.append(gd_df)
+            with _quiet_jobspy_glassdoor_logger():
+                gd_df = _scrape_with_retry(gd_kwargs, max_retries=max_retries)
+            if len(gd_df) == 0:
+                log.warning(
+                    "[%s] Glassdoor returned 0 jobs (GraphQL/API error is common for "
+                    "glassdoor.co.in). Other boards still ran. To silence: remove "
+                    "glassdoor from boards or add skip_boards: [glassdoor] in searches.yaml.",
+                    label,
+                )
+            else:
+                all_dfs.append(gd_df)
         except Exception as e:
-            log.error("[%s] (glassdoor): %s", label, e)
+            log.warning("[%s] Glassdoor failed (%s); continuing with other boards.", label, e)
 
     if not all_dfs:
         log.error("[%s]: all sites failed", label)
@@ -268,12 +345,21 @@ def _run_one_search(
         log.info("[%s] 0 results", label)
         return {"new": 0, "existing": 0, "errors": 0, "filtered": 0, "total": 0, "label": label}
 
-    # Filter by location before storing
+    # Filter by location and excluded titles before storing
     before = len(df)
+    exclude_titles = [str(x) for x in search_cfg.get("exclude_titles", []) if x]
     df = df[df.apply(lambda row: _location_ok(
         str(row.get("location", "")) if str(row.get("location", "")) != "nan" else None,
         accept_locs, reject_locs,
     ), axis=1)]
+    if exclude_titles:
+        df = df[df.apply(
+            lambda row: not _title_excluded(
+                str(row.get("title", "")) if str(row.get("title", "")) != "nan" else None,
+                exclude_titles,
+            ),
+            axis=1,
+        )]
     filtered = before - len(df)
 
     conn = get_connection()
@@ -370,6 +456,7 @@ def _full_crawl(
     """Run all search queries from search config across all locations."""
     if sites is None:
         sites = ["indeed", "linkedin", "zip_recruiter"]
+    sites = _jobspy_boards(search_cfg, sites)
 
     # Build search combinations from config
     queries = search_cfg.get("queries", [])
@@ -412,6 +499,7 @@ def _full_crawl(
             s, sites, results_per_site, hours_old,
             proxy_config, defaults, max_retries,
             accept_locs, reject_locs, glassdoor_map,
+            search_cfg,
         )
         completed += 1
         total_new += result["new"]
@@ -461,7 +549,7 @@ def run_discovery(cfg: dict | None = None) -> dict:
         return {"new": 0, "existing": 0, "errors": 0, "db_total": 0, "queries": 0}
 
     proxy = cfg.get("proxy")
-    sites = cfg.get("sites")
+    sites = _jobspy_boards(cfg, cfg.get("sites") or cfg.get("boards"))
     results_per_site = cfg.get("defaults", {}).get("results_per_site", 100)
     hours_old = cfg.get("defaults", {}).get("hours_old", 72)
     tiers = cfg.get("tiers")

@@ -1,0 +1,11 @@
+# Copy to ~/.applypilot/watchlist.yaml — companies for Greenhouse/Lever API polling.
+
+companies:
+  - name: "Stripe"
+    greenhouse_board: "stripe"
+  - name: "Figma"
+    greenhouse_board: "figma"
+  - name: "Airbnb"
+    greenhouse_board: "airbnb"
+  - name: "Netflix"
+    lever_site: "netflix"

@@ -47,14 +47,14 @@ export function RunBanner({ run }: Props) {
 
   if (!run) {
     return (
-      <section className="panel border-dashed border-zinc-700/60 px-4 py-5">
+      <section className="panel border-dashed border-panel-border-strong px-4 py-5">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-zinc-800/80 text-zinc-500">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-panel-muted text-ink-4">
             <IconIdle />
           </div>
           <div>
-            <p className="text-sm font-medium text-zinc-300">No active run</p>
-            <p className="text-xs text-zinc-500">
+            <p className="text-sm font-medium text-ink-2">No active run</p>
+            <p className="text-xs text-ink-4">
               Start the pipeline below to discover, score, and tailor jobs.
             </p>
           </div>
@@ -72,18 +72,18 @@ export function RunBanner({ run }: Props) {
     <section
       className={`panel overflow-hidden ${
         isRunning
-          ? "ring-1 ring-emerald-500/30"
+          ? "ring-1 ring-success/30"
           : isFailed
-            ? "ring-1 ring-red-500/30"
+            ? "ring-1 ring-danger/30"
             : ""
       }`}
     >
       <div
         className={`px-4 py-4 ${
           isRunning
-            ? "bg-gradient-to-r from-emerald-950/40 via-transparent to-transparent"
+            ? "bg-gradient-to-r from-success/10 via-transparent to-transparent"
             : isFailed
-              ? "bg-gradient-to-r from-red-950/40 via-transparent to-transparent"
+              ? "bg-gradient-to-r from-danger/10 via-transparent to-transparent"
               : ""
         }`}
       >
@@ -92,53 +92,53 @@ export function RunBanner({ run }: Props) {
             <div
               className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl ${
                 isRunning
-                  ? "bg-emerald-500/15 text-emerald-400"
+                  ? "bg-success/10 text-success"
                   : isFailed
-                    ? "bg-red-500/15 text-red-400"
-                    : "bg-blue-500/15 text-blue-400"
+                    ? "bg-danger/10 text-danger"
+                    : "bg-accent-muted text-accent"
               }`}
             >
               {isRunning ? <IconSpinner /> : isFailed ? <IconError /> : <IconCheck />}
             </div>
             <div>
               <div className="flex flex-wrap items-center gap-2">
-                <h2 className="text-base font-semibold text-zinc-100">
+                <h2 className="text-base font-semibold text-ink">
                   {run.run_type === "pipeline" ? "Pipeline run" : `${run.run_type} run`}
                 </h2>
                 <span className={`badge ${statusBadgeClass(run.status)}`}>
                   {isRunning && (
-                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                    <span className="h-1.5 w-1.5 rounded-full bg-success animate-pulse" />
                   )}
                   {statusLabel(run.status)}
                 </span>
               </div>
-              <p className="mt-0.5 font-mono text-xs text-zinc-500">{run.id}</p>
+              <p className="mt-0.5 font-mono text-xs text-ink-4">{run.id}</p>
             </div>
           </div>
 
           <dl className="flex flex-wrap gap-4 text-xs sm:gap-6">
             <div>
-              <dt className="text-zinc-500">Duration</dt>
-              <dd className="mt-0.5 font-mono text-sm font-medium text-zinc-200">
+              <dt className="text-ink-4">Duration</dt>
+              <dd className="mt-0.5 font-mono text-sm font-medium text-ink-2">
                 {durationLabel}
               </dd>
             </div>
             <div>
-              <dt className="text-zinc-500">Started</dt>
-              <dd className="mt-0.5 text-sm text-zinc-300">{formatTime(run.started_at)}</dd>
+              <dt className="text-ink-4">Started</dt>
+              <dd className="mt-0.5 text-sm text-ink-2">{formatTime(run.started_at)}</dd>
             </div>
             {run.finished_at && (
               <div>
-                <dt className="text-zinc-500">Finished</dt>
-                <dd className="mt-0.5 text-sm text-zinc-300">{formatTime(run.finished_at)}</dd>
+                <dt className="text-ink-4">Finished</dt>
+                <dd className="mt-0.5 text-sm text-ink-2">{formatTime(run.finished_at)}</dd>
               </div>
             )}
             {run.exit_code != null && (
               <div>
-                <dt className="text-zinc-500">Exit code</dt>
+                <dt className="text-ink-4">Exit code</dt>
                 <dd
                   className={`mt-0.5 font-mono text-sm font-medium ${
-                    run.exit_code === 0 ? "text-emerald-400" : "text-red-400"
+                    run.exit_code === 0 ? "text-success" : "text-danger"
                   }`}
                 >
                   {run.exit_code}
@@ -147,30 +147,30 @@ export function RunBanner({ run }: Props) {
             )}
             {run.current_stage && isRunning && (
               <div>
-                <dt className="text-zinc-500">Stage</dt>
-                <dd className="mt-0.5 text-sm font-medium text-sky-300">{run.current_stage}</dd>
+                <dt className="text-ink-4">Stage</dt>
+                <dd className="mt-0.5 text-sm font-medium text-accent">{run.current_stage}</dd>
               </div>
             )}
           </dl>
         </div>
 
         {run.error_message && (
-          <div className="mt-3 rounded-lg border border-red-900/50 bg-red-950/30 px-3 py-2 text-sm text-red-200">
+          <div className="mt-3 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">
             {run.error_message}
           </div>
         )}
 
         {run.stages.length > 0 && (
-          <p className="mt-3 text-[11px] text-zinc-500">
+          <p className="mt-3 text-[11px] text-ink-4">
             Stages:{" "}
-            <span className="text-zinc-400">{run.stages.join(" → ")}</span>
+            <span className="text-ink-3">{run.stages.join(" → ")}</span>
             {run.dry_run && (
-              <span className="ml-2 rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-300">
+              <span className="ml-2 rounded bg-warning/10 px-1.5 py-0.5 text-warning">
                 dry run
               </span>
             )}
             {run.stream && (
-              <span className="ml-1 rounded bg-sky-500/15 px-1.5 py-0.5 text-sky-300">
+              <span className="ml-1 rounded bg-sky-500/15 px-1.5 py-0.5 text-accent">
                 stream
               </span>
             )}

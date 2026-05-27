@@ -111,11 +111,21 @@ def _draft_for_job(
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
-    raw = client.chat(messages, temperature=0.35, max_tokens=500).strip()
+    raw = client.chat(
+        messages,
+        temperature=0.35,
+        max_tokens=500,
+        operation="referral_draft",
+    ).strip()
     return finalize_referral_message(raw, job_title=title, company=company)
 
 
-def _eligible_draft_rows(conn, settings: OutreachSettings) -> list[dict]:
+def _eligible_draft_rows(
+    conn,
+    settings: OutreachSettings,
+    *,
+    urls: list[str] | None = None,
+) -> list[dict]:
     query = """
         SELECT * FROM jobs
         WHERE fit_score >= ?
@@ -126,7 +136,12 @@ def _eligible_draft_rows(conn, settings: OutreachSettings) -> list[dict]:
           AND discovered_at >= datetime('now', ? || ' hours')
     """
     age_param = f"-{settings.max_job_age_hours}"
-    rows = conn.execute(query, (settings.min_fit_score, age_param)).fetchall()
+    params: list = [settings.min_fit_score, age_param]
+    if urls:
+        placeholders = ",".join("?" * len(urls))
+        query += f" AND url IN ({placeholders})"
+        params.extend(urls)
+    rows = conn.execute(query, params).fetchall()
     if not rows:
         return []
     columns = rows[0].keys()
@@ -144,11 +159,28 @@ def run_referral_draft(
     settings: OutreachSettings | None = None,
     limit: int = 50,
     dry_run: bool = False,
+    urls: list[str] | None = None,
 ) -> dict:
     settings = settings or load_outreach_config()
+    if not settings.require_gemini_for_draft:
+        from applypilot.outreach.referral_template import run_referral_queue
+
+        result = run_referral_queue(
+            settings=settings,
+            limit=limit,
+            dry_run=dry_run,
+            urls=urls,
+        )
+        return {
+            "drafted": result.get("queued", 0),
+            "candidates": result.get("candidates", 0),
+            "resumes_built": 0,
+            "dry_run": result.get("dry_run", False),
+        }
+
     conn = get_connection()
     profile = load_profile()
-    jobs = _eligible_draft_rows(conn, settings)[:limit]
+    jobs = _eligible_draft_rows(conn, settings, urls=urls)[:limit]
     drafted = 0
     resumes_built = 0
 

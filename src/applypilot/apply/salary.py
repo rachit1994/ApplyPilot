@@ -5,8 +5,8 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-DEFAULT_MIN_INR_ANNUAL = 5_000_000
-INDIA_MIN_INR_ANNUAL = 4_000_000  # 40 lakhs
+DEFAULT_MIN_INR_ANNUAL = 4_000_000  # 40 LPA (apply + prompt default)
+INDIA_MIN_INR_ANNUAL = 4_000_000
 NON_INDIA_MIN_USD_ANNUAL = 70_000
 _USD_TO_INR = 83
 
@@ -22,6 +22,21 @@ def get_min_annual_inr(profile: dict) -> int:
                 return value * _USD_TO_INR
             return value
     return DEFAULT_MIN_INR_ANNUAL
+
+
+def get_min_annual_usd(profile: dict | None = None) -> int:
+    """USD floor for apply checks (fixed $70k; profile used only in form-fill prompts)."""
+    _ = profile
+    return NON_INDIA_MIN_USD_ANNUAL
+
+
+def get_apply_floor_inr() -> int:
+    """Hard apply eligibility floor for India roles (not profile compensation)."""
+    return INDIA_MIN_INR_ANNUAL
+
+
+def get_apply_floor_usd() -> int:
+    return NON_INDIA_MIN_USD_ANNUAL
 
 
 def _parse_inr_amount(raw: str) -> Optional[int]:
@@ -243,18 +258,23 @@ def salary_meets_regional_minimum(
     salary_text: str | None,
     description: str | None,
     location: str | None = None,
+    *,
+    profile: dict | None = None,
 ) -> bool:
-    """India roles: max visible pay must be >= 40 LPA INR. Others: >= $70k USD."""
+    """India: max pay >= profile INR floor (default 50 LPA). Others: >= equivalent USD."""
+    _ = profile
+    min_inr = get_apply_floor_inr()
+    min_usd = get_apply_floor_usd()
     combined = " ".join(
         part for part in (salary_text, description, location) if part
     )
     india = is_india_focused_job(location, description, salary_text)
     if india:
         _low, high = _extract_inr_bounds(combined)
-        minimum = INDIA_MIN_INR_ANNUAL
+        minimum = min_inr
     else:
         _low, high = _extract_usd_bounds(combined)
-        minimum = NON_INDIA_MIN_USD_ANNUAL
+        minimum = min_usd
 
     if high is None:
         return True

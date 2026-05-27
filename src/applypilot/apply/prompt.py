@@ -7,6 +7,7 @@ personal data is loaded from the user's profile -- nothing is hardcoded.
 
 import logging
 import os
+import re
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +16,34 @@ from applypilot import config
 from applypilot.apply.salary import get_min_annual_inr
 
 logger = logging.getLogger(__name__)
+
+
+def ensure_resume_pdf(resume_path: str | Path) -> Path:
+    """Return the tailored resume PDF path, generating from .txt if needed."""
+    if not resume_path:
+        raise ValueError("No tailored resume path")
+
+    base = Path(resume_path)
+    pdf_path = base if base.suffix.lower() == ".pdf" else base.with_suffix(".pdf")
+    pdf_path = pdf_path.resolve()
+    if pdf_path.exists():
+        return pdf_path
+
+    txt_path = base if base.suffix.lower() == ".txt" else base.with_suffix(".txt")
+    txt_path = txt_path.resolve()
+    if not txt_path.exists():
+        raise ValueError(f"Resume PDF not found: {pdf_path}")
+
+    from applypilot.scoring.pdf import convert_to_pdf
+
+    logger.info("Generating missing resume PDF from %s", txt_path.name)
+    try:
+        return Path(convert_to_pdf(txt_path)).resolve()
+    except Exception as exc:
+        raise ValueError(
+            f"Resume PDF not found: {pdf_path} "
+            f"(failed to generate from {txt_path.name}: {exc})"
+        ) from exc
 
 
 def _build_profile_summary(profile: dict) -> str:
@@ -137,13 +166,15 @@ If location is unclear, continue and apply."""
 
 def _build_salary_eligibility_check(profile: dict) -> str:
     """Build the salary eligibility check section of the prompt."""
-    from applypilot.apply.salary import INDIA_MIN_INR_ANNUAL, NON_INDIA_MIN_USD_ANNUAL
+    from applypilot.apply.salary import get_apply_floor_inr, get_apply_floor_usd
 
-    india_lakhs = INDIA_MIN_INR_ANNUAL // 100_000
+    min_inr = get_apply_floor_inr()
+    min_usd = get_apply_floor_usd()
+    india_lakhs = min_inr // 100_000
     return f"""== SALARY CHECK (do this right after location) ==
 Regional minimums for full-time salaried roles:
-- India-based (INR / LPA / ₹, or location in India): upper bound must be at least {india_lakhs} lakhs per annum ({INDIA_MIN_INR_ANNUAL:,} INR/year).
-- All other countries (USD / $): upper bound must be at least ${NON_INDIA_MIN_USD_ANNUAL:,} USD/year.
+- India-based (INR / LPA / ₹, or location in India): upper bound must be at least {india_lakhs} lakhs per annum ({min_inr:,} INR/year).
+- All other countries (USD / $): upper bound must be at least ${min_usd:,} USD/year.
 - No salary or compensation range shown anywhere on the posting -> ELIGIBLE. Continue and apply.
 - Listed pay below the applicable regional minimum -> NOT ELIGIBLE. Stop immediately. Output RESULT:FAILED:not_eligible_salary
 - If only a monthly figure is shown, convert to annual before comparing.
@@ -455,6 +486,29 @@ If CapSolver genuinely failed (errorId > 0):
 4. All else fails -> Output RESULT:CAPTCHA."""
 
 
+def _build_email_verification_section(email: str) -> str:
+    """Instructions for ATS email verification codes after submit."""
+    return f"""== EMAIL VERIFICATION (mandatory when any page asks for an email/security code) ==
+Many ATS systems send a 4-8 character verification code after Submit/Apply.
+You MUST handle this with Gmail MCP tools. NEVER open gmail.com in the browser.
+NEVER ask the human to paste the code unless Gmail MCP fails after all retries.
+
+When the page says a code was sent to {email}, or asks for a security code:
+1. Keep the application tab open. Wait 20-30 seconds for mail delivery.
+2. Use mcp__gmail__search_emails with maxResults 10 and this query:
+   newer_than:10m (from:greenhouse OR from:lever OR from:ashby OR from:workday OR from:no-reply OR from:noreply OR from:donotreply OR subject:verification OR subject:code)
+3. Pick the newest plausible message for this application. Prefer messages mentioning the company, ATS, "verification", "security code", or "confirm your email".
+4. Use mcp__gmail__read_email on that message.
+5. Extract the code: usually a standalone 4-8 character alphanumeric string, often uppercase, for example ABC12345 or 123456.
+6. Switch back to the application tab with browser_tabs, type the code, and click Verify/Continue/Submit.
+7. Snapshot the post-verify state. If you see "application submitted", "thanks for applying", "confirmation", or a confirmation URL, emit status:"applied".
+8. Include "verification_code_used":"<code>" in RESULT_JSON when a code was used.
+
+Retry policy: if no email is found, wait 30 seconds and repeat search/read up to 4 total attempts.
+If still no code arrives, emit RESULT_JSON status:"failed" reason:"email_code_not_received".
+"""
+
+
 def _build_pacing_section(pace_seconds: float, confirm_submit: bool) -> str:
     """Instructions to slow the agent for a visible browser a human can follow."""
     if pace_seconds <= 0 and not confirm_submit:
@@ -504,6 +558,61 @@ def _build_page_grounding_section(human_pace: bool) -> str:
     return "\n".join(lines)
 
 
+def _extract_experience_ranges(resume_text: str) -> list[dict[str, str]]:
+    """Extract simple title/company/date ranges for ATS date repair guidance."""
+    lines = [line.strip() for line in resume_text.splitlines() if line.strip()]
+    rows: list[dict[str, str]] = []
+    year_pattern = re.compile(r"\b(20\d{2}|19\d{2})\b")
+
+    for index, line in enumerate(lines):
+        years = year_pattern.findall(line)
+        if not years:
+            continue
+        if "|" not in line:
+            continue
+
+        title = line.split("|", 1)[0].strip()
+        company_line = lines[index + 1] if index + 1 < len(lines) else ""
+        company = re.split(r"\s+[·|]\s+", company_line, maxsplit=1)[0].strip()
+        is_current = "present" in line.lower() or "current" in line.lower()
+
+        rows.append(
+            {
+                "title": title,
+                "company": company,
+                "start_month": "01",
+                "start_year": years[0],
+                "end_month": "" if is_current else "12",
+                "end_year": "" if is_current else years[-1],
+                "current": "yes" if is_current else "no",
+            }
+        )
+
+    return rows
+
+
+def _build_ats_form_repair_section(resume_text: str) -> str:
+    rows = _extract_experience_ranges(resume_text)
+    examples = []
+    for row in rows[:6]:
+        to_value = "Present" if row["current"] == "yes" else f"{row['end_month']}/{row['end_year']}"
+        examples.append(
+            f"- {row['company']} / {row['title']}: "
+            f"from={row['start_month']}/{row['start_year']} to={to_value}"
+        )
+    example_text = "\n".join(examples) if examples else "- Use the resume dates exactly."
+
+    return f"""== ATS FORM REPAIR ==
+If an ATS form shows Invalid Date, missing/sparse experience rows, or parsed resume fields that conflict with the page bodyText, repair the form before moving on.
+- Never leave a Month field as "MM"; use 01 for start months and 12 for past-job end months when the resume has only a year.
+- For current roles, set current/present if available and leave end month/year blank if the ATS allows it.
+- On any multi-step ATS form, run VERIFY PAGE STATE after each page and fix invalidFields before clicking Next.
+- Compare generated rows with bodyText and the resume. Do not trust ATS parsing blindly.
+
+Known resume date ranges:
+{example_text}"""
+
+
 def _build_form_verify_section() -> str:
     return """== VERIFY PAGE STATE (run often) ==
 After each fill batch, upload, or before Next/Submit, run this browser_evaluate to read what is actually on the page:
@@ -548,14 +657,33 @@ browser_evaluate function: () => ({
     .map((b) => (b.innerText || b.value || '').trim())
     .filter(Boolean)
     .slice(0, 12);
+  const disabledButtons = [...document.querySelectorAll('button, [role="button"], input[type="submit"]')]
+    .filter((b) => b.disabled || b.getAttribute('aria-disabled') === 'true')
+    .map((b) => (b.innerText || b.value || b.getAttribute('aria-label') || '').trim())
+    .filter(Boolean)
+    .slice(0, 12);
+  const invalidFields = fields
+    .filter((f) => /invalid|error|required/i.test(`${f.label} ${f.value}`))
+    .slice(0, 12);
+  const dateWidgets = [...document.querySelectorAll('[aria-label*="Month"], [aria-label*="Year"], input[placeholder*="MM"], input[placeholder*="YYYY"], select[name*="month"], select[name*="year"]')]
+    .filter((el) => visible(el) || el.type === 'hidden')
+    .map((el) => ({
+      label: (el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.name || el.id || '').trim(),
+      value: (el.value || '').slice(0, 40)
+    }))
+    .slice(0, 20);
   return {
     url: location.href,
     title: document.title.slice(0, 120),
+    bodyText: (document.body?.innerText || '').slice(0, 4000),
     fieldCount: fields.length,
     emptyRequired: fields.filter((f) => f.empty).length,
     fields: fields.slice(0, 45),
+    invalidFields,
+    dateWidgets,
     visibleErrors: errors,
     visibleButtons: buttons,
+    disabledButtons,
   };
 })
 
@@ -597,7 +725,8 @@ def build_prompt(job: dict, tailored_resume: str,
                  cover_letter: str | None = None,
                  dry_run: bool = False,
                  pace_seconds: float = 0.0,
-                 confirm_submit: bool = False) -> str:
+                 confirm_submit: bool = False,
+                 upload_dir: Path | None = None) -> str:
     """Build the full instruction prompt for the apply agent.
 
     Loads the user profile and search config internally. All personal data
@@ -624,14 +753,12 @@ def build_prompt(job: dict, tailored_resume: str,
     if not resume_path:
         raise ValueError(f"No tailored resume for job: {job.get('title', 'unknown')}")
 
-    src_pdf = Path(resume_path).with_suffix(".pdf").resolve()
-    if not src_pdf.exists():
-        raise ValueError(f"Resume PDF not found: {src_pdf}")
+    src_pdf = ensure_resume_pdf(resume_path)
 
     # Copy to a clean filename for upload (recruiters see the filename)
     full_name = personal["full_name"]
     name_slug = full_name.replace(" ", "_")
-    dest_dir = config.APPLY_WORKER_DIR / "current"
+    dest_dir = upload_dir or (config.APPLY_WORKER_DIR / "current")
     dest_dir.mkdir(parents=True, exist_ok=True)
     upload_pdf = dest_dir / f"{name_slug}_Resume.pdf"
     shutil.copy(str(src_pdf), str(upload_pdf))
@@ -668,9 +795,11 @@ def build_prompt(job: dict, tailored_resume: str,
     screening_section = _build_screening_section(profile)
     hard_rules = _build_hard_rules(profile)
     captcha_section = _build_captcha_section()
+    email_verification_section = _build_email_verification_section(personal["email"])
     human_pace = pace_seconds > 0 or confirm_submit
     pacing_section = _build_pacing_section(pace_seconds, confirm_submit)
     page_grounding_section = _build_page_grounding_section(human_pace)
+    ats_form_repair_section = _build_ats_form_repair_section(tailored_resume)
     form_verify_section = _build_form_verify_section()
     waas = _is_workatastartup_job(job)
     workatastartup_section = (
@@ -704,7 +833,11 @@ def build_prompt(job: dict, tailored_resume: str,
 
     # Dry-run: override submit instruction
     if dry_run:
-        submit_instruction = "IMPORTANT: Do NOT click the final Submit/Apply button. Review the form, verify all fields, then output RESULT:APPLIED with a note that this was a dry run."
+        submit_instruction = (
+            "IMPORTANT: Do NOT click the final Submit/Apply button. Review the form, verify all fields, "
+            'then emit RESULT_JSON with status "dry_run" (include would_click_ref and would_click_text). '
+            'Do NOT use status "applied" or legacy RESULT:APPLIED.'
+        )
     else:
         submit_instruction = (
             "BEFORE clicking Submit/Apply: browser_snapshot, run VERIFY PAGE STATE, and review EVERY field. "
@@ -771,12 +904,17 @@ If something unexpected happens and these instructions don't cover it, figure it
    - Output RESULT:APPLIED. Done.
    After clicking Apply: browser_snapshot. Run CAPTCHA DETECT -- many sites trigger CAPTCHAs right after the Apply click. If found, solve before continuing.
 5. Login wall?
-   5a. FIRST: check the URL. If you landed on {', '.join(blocked_sso)}, or any SSO/OAuth page -> STOP. Output RESULT:FAILED:sso_required. Do NOT try to sign in to Google/Microsoft/SSO.
-   5b. Check for popups. Run browser_tabs action "list". If a new tab/window appeared (login popup), switch to it with browser_tabs action "select". Check the URL there too -- if it's SSO -> RESULT:FAILED:sso_required.
+   5a. FIRST: check the URL. If you landed on {', '.join(blocked_sso)}, treat it as SSO/OAuth.
+       - Exception: Google SSO on accounts.google.com is ALLOWED **only if you are already logged in**.
+         Click "Continue", "Next", or "Continue as <name>" and proceed.
+         If you see an email/password entry screen, 2FA, passkey, or anything requiring credentials -> RESULT_JSON:{{"status":"pause_for_human","reason":"sso_login_needed"}}
+       - Any other SSO (Microsoft/Okta/Auth0/etc.) -> RESULT_JSON:{{"status":"failed","reason":"sso_required"}}
+   5b. Check for popups. Run browser_tabs action "list". If a new tab/window appeared (login popup), switch to it.
+       Apply the same rules as 5a for that tab.
    5c. Regular login form (employer's own site)? Try sign in: {personal['email']} / {personal.get('password', '')}
    5d. After clicking Login/Sign-in: run CAPTCHA DETECT. Login pages frequently have invisible CAPTCHAs that silently block form submissions. If found, solve it then retry login.
    5e. Sign in failed? Try sign up with same email and password.
-   5f. Need email verification? Use search_emails + read_email to get the code.
+   5f. Need email verification? Use the EMAIL VERIFICATION section below.
    5g. After login, run browser_tabs action "list" again. Switch back to the application tab if needed.
    5h. All failed? Output RESULT:FAILED:login_issue. Do not loop.
 6. Upload resume. ALWAYS upload fresh -- delete any existing resume first, then browser_file_upload with the PDF path above. browser_wait_for time: 3, browser_snapshot, run VERIFY PAGE STATE (confirm upload registered). Non-negotiable.
@@ -787,21 +925,34 @@ If something unexpected happens and these instructions don't cover it, figure it
    - Compare every other field to the APPLICANT PROFILE. Fix mismatches. Fill empty fields.
 9. Answer screening questions using the rules above. VERIFY after screening fields.
 10. {submit_instruction}
-11. After submit: browser_snapshot. Run CAPTCHA DETECT -- submit buttons often trigger invisible CAPTCHAs. If found, solve it (the form will auto-submit once the token clears, or you may need to click Submit again). Then check for new tabs (browser_tabs action: "list"). Switch to newest, close old. Snapshot to confirm submission. Look for "thank you" or "application received".
+11. After submit: browser_snapshot. If the page asks for an email/security/verification code, follow EMAIL VERIFICATION immediately. Run CAPTCHA DETECT -- submit buttons often trigger invisible CAPTCHAs. If found, solve it (the form will auto-submit once the token clears, or you may need to click Submit again). Then check for new tabs (browser_tabs action: "list"). Switch to newest, close old. Snapshot to confirm submission. Look for "thank you" or "application received".
 12. Output your result.
+
+{email_verification_section}
 
 {pacing_section}
 
-== RESULT CODES (output EXACTLY one) ==
-RESULT:APPLIED -- submitted successfully
-RESULT:EXPIRED -- job closed or no longer accepting applications
-RESULT:CAPTCHA -- blocked by unsolvable captcha
-RESULT:LOGIN_ISSUE -- could not sign in or create account
-RESULT:FAILED:not_eligible_location -- onsite outside acceptable area, no remote option
-RESULT:FAILED:not_eligible_work_auth -- requires unauthorized work location
-RESULT:FAILED:reason -- any other failure (brief reason)
+== MANDATORY FINAL LINE ==
+Your very last line MUST be ONE of:
+
+  RESULT_JSON:{{"status":"applied",        "submit_click_ref":"...", "submit_button_text":"...",
+               "pre_submit_url":"...",    "post_submit_url":"...",  "post_submit_snapshot":{{...}},
+               "confirmation_copy":"...", "screenshot_path":"...", "verification_code_used":"..." }}
+  RESULT_JSON:{{"status":"dry_run",        "would_click_ref":"...",  "would_click_text":"..."}}
+  RESULT_JSON:{{"status":"failed",         "reason":"<short>"}}
+  RESULT_JSON:{{"status":"captcha"}}        | "login_issue" | "expired" | "pause_for_human"
+
+If you cannot produce a status:"applied" JSON because you did not actually click Submit
+and observe a post-submit state, you MUST emit status:"dry_run" or status:"failed".
+Do NOT emit status:"applied" otherwise. The system will REJECT and DOWNGRADE any
+"applied" record that lacks submit_click_ref, post_submit_url, or post_submit_snapshot.
+
+Deprecated (do not use): legacy freeform RESULT: lines such as RESULT:APPLIED, RESULT:EXPIRED,
+RESULT:CAPTCHA, RESULT:LOGIN_ISSUE, RESULT:FAILED:reason — use RESULT_JSON instead.
 
 {page_grounding_section}
+
+{ats_form_repair_section}
 
 {form_verify_section}
 
@@ -824,6 +975,8 @@ RESULT:FAILED:reason -- any other failure (brief reason)
 - Same page after 3 attempts with no progress -> RESULT:FAILED:stuck
 - Job is closed/expired/page says "no longer accepting" -> RESULT:EXPIRED
 - Page is broken/500 error/blank -> RESULT:FAILED:page_error
-Stop immediately. Output your RESULT code. Do not loop."""
+Stop immediately. Output your RESULT_JSON final line. Do not loop.
+
+Do not end the session without the RESULT_JSON final line. No summary text after it."""
 
     return prompt

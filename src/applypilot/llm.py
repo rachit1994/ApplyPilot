@@ -12,6 +12,7 @@ LLM_MODEL env var overrides the model name for any provider.
 import logging
 import os
 import time
+from typing import Any
 
 import httpx
 
@@ -77,6 +78,75 @@ _GEMINI_COMPAT_BASE = "https://generativelanguage.googleapis.com/v1beta/openai"
 _GEMINI_NATIVE_BASE = "https://generativelanguage.googleapis.com/v1beta"
 
 
+def _estimate_tokens(messages: list[dict] | str) -> int:
+    """Cheap token estimate used when providers omit usage metadata."""
+    if isinstance(messages, str):
+        text = messages
+    else:
+        text = "\n".join(str(msg.get("content", "")) for msg in messages)
+    return max(1, int(len(text) / 4))
+
+
+def _provider_for_base(base_url: str) -> str:
+    if base_url.startswith((_GEMINI_COMPAT_BASE, _GEMINI_NATIVE_BASE)):
+        return "gemini"
+    if base_url.startswith("https://api.openai.com"):
+        return "openai"
+    return "local"
+
+
+def _estimate_cost_usd(provider: str, model: str, input_tokens: int, output_tokens: int) -> float:
+    """Estimate USD cost from known defaults; exact billing remains provider-side."""
+    model_l = model.lower()
+    if provider == "gemini" and "flash-lite" in model_l:
+        input_per_m = 0.04
+        output_per_m = 0.16
+    elif provider == "gemini":
+        input_per_m = 0.10
+        output_per_m = 0.40
+    elif provider == "openai" and "gpt-4o-mini" in model_l:
+        input_per_m = 0.15
+        output_per_m = 0.60
+    elif provider == "local":
+        input_per_m = output_per_m = 0.0
+    else:
+        input_per_m = 0.15
+        output_per_m = 0.60
+    return (input_tokens / 1_000_000 * input_per_m) + (output_tokens / 1_000_000 * output_per_m)
+
+
+def _record_usage_event(
+    *,
+    provider: str,
+    model: str,
+    operation: str,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int = 0,
+    cache_create_tokens: int = 0,
+    estimated: bool,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    """Best-effort DB ledger entry; never let telemetry break the LLM call."""
+    try:
+        from applypilot.database import record_llm_usage
+
+        record_llm_usage(
+            provider=provider,
+            model=model,
+            operation=operation,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_tokens=cache_read_tokens,
+            cache_create_tokens=cache_create_tokens,
+            estimated=estimated,
+            cost_usd=_estimate_cost_usd(provider, model, input_tokens, output_tokens),
+            metadata=metadata or {},
+        )
+    except Exception:
+        log.debug("Failed to record LLM usage event", exc_info=True)
+
+
 class LLMClient:
     """Thin LLM client supporting OpenAI-compatible and native Gemini endpoints.
 
@@ -102,6 +172,7 @@ class LLMClient:
         messages: list[dict],
         temperature: float,
         max_tokens: int,
+        operation: str,
     ) -> str:
         """Call the native Gemini generateContent API.
 
@@ -144,7 +215,20 @@ class LLMClient:
         )
         resp.raise_for_status()
         data = resp.json()
-        return data["candidates"][0]["content"]["parts"][0]["text"]
+        text = data["candidates"][0]["content"]["parts"][0]["text"]
+        usage = data.get("usageMetadata") or {}
+        input_tokens = int(usage.get("promptTokenCount") or _estimate_tokens(messages))
+        output_tokens = int(usage.get("candidatesTokenCount") or _estimate_tokens(text))
+        _record_usage_event(
+            provider="gemini",
+            model=self.model,
+            operation=operation,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            estimated=not bool(usage),
+            metadata={"endpoint": "native"},
+        )
+        return text
 
     # -- OpenAI-compat API --------------------------------------------------
 
@@ -153,6 +237,7 @@ class LLMClient:
         messages: list[dict],
         temperature: float,
         max_tokens: int,
+        operation: str,
     ) -> str:
         """Call the OpenAI-compatible endpoint."""
         headers: dict[str, str] = {"Content-Type": "application/json"}
@@ -177,13 +262,49 @@ class LLMClient:
         if resp.status_code == 403 and self._is_gemini:
             raise _GeminiCompatForbidden(resp)
 
-        return self._handle_compat_response(resp)
+        return self._handle_compat_response(
+            resp,
+            provider=_provider_for_base(self.base_url),
+            model=self.model,
+            operation=operation,
+            prompt_messages=messages,
+        )
 
     @staticmethod
-    def _handle_compat_response(resp: httpx.Response) -> str:
+    def _handle_compat_response(
+        resp: httpx.Response,
+        *,
+        provider: str,
+        model: str,
+        operation: str,
+        prompt_messages: list[dict],
+    ) -> str:
         resp.raise_for_status()
         data = resp.json()
-        return data["choices"][0]["message"]["content"]
+        text = data["choices"][0]["message"]["content"]
+        usage = data.get("usage") or {}
+        input_tokens = int(
+            usage.get("prompt_tokens")
+            or usage.get("input_tokens")
+            or _estimate_tokens(prompt_messages)
+        )
+        output_tokens = int(
+            usage.get("completion_tokens")
+            or usage.get("output_tokens")
+            or _estimate_tokens(text)
+        )
+        _record_usage_event(
+            provider=provider,
+            model=model,
+            operation=operation,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_tokens=int(usage.get("cache_read_input_tokens") or 0),
+            cache_create_tokens=int(usage.get("cache_creation_input_tokens") or 0),
+            estimated=not bool(usage),
+            metadata={"endpoint": "compat"},
+        )
+        return text
 
     # -- public API ---------------------------------------------------------
 
@@ -192,6 +313,7 @@ class LLMClient:
         messages: list[dict],
         temperature: float = 0.0,
         max_tokens: int = 4096,
+        operation: str = "chat",
     ) -> str:
         """Send a chat completion request and return the assistant message text."""
         # Qwen3 optimization: prepend /no_think to skip chain-of-thought
@@ -205,9 +327,9 @@ class LLMClient:
             try:
                 # Route to native Gemini if we've already confirmed it's needed
                 if self._use_native_gemini:
-                    return self._chat_native_gemini(messages, temperature, max_tokens)
+                    return self._chat_native_gemini(messages, temperature, max_tokens, operation)
 
-                return self._chat_compat(messages, temperature, max_tokens)
+                return self._chat_compat(messages, temperature, max_tokens, operation)
 
             except _GeminiCompatForbidden as exc:
                 # Model not available on OpenAI-compat layer — switch to native.
@@ -220,7 +342,7 @@ class LLMClient:
                 self._use_native_gemini = True
                 # Retry immediately with native — don't count as a rate-limit wait
                 try:
-                    return self._chat_native_gemini(messages, temperature, max_tokens)
+                    return self._chat_native_gemini(messages, temperature, max_tokens, operation)
                 except httpx.HTTPStatusError as native_exc:
                     raise RuntimeError(
                         f"Both Gemini endpoints failed. Compat: 403 Forbidden. "

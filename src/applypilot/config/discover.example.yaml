@@ -1,0 +1,37 @@
+# Copy to ~/.applypilot/discover.yaml to customize discover sources.
+
+sources:
+  jobspy: true
+  workday: true
+  smartextract: true
+  workatastartup: true
+  hn_hiring: true
+  himalayas: true
+  remotive: true
+  weworkremotely: true
+  greenhouse: true
+  lever: true
+  career_targets: true
+  funded_startups: false
+
+agent_discover:
+  enabled: true
+  max_pages: 3
+  headless: false
+
+workatastartup:
+  headless: true
+  use_chrome_session: false
+
+hn_hiring:
+  url: "https://hnhiring.com/locations/remote"
+
+himalayas:
+  limit: 50
+
+funded_startups:
+  batches: ["W26", "S25", "W25", "S24", "W24"]
+  limit: 50
+  career_paths: ["careers", "jobs"]
+  include_greenhouse: true
+  max_sites: 150

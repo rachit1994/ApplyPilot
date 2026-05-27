@@ -17,6 +17,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from applypilot.config import RESUME_PATH, TAILORED_DIR, load_profile
+from applypilot.scoring.templates import (
+    classify_archetype,
+    is_a_grade_job,
+    keyword_density_ok,
+    tailor_via_template,
+)
 from applypilot.database import get_connection, get_jobs_by_stage
 from applypilot.llm import get_client
 from applypilot.scoring.validator import (
@@ -109,6 +115,8 @@ BULLETS: Strong verb + what you built + quantified impact. Vary verbs (Built, De
 - Do NOT invent work, companies, degrees, or certifications
 - Do NOT change real numbers ({metrics_str})
 - Preserved companies: {companies_str} -- names stay as-is
+- Every preserved company must appear exactly once in experience[].header. Do NOT omit older roles.
+- If a preserved company is less relevant to the target job, keep a compact one-bullet experience entry for it.
 - Preserved school: {school}
 - Must fit 1 page.
 
@@ -326,7 +334,12 @@ def judge_tailored_resume(
     ]
 
     client = get_client()
-    response = client.chat(messages, max_tokens=512, temperature=0.1)
+    response = client.chat(
+        messages,
+        max_tokens=512,
+        temperature=0.1,
+        operation="tailor_judge",
+    )
 
     passed = "VERDICT: PASS" in response.upper()
     issues = "none"
@@ -400,7 +413,12 @@ def tailor_resume(
             {"role": "user", "content": f"ORIGINAL RESUME:\n{resume_text}\n\n---\n\nTARGET JOB:\n{job_text}\n\nReturn the JSON:"},
         ]
 
-        raw = client.chat(messages, max_tokens=2048, temperature=0.4)
+        raw = client.chat(
+            messages,
+            max_tokens=2048,
+            temperature=0.4,
+            operation="tailor_resume",
+        )
 
         # Parse JSON from response
         try:
@@ -453,6 +471,44 @@ def tailor_resume(
     return tailored, report
 
 
+def tailor_resume_with_routing(
+    resume_text: str,
+    job: dict,
+    profile: dict,
+    validation_mode: str = "normal",
+) -> tuple[str, dict]:
+    """Route between archetype templates and full LLM tailoring."""
+    archetype = classify_archetype(
+        job.get("title", ""), job.get("full_description") or ""
+    )
+
+    if is_a_grade_job(job, profile):
+        tailored, report = tailor_resume(
+            resume_text, job, profile, validation_mode=validation_mode
+        )
+        report["source"] = "llm"
+        report["archetype"] = archetype
+        return tailored, report
+
+    template_result = tailor_via_template({**job, "_archetype": archetype}, profile)
+    if template_result is not None:
+        filled, report = template_result
+        if keyword_density_ok(filled, job.get("full_description") or ""):
+            report.setdefault("archetype", archetype)
+            return filled, report
+        log.debug(
+            "Template keyword density low for %s — falling back to LLM",
+            job.get("url", job.get("title", "")),
+        )
+
+    tailored, report = tailor_resume(
+        resume_text, job, profile, validation_mode=validation_mode
+    )
+    report["source"] = "llm"
+    report["archetype"] = archetype
+    return tailored, report
+
+
 # ── Batch Entry Point ────────────────────────────────────────────────────
 
 def run_tailoring(min_score: int = 7, limit: int = 20,
@@ -487,8 +543,9 @@ def run_tailoring(min_score: int = 7, limit: int = 20,
     for job in jobs:
         completed += 1
         try:
-            tailored, report = tailor_resume(resume_text, job, profile,
-                                             validation_mode=validation_mode)
+            tailored, report = tailor_resume_with_routing(
+                resume_text, job, profile, validation_mode=validation_mode
+            )
 
             # Build safe filename prefix
             safe_title = re.sub(r"[^\w\s-]", "", job["title"])[:50].strip().replace(" ", "_")

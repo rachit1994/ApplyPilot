@@ -8,6 +8,7 @@
 # are flagged as "manual" during apply — bot skips, user applies by hand.
 manual_ats:
   - "ibegin.tcsapps.com"       # TCS iBegin — unsolvable CAPTCHA every time
+  - "linkedin.com"             # Easy Apply / login walls — use inbox or apply by hand
 
 # Contractor / talent marketplaces — not employer job applications
 contractor_marketplaces:
@@ -50,7 +51,6 @@ base_urls:
   "CareerJet Canada": "https://www.careerjet.ca"
   "BuiltIn Remote": "https://builtin.com"
   "Hacker News Jobs": "https://news.ycombinator.com/"
-  "RemoteOK": null
   "WelcomeToTheJungle": null
   "Workopolis": "https://www.workopolis.com"
   "WeWorkRemotely": "https://weworkremotely.com"
@@ -62,8 +62,28 @@ base_urls:
   "Himalayas": "https://himalayas.app"
   "Techstars Jobs": "https://www.techstars.com"
   "Randstad Canada": "https://www.randstad.ca/jobs/search/"
+  "Nonlinear Funded Startups": "https://job-board-rouge-ten.vercel.app"
+  "Fast AI Jobs": "https://www.fastaijobs.com"
+  "a16z Portfolio Jobs": "https://jobs.a16z.com"
+  "Accel Portfolio Jobs": "https://jobs.accel.com"
+  "Bessemer Portfolio Jobs": "https://jobs.bvp.com"
+  "Canaan Portfolio Jobs": "https://careers.canaan.com"
+  "Greylock Portfolio Jobs": "https://greylock.com"
+  "Index Ventures Startup Jobs": "https://www.indexventures.com"
+  "First Round Talent": "https://firstround.com"
+  "Naukri": "https://www.naukri.com"
+  "Wellfound": "https://wellfound.com"
 
 sites:
+  # ── Priority boards (discover + apply first) ───────────────────────────
+  - name: "Naukri"
+    url: "https://www.naukri.com/jobs?keywords={query_encoded}&location={location_encoded}"
+    type: search
+
+  - name: "Wellfound"
+    url: "https://wellfound.com/role/l/software-engineer/canada"
+    type: static
+
   # ── Searchable sites (URL includes query + location params) ──────────
   # Canada-specific
   - name: "Eluta"
@@ -111,12 +131,45 @@ sites:
     url: "https://www.welcometothejungle.com/en/jobs?query={query_encoded}&refinementList%5Bremote%5D%5B%5D=fulltime"
     type: search
 
+  # ── India-centric job boards (discover) ───────────────────────────
+  - name: "Cutshort"
+    url: "https://cutshort.io/jobs?search={query_encoded}&location={location_encoded}"
+    type: search
+
+  - name: "Hirist"
+    url: "https://hirist.tech/jobs?search={query_encoded}&location={location_encoded}"
+    type: search
+
+  - name: "TimesJobs"
+    url: "https://timesjobs.indiatimes.com/job-search?keywords={query_encoded}&location={location_encoded}"
+    type: search
+
+  - name: "MonsterIndia"
+    url: "https://www.monsterindia.com/job-search/results?query={query_encoded}&location={location_encoded}"
+    type: search
+
+  - name: "JobStreet"
+    url: "https://www.jobstreet.com/jobs?keywords={query_encoded}&location={location_encoded}"
+    type: search
+
+  - name: "Indeed"
+    url: "https://www.indeed.com/jobs?q={query_encoded}&l={location_encoded}"
+    type: search
+
+  - name: "TechGig"
+    url: "https://www.techgig.com/jobs?query={query_encoded}&location={location_encoded}"
+    type: search
+
+  - name: "Apna"
+    url: "https://apna.co/jobs?query={query_encoded}&location={location_encoded}"
+    type: search
+
+  - name: "Shiksha Jobs"
+    url: "https://www.shiksha.com/jobs/jobs?search={query_encoded}&location={location_encoded}"
+    type: search
+
   # ── Static sites (no query params, scraped once) ─────────────────────
   # Remote-first boards
-  - name: "RemoteOK"
-    url: "https://remoteok.com/remote-dev-jobs"
-    type: static
-
   - name: "WeWorkRemotely"
     url: "https://weworkremotely.com/categories/remote-programming-jobs"
     type: static
@@ -162,10 +215,6 @@ sites:
     url: "https://builtin.com/jobs/remote/dev-engineering"
     type: static
 
-  - name: "Wellfound"
-    url: "https://wellfound.com/role/l/software-engineer/canada"
-    type: static
-
   - name: "Arc.dev"
     url: "https://arc.dev/remote-jobs/developer"
     type: static
@@ -189,3 +238,42 @@ sites:
   - name: "Otta"
     url: "https://otta.com/jobs/all?title=software+engineer&remote=true"
     type: search
+
+  # ── Recently funded startups and VC portfolio boards ────────────────
+  # These are broad startup-company/job indexes. Smart extract handles the
+  # listings first; add promising companies to career_targets/watchlist later.
+  - name: "Nonlinear Funded Startups"
+    url: "https://job-board-rouge-ten.vercel.app/"
+    type: static
+
+  - name: "Fast AI Jobs"
+    url: "https://www.fastaijobs.com/"
+    type: static
+
+  - name: "a16z Portfolio Jobs"
+    url: "https://jobs.a16z.com/jobs"
+    type: static
+
+  - name: "Accel Portfolio Jobs"
+    url: "https://jobs.accel.com/"
+    type: static
+
+  - name: "Bessemer Portfolio Jobs"
+    url: "https://jobs.bvp.com/jobs"
+    type: static
+
+  - name: "Canaan Portfolio Jobs"
+    url: "https://careers.canaan.com/companies"
+    type: static
+
+  - name: "Greylock Portfolio Jobs"
+    url: "https://greylock.com/jobs/"
+    type: static
+
+  - name: "Index Ventures Startup Jobs"
+    url: "https://www.indexventures.com/startup-jobs"
+    type: static
+
+  - name: "First Round Talent"
+    url: "https://firstround.com/talent/"
+    type: static

@@ -45,3 +45,4 @@ Thumbs.db
 .claude/
 .venv/
 .cursor/
+.gstack/

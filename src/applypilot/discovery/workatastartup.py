@@ -386,6 +386,11 @@ def run_workatastartup_discovery(
                 if not job:
                     stats["errors"] += 1
                     continue
+                from applypilot.discovery._filters import discover_job_passes
+
+                if not discover_job_passes(job):
+                    stats["skipped_filter"] = stats.get("skipped_filter", 0) + 1
+                    continue
                 if filter_salary and not salary_meets_regional_minimum(
                     job.get("salary"),
                     job.get("full_description") or job.get("description"),

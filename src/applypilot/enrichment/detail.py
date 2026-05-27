@@ -115,13 +115,51 @@ def resolve_all_urls(conn: sqlite3.Connection) -> dict:
     for row in rows:
         url, site, app_url = row[0], row[1], row[2]
         new_app = resolve_url(app_url, site)
+        if (
+            not new_app
+            and isinstance(url, str)
+            and url.startswith(("http://", "https://"))
+        ):
+            new_app = urljoin(url, app_url)
         if new_app and new_app != app_url:
             conn.execute("UPDATE jobs SET application_url = ? WHERE url = ?", (new_app, url))
             app_resolved += 1
 
+    backfilled = backfill_application_urls_from_descriptions(conn)
     conn.commit()
-    return {"resolved": resolved, "failed": failed, "already_absolute": already_absolute,
-            "app_resolved": app_resolved}
+    return {
+        "resolved": resolved,
+        "failed": failed,
+        "already_absolute": already_absolute,
+        "app_resolved": app_resolved,
+        "app_backfilled": backfilled,
+    }
+
+
+def backfill_application_urls_from_descriptions(conn: sqlite3.Connection) -> int:
+    """Set application_url from ATS links embedded in full_description when missing."""
+    from applypilot.apply.apply_url_extract import (
+        coerce_application_url,
+        extract_best_apply_url_from_text,
+    )
+
+    rows = conn.execute(
+        "SELECT url, application_url, full_description FROM jobs "
+        "WHERE full_description IS NOT NULL AND length(full_description) > 200"
+    ).fetchall()
+    updated = 0
+    for url, application_url, full_description in rows:
+        if coerce_application_url(application_url):
+            continue
+        extracted = extract_best_apply_url_from_text(full_description)
+        if not extracted:
+            continue
+        conn.execute(
+            "UPDATE jobs SET application_url = ? WHERE url = ?",
+            (extracted, url),
+        )
+        updated += 1
+    return updated
 
 
 def resolve_wttj_urls(conn: sqlite3.Connection) -> int:
@@ -465,7 +503,12 @@ def extract_with_llm(page, url: str) -> dict:
     try:
         client = get_client()
         t0 = time.time()
-        raw = client.ask(prompt, temperature=0.0, max_tokens=4096)
+        raw = client.ask(
+            prompt,
+            temperature=0.0,
+            max_tokens=4096,
+            operation="enrich_detail",
+        )
         elapsed = time.time() - t0
         log.info("LLM: %d chars in, %.1fs", len(prompt), elapsed)
 
