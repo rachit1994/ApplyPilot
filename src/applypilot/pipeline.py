@@ -13,6 +13,7 @@ Usage (via CLI):
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from datetime import datetime
@@ -23,7 +24,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from applypilot.config import load_env, ensure_dirs
-from applypilot.database import init_db, get_connection, get_stats
+from applypilot.database import init_db, get_connection, get_stats, refresh_source_stats_tailored
 from applypilot.orchestration.events import emit_run_event
 
 log = logging.getLogger(__name__)
@@ -40,7 +41,7 @@ STAGE_META: dict[str, dict] = {
     "discover": {"desc": "Job discovery (JobSpy + Workday + smart extract)"},
     "enrich":   {"desc": "Detail enrichment (full descriptions + apply URLs)"},
     "score":    {"desc": "LLM scoring (fit 1-10)"},
-    "refer":    {"desc": "LinkedIn referral outreach (Gemini draft + tailored resume, OpenOutreach)"},
+    "refer":    {"desc": "Refer prep: scrape LinkedIn recruiters + fill referral message template (no OpenOutreach)"},
     "tailor":   {"desc": "Resume tailoring (LLM + validation)"},
     "cover":    {"desc": "Cover letter generation"},
     "pdf":      {"desc": "PDF conversion (tailored resumes + cover letters)"},
@@ -64,47 +65,27 @@ _UPSTREAM: dict[str, str | None] = {
 # ---------------------------------------------------------------------------
 
 def _run_discover(workers: int = 1) -> dict:
-    """Stage: Job discovery — JobSpy, Workday, and smart-extract scrapers."""
-    stats: dict = {"jobspy": None, "workday": None, "smartextract": None}
-
-    # JobSpy
-    console.print("  [cyan]JobSpy full crawl...[/cyan]")
+    """Stage: Job discovery — feeds, ATS, career targets, JobSpy, Workday, SmartExtract."""
+    console.print("  [cyan]Discover v2 (unified sources)...[/cyan]")
     try:
-        from applypilot.discovery.jobspy import run_discovery
-        run_discovery()
-        stats["jobspy"] = "ok"
+        from applypilot.discovery.runner import run_discover
+
+        stats = run_discover(workers=workers)
+        for source, outcome in stats.items():
+            status = outcome.get("status", "?") if isinstance(outcome, dict) else outcome
+            if str(status).startswith("error"):
+                console.print(f"  [red]{source}:[/red] {status}")
+            else:
+                console.print(f"  [green]{source}:[/green] {status}")
+        return stats
     except Exception as e:
-        log.error("JobSpy crawl failed: %s", e)
-        console.print(f"  [red]JobSpy error:[/red] {e}")
+        log.error("Discover runner failed: %s", e)
+        console.print(f"  [red]Discover error:[/red] {e}")
         if "jobspy" in str(e).lower():
             from applypilot.discovery.jobspy_install import install_hint
 
             console.print(f"  [yellow]{install_hint()}[/yellow]")
-        stats["jobspy"] = f"error: {e}"
-
-    # Workday corporate scraper
-    console.print("  [cyan]Workday corporate scraper...[/cyan]")
-    try:
-        from applypilot.discovery.workday import run_workday_discovery
-        run_workday_discovery(workers=workers)
-        stats["workday"] = "ok"
-    except Exception as e:
-        log.error("Workday scraper failed: %s", e)
-        console.print(f"  [red]Workday error:[/red] {e}")
-        stats["workday"] = f"error: {e}"
-
-    # Smart extract
-    console.print("  [cyan]Smart extract (AI-powered scraping)...[/cyan]")
-    try:
-        from applypilot.discovery.smartextract import run_smart_extract
-        run_smart_extract(workers=workers)
-        stats["smartextract"] = "ok"
-    except Exception as e:
-        log.error("Smart extract failed: %s", e)
-        console.print(f"  [red]Smart extract error:[/red] {e}")
-        stats["smartextract"] = f"error: {e}"
-
-    return stats
+        return {"discover": f"error: {e}"}
 
 
 def _run_enrich(workers: int = 1) -> dict:
@@ -134,6 +115,10 @@ def _run_tailor(min_score: int = 7, validation_mode: str = "normal") -> dict:
     try:
         from applypilot.scoring.tailor import run_tailoring
         run_tailoring(min_score=min_score, validation_mode=validation_mode)
+        refresh_source_stats_tailored(
+            get_connection(),
+            run_id=os.environ.get("APPLYPILOT_RUN_ID", "").strip(),
+        )
         return {"status": "ok"}
     except Exception as e:
         log.error("Tailoring failed: %s", e)
@@ -163,37 +148,21 @@ def _run_pdf() -> dict:
 
 
 def _run_refer() -> dict:
-    """Stage: LinkedIn referral outreach via OpenOutreach."""
-    from applypilot.outreach.config import load_outreach_config, outreach_is_configured
-    from applypilot.outreach.pipeline import run_referral_pipeline
+    """Stage: referral prep only (scrape + template; send from dashboard or CLI)."""
+    from applypilot.outreach.config import load_outreach_config
+    from applypilot.outreach.pipeline import run_referral_prepare
 
     settings = load_outreach_config()
     if not settings.enabled:
         console.print("  [yellow]Referral outreach disabled (outreach.yaml)[/yellow]")
         return {"status": "skipped"}
-    if not outreach_is_configured(settings):
-        console.print("  [yellow]OpenOutreach not configured — skipping refer stage[/yellow]")
-        return {"status": "skipped"}
     try:
-        summary = run_referral_pipeline()
-        if summary.get("error"):
-            return {"status": f"error: {summary['error']}"}
-        connect = summary.get("connect") or {}
-        message = summary.get("message") or {}
-        if connect.get("skipped") == "openoutreach_unreachable" or message.get(
-            "skipped"
-        ) == "openoutreach_unreachable":
-            detail = connect.get("detail") or message.get("detail") or "OpenOutreach unreachable"
-            log.warning("Referral connect/message skipped: %s", detail)
-            return {"status": "skipped", "reason": detail, **summary}
-        for stage_name in ("connect", "message"):
-            stage = summary.get(stage_name) or {}
-            if stage.get("error"):
-                log.warning("Referral %s stage error: %s", stage_name, stage["error"])
-                return {"status": f"error: {stage_name}: {stage['error']}", **summary}
+        summary = run_referral_prepare()
+        if summary.get("skipped") == "disabled":
+            return {"status": "skipped"}
         return {"status": "ok", **summary}
     except Exception as e:
-        log.error("Referral outreach failed: %s", e)
+        log.error("Referral prep failed: %s", e)
         return {"status": f"error: {e}"}
 
 
@@ -288,7 +257,8 @@ _PENDING_SQL: dict[str, str] = {
         "AND ("
         "  (recruiter_public_id IS NULL OR recruiter_public_id = '') "
         "  OR (referral_message IS NULL OR referral_message = '') "
-        "  OR referral_status IN ('pending_connect', 'connect_sent')"
+        "  OR referral_status IS NULL OR referral_status = '' "
+        "  OR referral_status = 'pending_connect'"
         ") AND ("
         "  LOWER(COALESCE(site, '')) LIKE '%linkedin%' "
         "  OR LOWER(COALESCE(url, '')) LIKE '%linkedin.com/jobs%'"

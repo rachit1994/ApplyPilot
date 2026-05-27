@@ -70,6 +70,7 @@ def classify_thread_text(
         ],
         temperature=0.1,
         max_tokens=400,
+        operation="inbox_classify",
     )
     data = _parse_json_object(raw)
     intent = normalize_intent(data.get("intent"))

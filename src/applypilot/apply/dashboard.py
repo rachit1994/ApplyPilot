@@ -24,7 +24,7 @@ class WorkerState:
     """Tracks the current state of the apply worker."""
 
     worker_id: int = 0
-    status: str = "starting"  # starting, applying, applied, failed, expired, captcha, idle, done
+    status: str = "starting"  # starting, applying, applied, failed, expired, captcha, idle, done, paused_quota
     job_title: str = ""
     company: str = ""
     score: int = 0
@@ -102,6 +102,7 @@ _STATUS_STYLES: dict[str, str] = {
     "expired": "dim red",
     "captcha": "magenta",
     "login_issue": "red",
+    "paused_quota": "bold yellow",
     "done": "bold",
 }
 

@@ -12,6 +12,11 @@ import time
 from datetime import datetime, timezone
 
 from applypilot.config import COVER_LETTER_DIR, RESUME_PATH, get_target_roles, load_profile
+from applypilot.scoring.templates import (
+    classify_archetype,
+    cover_letter_via_template,
+    is_a_grade_job,
+)
 from applypilot.database import get_connection, get_jobs_by_stage
 from applypilot.llm import get_client
 from applypilot.scoring.validator import (
@@ -204,7 +209,12 @@ def generate_cover_letter(
             )},
         ]
 
-        letter = client.chat(messages, max_tokens=1024, temperature=0.7)
+        letter = client.chat(
+            messages,
+            max_tokens=1024,
+            temperature=0.7,
+            operation="cover_letter",
+        )
         letter = sanitize_text(letter)  # auto-fix em dashes, smart quotes
         if not waas:
             letter = _strip_preamble(letter)  # remove any "Here is the letter:" prefix
@@ -225,6 +235,43 @@ def generate_cover_letter(
         )
 
     return letter  # last attempt even if failed
+
+
+def generate_cover_letter_with_routing(
+    resume_text: str,
+    job: dict,
+    profile: dict,
+    max_retries: int = 3,
+    validation_mode: str = "normal",
+) -> tuple[str, dict]:
+    """Route between archetype cover-letter templates and full LLM generation."""
+    archetype = classify_archetype(
+        job.get("title", ""), job.get("full_description") or ""
+    )
+    report: dict = {"archetype": archetype, "source": "llm"}
+
+    if _is_workatastartup_job(job) or is_a_grade_job(job, profile):
+        letter = generate_cover_letter(
+            resume_text, job, profile,
+            max_retries=max_retries, validation_mode=validation_mode,
+        )
+        report["source"] = "llm"
+        return letter, report
+
+    template_result = cover_letter_via_template(
+        {**job, "_archetype": archetype}, profile
+    )
+    if template_result is not None:
+        letter, tpl_report = template_result
+        report.update(tpl_report)
+        return letter, report
+
+    letter = generate_cover_letter(
+        resume_text, job, profile,
+        max_retries=max_retries, validation_mode=validation_mode,
+    )
+    report["source"] = "llm"
+    return letter, report
 
 
 # ── Batch Entry Point ────────────────────────────────────────────────────
@@ -278,8 +325,15 @@ def run_cover_letters(min_score: int = 7, limit: int = 20,
     for job in jobs:
         completed += 1
         try:
-            letter = generate_cover_letter(resume_text, job, profile,
-                                          validation_mode=validation_mode)
+            letter, cl_report = generate_cover_letter_with_routing(
+                resume_text, job, profile, validation_mode=validation_mode
+            )
+            log.debug(
+                "Cover letter for %s: source=%s archetype=%s",
+                job.get("title", "")[:40],
+                cl_report.get("source"),
+                cl_report.get("archetype"),
+            )
 
             # Build safe filename prefix
             safe_title = re.sub(r"[^\w\s-]", "", job["title"])[:50].strip().replace(" ", "_")

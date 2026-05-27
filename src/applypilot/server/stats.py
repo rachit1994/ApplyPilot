@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from applypilot.database import get_stats, init_db
+from applypilot.database import get_source_stats_rollup, get_stats, init_db
+from applypilot.discovery.site_priority import (
+    APPLY_QUEUE_ORDER_LABEL,
+    PRIORITY_SITE_NAMES,
+    sort_site_count_rows,
+    sort_source_count_rows,
+)
 from applypilot.server.schemas import (
     ScoreBucket,
     ScoreDistributionItem,
@@ -24,6 +30,7 @@ _PIPELINE_KEYS = (
     "with_cover_letter",
     "cover_exhausted",
     "applied",
+    "submitted_unverified",
     "apply_errors",
     "ready_to_apply",
 )
@@ -47,10 +54,12 @@ def fetch_stats() -> StatsPayload:
     init_db()
     raw = get_stats()
 
-    by_site_raw = raw.get("by_site") or []
+    by_site_raw = sort_site_count_rows(
+        [{"site": site, "count": count} for site, count in (raw.get("by_site") or [])]
+    )
     by_site = [
-        SiteCount(site=site, count=count)
-        for site, count in by_site_raw[:_TOP_SITES]
+        SiteCount(site=row["site"], count=row["count"])
+        for row in by_site_raw[:_TOP_SITES]
     ]
 
     dist_raw = raw.get("score_distribution") or []
@@ -78,9 +87,16 @@ def fetch_stats() -> StatsPayload:
         tailored=int(raw.get("tailored") or 0),
         ready_to_apply=int(raw.get("ready_to_apply") or 0),
         applied=int(raw.get("applied") or 0),
+        priority_boards=list(PRIORITY_SITE_NAMES),
+        apply_queue_order=APPLY_QUEUE_ORDER_LABEL,
         by_site=by_site,
         score_distribution=score_distribution,
         score_buckets=score_buckets,
         pipeline=pipeline,
         extra=extra,
     )
+
+
+def fetch_source_stats(days: int = 7) -> list[dict]:
+    init_db()
+    return sort_source_count_rows(get_source_stats_rollup(days=days))

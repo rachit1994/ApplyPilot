@@ -15,15 +15,28 @@ from applypilot.server import events as events_routes
 from applypilot.server import jobs as jobs_module
 from applypilot.server import runs as runs_routes
 from applypilot.server import applications as applications_module
+from applypilot.server import referrals as referrals_module
+from applypilot.server import inbox as inbox_module
 from applypilot.server.schemas import (
     ApplicationDetailResponse,
     ApplicationRow,
     ApplicationsResponse,
+    AttentionApplicationsResponse,
+    ApplyErrorSummaryResponse,
+    ApplyErrorSummaryRow,
     JobRow,
     JobsResponse,
+    ReferralActionRequest,
+    ReferralActionResponse,
+    ReferralActionResult,
+    ReferralRow,
+    ReferralsResponse,
+    SourceStatsResponse,
+    SourceStatsRow,
     StatsResponse,
 )
-from applypilot.server.stats import fetch_stats
+from applypilot.orchestration.run_controller import reconcile_orphaned_runs
+from applypilot.server.stats import fetch_source_stats, fetch_stats
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _DASHBOARD_DIST = _REPO_ROOT / "dashboard" / "web" / "dist"
@@ -35,6 +48,17 @@ def create_app() -> FastAPI:
     init_db()
 
     app = FastAPI(title="ApplyPilot Dashboard", version="0.1.0")
+
+    @app.on_event("startup")
+    def _on_startup() -> None:
+        n = reconcile_orphaned_runs()
+        if n:
+            import logging
+
+            logging.getLogger(__name__).info(
+                "Reconciled %d orphaned dashboard run(s) after startup", n
+            )
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[
@@ -51,17 +75,25 @@ def create_app() -> FastAPI:
     api = FastAPI()
     api.include_router(runs_routes.router)
     api.include_router(events_routes.router)
+    api.include_router(inbox_module.router)
 
     @api.get("/stats", response_model=StatsResponse)
     def api_stats() -> StatsResponse:
         return StatsResponse(stats=fetch_stats())
 
+    @api.get("/source-stats", response_model=SourceStatsResponse)
+    def api_source_stats(days: int = 7) -> SourceStatsResponse:
+        rows = fetch_source_stats(days=max(1, min(days, 90)))
+        return SourceStatsResponse(sources=[SourceStatsRow(**r) for r in rows])
 
     @api.get("/jobs", response_model=JobsResponse)
     def api_jobs(
         min_score: int | None = None,
         site: str | None = None,
         search: str | None = None,
+        pipeline_stage: str | None = None,
+        stage: str | None = None,
+        apply_status: str | None = None,
         sort: str = "activity_desc",
         limit: int = 100,
         offset: int = 0,
@@ -70,6 +102,9 @@ def create_app() -> FastAPI:
             min_score=min_score,
             site=site,
             search=search,
+            pipeline_stage=pipeline_stage,
+            stage=stage,
+            apply_status=apply_status,
             sort=sort,
             limit=min(limit, 500),
             offset=offset,
@@ -86,13 +121,37 @@ def create_app() -> FastAPI:
         limit: int = 100,
         offset: int = 0,
         include_failed: bool = False,
+        status: str | None = None,
+        site: str | None = None,
+        search: str | None = None,
     ) -> ApplicationsResponse:
         rows, total = applications_module.query_applied_jobs(
             limit=min(limit, 500),
             offset=offset,
             include_failed=include_failed,
+            status=status,
+            site=site,
+            search=search,
         )
         return ApplicationsResponse(
+            applications=[ApplicationRow(**r) for r in rows],
+            total=total,
+        )
+
+    @api.get("/applications/errors", response_model=ApplyErrorSummaryResponse)
+    def api_application_errors() -> ApplyErrorSummaryResponse:
+        rows = applications_module.query_apply_error_summary()
+        return ApplyErrorSummaryResponse(
+            groups=[ApplyErrorSummaryRow(**r) for r in rows],
+        )
+
+    @api.get("/applications/attention", response_model=AttentionApplicationsResponse)
+    def api_applications_attention(limit: int = 200, offset: int = 0) -> AttentionApplicationsResponse:
+        rows, total = applications_module.query_attention_jobs(
+            limit=min(limit, 500),
+            offset=offset,
+        )
+        return AttentionApplicationsResponse(
             applications=[ApplicationRow(**r) for r in rows],
             total=total,
         )
@@ -105,6 +164,75 @@ def create_app() -> FastAPI:
 
             raise HTTPException(status_code=404, detail="Application not found")
         return ApplicationDetailResponse(application=row)
+
+    @api.post("/applications/confirm")
+    def api_confirm_application(url: str) -> dict[str, object]:
+        from fastapi import HTTPException
+
+        if not applications_module.confirm_application(url):
+            raise HTTPException(status_code=404, detail="Application not found")
+        return {"ok": True, "url": url}
+
+    @api.post("/applications/retry")
+    def api_retry_application(url: str) -> dict[str, object]:
+        from fastapi import HTTPException
+
+        if not applications_module.retry_application(url):
+            raise HTTPException(status_code=404, detail="Application not found")
+        return {"ok": True, "url": url}
+
+    @api.post("/applications/mark-applied")
+    def api_mark_applied(url: str) -> dict[str, object]:
+        from fastapi import HTTPException
+
+        if not applications_module.mark_application_applied(url):
+            raise HTTPException(status_code=404, detail="Application not found")
+        return {"ok": True, "url": url}
+
+    @api.post("/applications/requeue")
+    def api_requeue_application(url: str) -> dict[str, object]:
+        from fastapi import HTTPException
+
+        if not applications_module.requeue_application(url):
+            raise HTTPException(status_code=404, detail="Application not found")
+        return {"ok": True, "url": url}
+
+    @api.get("/referrals", response_model=ReferralsResponse)
+    def api_referrals(
+        filter: str = "all",
+        search: str | None = None,
+        min_score: int | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> ReferralsResponse:
+        rows, total, meta = referrals_module.query_referrals(
+            filter_name=filter,
+            search=search,
+            min_score=min_score,
+            limit=min(limit, 500),
+            offset=offset,
+        )
+        return ReferralsResponse(
+            referrals=[ReferralRow(**r) for r in rows],
+            total=total,
+            meta=meta,
+        )
+
+    @api.post("/referrals/actions", response_model=ReferralActionResponse)
+    def api_referral_actions(body: ReferralActionRequest) -> ReferralActionResponse:
+        from fastapi import HTTPException
+
+        if not body.urls:
+            raise HTTPException(status_code=400, detail="urls required")
+        try:
+            payload = referrals_module.run_referral_actions(body.action, body.urls)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return ReferralActionResponse(
+            action=payload["action"],
+            results=[ReferralActionResult(**r) for r in payload["results"]],
+            summary=payload.get("summary") or {},
+        )
 
     @api.get("/meta/stages")
     def api_stages() -> dict:

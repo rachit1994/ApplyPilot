@@ -32,8 +32,28 @@ def _weekly_connects_used(conn) -> int:
     return int(row[0]) if row else 0
 
 
-def _eligible_connect_rows(conn, settings: OutreachSettings) -> list[dict]:
-    applied_clause = "AND applied_at IS NULL" if settings.skip_if_applied else ""
+def _applied_clause(settings: OutreachSettings) -> str:
+    if settings.require_applied_before_send:
+        return "AND applied_at IS NOT NULL"
+    if settings.skip_if_applied:
+        return "AND applied_at IS NULL"
+    return ""
+
+
+def _url_filter(urls: list[str] | None, params: list) -> tuple[str, list]:
+    if not urls:
+        return "", params
+    placeholders = ",".join("?" * len(urls))
+    return f" AND url IN ({placeholders})", [*params, *urls]
+
+
+def _eligible_connect_rows(
+    conn,
+    settings: OutreachSettings,
+    *,
+    urls: list[str] | None = None,
+) -> list[dict]:
+    applied_clause = _applied_clause(settings)
     query = f"""
         SELECT * FROM jobs
         WHERE fit_score >= ?
@@ -46,26 +66,36 @@ def _eligible_connect_rows(conn, settings: OutreachSettings) -> list[dict]:
           {applied_clause}
         ORDER BY fit_score DESC, discovered_at DESC
     """
-    rows = conn.execute(
-        query,
-        (settings.min_fit_score, f"-{settings.max_job_age_hours}"),
-    ).fetchall()
+    params: list = [settings.min_fit_score, f"-{settings.max_job_age_hours}"]
+    url_clause, params = _url_filter(urls, params)
+    query = query.rstrip() + url_clause
+    rows = conn.execute(query, params).fetchall()
     if not rows:
         return []
     columns = rows[0].keys()
     return [dict(zip(columns, row)) for row in rows]
 
 
-def _eligible_message_rows(conn, settings: OutreachSettings) -> list[dict]:
-    query = """
+def _eligible_message_rows(
+    conn,
+    settings: OutreachSettings,
+    *,
+    urls: list[str] | None = None,
+) -> list[dict]:
+    applied_clause = _applied_clause(settings)
+    query = f"""
         SELECT * FROM jobs
         WHERE referral_status = 'connect_sent'
           AND recruiter_public_id IS NOT NULL
           AND referral_message IS NOT NULL
           AND referral_message != ''
+          {applied_clause}
         ORDER BY referral_connect_at ASC
     """
-    rows = conn.execute(query).fetchall()
+    params: list = []
+    url_clause, params = _url_filter(urls, params)
+    query = query.rstrip() + url_clause
+    rows = conn.execute(query, params).fetchall()
     if not rows:
         return []
     columns = rows[0].keys()
@@ -81,10 +111,11 @@ def run_referral_connect(
     *,
     settings: OutreachSettings | None = None,
     dry_run: bool = False,
+    urls: list[str] | None = None,
 ) -> dict:
     settings = settings or load_outreach_config()
     conn = get_connection()
-    jobs = _eligible_connect_rows(conn, settings)
+    jobs = _eligible_connect_rows(conn, settings, urls=urls)
     sent = 0
     failed = 0
 
@@ -148,10 +179,11 @@ def run_referral_message(
     *,
     settings: OutreachSettings | None = None,
     dry_run: bool = False,
+    urls: list[str] | None = None,
 ) -> dict:
     settings = settings or load_outreach_config()
     conn = get_connection()
-    jobs = _eligible_message_rows(conn, settings)
+    jobs = _eligible_message_rows(conn, settings, urls=urls)
     sent = 0
     failed = 0
 
@@ -184,11 +216,14 @@ def run_referral_message(
             continue
 
         now = datetime.now(timezone.utc).isoformat()
-        body = finalize_referral_message(
-            job["referral_message"] or "",
-            job_title=job.get("title") or "",
-            company=company_from_job(job) or "",
-        )
+        if settings.require_gemini_for_draft:
+            body = finalize_referral_message(
+                job["referral_message"] or "",
+                job_title=job.get("title") or "",
+                company=company_from_job(job) or "",
+            )
+        else:
+            body = (job["referral_message"] or "").strip()
         if not body:
             conn.execute(
                 "UPDATE jobs SET referral_error = ? WHERE url = ?",

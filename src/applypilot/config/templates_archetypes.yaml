@@ -1,0 +1,94 @@
+# Default archetype metadata shipped with ApplyPilot.
+# Override by copying to ~/.applypilot/templates/archetypes.yaml
+
+archetypes:
+  A1_senior_fe:
+    voice: "Frontend engineer who ships React at scale, performance-focused, with measurable conversion wins."
+  A2_frontend_lead:
+    voice: "Frontend tech lead who drives migrations, standards, and team delivery."
+  A3_full_stack:
+    voice: "Senior full-stack engineer — TypeScript/React plus Node, AWS, and production ownership."
+  A4_ai_ml:
+    voice: "Production RAG/agentic AI builder, model-aware cost engineer, LLMOps owner."
+  A5_staff:
+    voice: "Staff/principal IC who owns platform architecture and cross-team technical direction."
+  A6_founding:
+    voice: "Founding engineer — scrappy 0→1 builder who scaled products to millions of users."
+  A7_solutions:
+    voice: "Customer-facing solutions / FDE — multi-product integration and technical discovery."
+  A8_eng_manager:
+    voice: "Engineering manager with strong IC background — team growth and delivery."
+
+keyword_pools:
+  A1_senior_fe:
+    - React
+    - TypeScript
+    - Next.js
+    - performance
+    - Core Web Vitals
+    - conversion
+    - accessibility
+    - component library
+  A2_frontend_lead:
+    - React
+    - TypeScript
+    - design system
+    - frontend architecture
+    - team leadership
+    - migration
+    - code review
+    - mentoring
+  A3_full_stack:
+    - TypeScript
+    - Node.js
+    - React
+    - PostgreSQL
+    - AWS
+    - REST
+    - GraphQL
+    - microservices
+  A4_ai_ml:
+    - RAG
+    - LangChain
+    - LangGraph
+    - pgvector
+    - evaluation
+    - prompt engineering
+    - LLMOps
+    - cost reduction
+  A5_staff:
+    - architecture
+    - platform
+    - scalability
+    - technical strategy
+    - system design
+    - reliability
+    - observability
+    - cross-team
+  A6_founding:
+    - startup
+    - zero to one
+    - full stack
+    - rapid iteration
+    - product
+    - ownership
+    - fundraising stage
+    - scale
+  A7_solutions:
+    - customer facing
+    - integration
+    - APIs
+    - discovery
+    - proof of concept
+    - enterprise
+    - deployment
+    - stakeholder
+  A8_eng_manager:
+    - engineering management
+    - hiring
+    - delivery
+    - roadmap
+    - agile
+    - one on ones
+    - performance
+    - cross functional

@@ -30,6 +30,8 @@ _LOG_LEVEL_PREFIX = re.compile(
     r"^(?:\d{2}:\d{2}:\d{2}\s+-\s+)?(DEBUG|INFO|WARNING|WARN|ERROR|CRITICAL)\s+-\s+",
     re.IGNORECASE,
 )
+_WORKER_LINE_RE = re.compile(r"\[worker-(\d+)\]\s*(.+)", re.IGNORECASE)
+_WORKER_STATUS_RE = re.compile(r"^status=(\w+)\s+(.+)", re.IGNORECASE)
 
 _active_process: subprocess.Popen[str] | None = None
 _active_run_id: str | None = None
@@ -53,7 +55,50 @@ def _resolve_cli() -> list[str]:
     return [sys.executable, "-m", "applypilot"]
 
 
+def _normalize_inbox_cli_action(action: str) -> str:
+    """Dashboard API action name to CLI subcommand name."""
+    return "run" if action == "pipeline" else action
+
+
+def _subprocess_cwd() -> str:
+    """Repo root for dashboard-spawned CLI subprocesses (stable regardless of serve cwd)."""
+    return str(Path(__file__).resolve().parents[3])
+
+
+def _reap_active_process() -> None:
+    """Drop in-memory handles when the tracked subprocess has already exited."""
+    global _active_process, _active_run_id
+    with _lock:
+        if _active_process is None:
+            return
+        if _active_process.poll() is None:
+            return
+        _active_process = None
+        _active_run_id = None
+
+
+def reconcile_orphaned_runs() -> int:
+    """Mark dashboard runs left 'running' after a server crash/restart."""
+    _reap_active_process()
+    conn = get_connection()
+    init_run_schema(conn)
+    finished = _now()
+    cur = conn.execute(
+        """
+        UPDATE runs
+        SET status = 'stopped',
+            finished_at = COALESCE(finished_at, ?),
+            error_message = COALESCE(error_message, 'Dashboard server restarted')
+        WHERE status = 'running'
+        """,
+        (finished,),
+    )
+    conn.commit()
+    return int(cur.rowcount)
+
+
 def get_active_run() -> dict[str, Any] | None:
+    _reap_active_process()
     with _lock:
         if not _active_run_id:
             return None
@@ -184,6 +229,23 @@ def infer_log_level(line: str, stream_label: str = "stdout") -> str:
     return "info"
 
 
+def _parse_worker_log_line(line: str) -> dict[str, Any] | None:
+    """Parse a launcher worker log line into a worker_heartbeat payload."""
+    worker_match = _WORKER_LINE_RE.search(line)
+    if not worker_match:
+        return None
+    worker_id = int(worker_match.group(1))
+    rest = worker_match.group(2).strip()
+    payload: dict[str, Any] = {"worker_id": worker_id}
+    status_match = _WORKER_STATUS_RE.match(rest)
+    if status_match:
+        payload["status"] = status_match.group(1)
+        payload["detail"] = status_match.group(2).strip()[:500]
+    else:
+        payload["detail"] = rest[:500]
+    return payload
+
+
 def _read_stream(run_id: str, stream, label: str) -> None:
     global _active_process
     if stream is None:
@@ -197,6 +259,15 @@ def _read_stream(run_id: str, stream, label: str) -> None:
         line = _redact(line)
         level = infer_log_level(line, label)
         emit_run_event("log", level=level, message=line, run_id=run_id)
+        worker_payload = _parse_worker_log_line(line)
+        if worker_payload:
+            emit_run_event(
+                "worker_heartbeat",
+                run_id=run_id,
+                stage="apply",
+                message=line,
+                payload=worker_payload,
+            )
 
 
 def _wait_process(run_id: str, proc: subprocess.Popen[str]) -> None:
@@ -204,7 +275,8 @@ def _wait_process(run_id: str, proc: subprocess.Popen[str]) -> None:
     try:
         code = proc.wait()
         status = "completed" if code == 0 else "failed"
-        _set_run_status(run_id, status, exit_code=code)
+        err_msg = None if code == 0 else f"Process exited with code {code}"
+        _set_run_status(run_id, status, exit_code=code, error_message=err_msg)
         emit_run_event(
             "run_finished",
             run_id=run_id,
@@ -242,13 +314,18 @@ def start_pipeline_run(
     global _active_process, _active_run_id
 
     init_db()
+    _reap_active_process()
+    run_to_stop: str | None = None
     with _lock:
         if _active_process is not None and _active_process.poll() is None:
             if not force:
                 raise RuntimeError(
                     f"Run {_active_run_id} is still active. Stop it first or use force=true."
                 )
-            stop_run(_active_run_id or "")
+            run_to_stop = _active_run_id or ""
+    if run_to_stop:
+        stop_run(run_to_stop)
+        _reap_active_process()
 
     if stages is None or not stages or stages == ["all"]:
         stage_list = list(STAGE_ORDER)
@@ -280,35 +357,234 @@ def start_pipeline_run(
     env["APPLYPILOT_RUN_ID"] = run_id
     env["PYTHONUNBUFFERED"] = "1"
 
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,
-        env=env,
-        cwd=str(Path.cwd()),
-    )
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            env=env,
+            cwd=_subprocess_cwd(),
+        )
 
+        with _lock:
+            _active_process = proc
+            _active_run_id = run_id
+
+        emit_run_event(
+            "run_started",
+            run_id=run_id,
+            message="subprocess started",
+            payload={"command": cmd, "stages": stage_list},
+        )
+        emit_run_event("log", run_id=run_id, message=f"$ {' '.join(cmd)}")
+
+        threading.Thread(
+            target=_read_stream, args=(run_id, proc.stdout, "stdout"), daemon=True
+        ).start()
+        threading.Thread(
+            target=_read_stream, args=(run_id, proc.stderr, "stderr"), daemon=True
+        ).start()
+        threading.Thread(target=_wait_process, args=(run_id, proc), daemon=True).start()
+    except Exception as exc:
+        _set_run_status(run_id, "failed", error_message=str(exc))
+        with _lock:
+            if _active_run_id == run_id:
+                _active_process = None
+                _active_run_id = None
+        raise
+
+    return get_run(run_id) or {"id": run_id, "status": "running"}
+
+
+def start_apply_run(
+    *,
+    limit: int | None = None,
+    min_score: int = 7,
+    workers: int = 1,
+    watch: bool = False,
+    pace: bool = False,
+    headless: bool = False,
+    continuous: bool = False,
+    dry_run: bool = False,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Spawn applypilot apply as a subprocess tracked by run_id."""
+    global _active_process, _active_run_id
+
+    init_db()
+    _reap_active_process()
+    run_to_stop: str | None = None
     with _lock:
-        _active_process = proc
-        _active_run_id = run_id
+        if _active_process is not None and _active_process.poll() is None:
+            if not force:
+                raise RuntimeError(
+                    f"Run {_active_run_id} is still active. Stop it first or use force=true."
+                )
+            run_to_stop = _active_run_id or ""
+    if run_to_stop:
+        stop_run(run_to_stop)
+        _reap_active_process()
 
-    emit_run_event(
-        "run_started",
-        run_id=run_id,
-        message="subprocess started",
-        payload={"command": cmd, "stages": stage_list},
+    run_id = str(uuid.uuid4())
+    started = _now()
+    conn = get_connection()
+    init_run_schema(conn)
+    conn.execute(
+        """
+        INSERT INTO runs (id, run_type, status, stages_json, stream, dry_run, started_at, current_stage)
+        VALUES (?, 'apply', 'running', '[]', 0, ?, ?, 'apply')
+        """,
+        (run_id, int(dry_run), started),
     )
-    emit_run_event("log", run_id=run_id, message=f"$ {' '.join(cmd)}")
+    conn.commit()
 
-    threading.Thread(
-        target=_read_stream, args=(run_id, proc.stdout, "stdout"), daemon=True
-    ).start()
-    threading.Thread(
-        target=_read_stream, args=(run_id, proc.stderr, "stderr"), daemon=True
-    ).start()
-    threading.Thread(target=_wait_process, args=(run_id, proc), daemon=True).start()
+    cmd = _resolve_cli() + ["apply"]
+    if limit is not None and limit > 0:
+        cmd.extend(["--limit", str(limit)])
+    cmd.extend(["--min-score", str(min_score), "--workers", str(workers)])
+    if watch:
+        cmd.append("--watch")
+    elif pace:
+        cmd.extend(["--pace", "2"])
+    if headless:
+        cmd.append("--headless")
+    if continuous:
+        cmd.append("--continuous")
+    if dry_run:
+        cmd.append("--dry-run")
+
+    env = os.environ.copy()
+    env["APPLYPILOT_RUN_ID"] = run_id
+    env["PYTHONUNBUFFERED"] = "1"
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            env=env,
+            cwd=_subprocess_cwd(),
+        )
+
+        with _lock:
+            _active_process = proc
+            _active_run_id = run_id
+
+        emit_run_event(
+            "run_started",
+            run_id=run_id,
+            message="apply subprocess started",
+            payload={"command": cmd, "workers": workers},
+        )
+        emit_run_event("log", run_id=run_id, message=f"$ {' '.join(cmd)}")
+
+        threading.Thread(
+            target=_read_stream, args=(run_id, proc.stdout, "stdout"), daemon=True
+        ).start()
+        threading.Thread(
+            target=_read_stream, args=(run_id, proc.stderr, "stderr"), daemon=True
+        ).start()
+        threading.Thread(target=_wait_process, args=(run_id, proc), daemon=True).start()
+    except Exception as exc:
+        _set_run_status(run_id, "failed", error_message=str(exc))
+        with _lock:
+            if _active_run_id == run_id:
+                _active_process = None
+                _active_run_id = None
+        raise
+
+    return get_run(run_id) or {"id": run_id, "status": "running"}
+
+
+def start_inbox_run(
+    *,
+    action: str = "pipeline",
+    limit: int | None = None,
+    dry_run: bool = False,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Spawn applypilot inbox <action> as a subprocess."""
+    global _active_process, _active_run_id
+
+    init_db()
+    _reap_active_process()
+    run_to_stop: str | None = None
+    with _lock:
+        if _active_process is not None and _active_process.poll() is None:
+            if not force:
+                raise RuntimeError(
+                    f"Run {_active_run_id} is still active. Stop it first or use force=true."
+                )
+            run_to_stop = _active_run_id or ""
+    if run_to_stop:
+        stop_run(run_to_stop)
+        _reap_active_process()
+
+    run_id = str(uuid.uuid4())
+    started = _now()
+    conn = get_connection()
+    init_run_schema(conn)
+    conn.execute(
+        """
+        INSERT INTO runs (id, run_type, status, stages_json, stream, dry_run, started_at, current_stage)
+        VALUES (?, 'inbox', 'running', '[]', 0, ?, ?, 'inbox')
+        """,
+        (run_id, int(dry_run), started),
+    )
+    conn.commit()
+
+    cli_action = _normalize_inbox_cli_action(action)
+    cmd = _resolve_cli() + ["inbox", cli_action]
+    if limit is not None and limit > 0:
+        cmd.extend(["--limit", str(limit)])
+    if dry_run:
+        cmd.append("--dry-run")
+
+    env = os.environ.copy()
+    env["APPLYPILOT_RUN_ID"] = run_id
+    env["PYTHONUNBUFFERED"] = "1"
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            env=env,
+            cwd=_subprocess_cwd(),
+        )
+
+        with _lock:
+            _active_process = proc
+            _active_run_id = run_id
+
+        emit_run_event(
+            "run_started",
+            run_id=run_id,
+            message="inbox subprocess started",
+            payload={"command": cmd, "action": action},
+        )
+        emit_run_event("log", run_id=run_id, message=f"$ {' '.join(cmd)}")
+
+        threading.Thread(
+            target=_read_stream, args=(run_id, proc.stdout, "stdout"), daemon=True
+        ).start()
+        threading.Thread(
+            target=_read_stream, args=(run_id, proc.stderr, "stderr"), daemon=True
+        ).start()
+        threading.Thread(target=_wait_process, args=(run_id, proc), daemon=True).start()
+    except Exception as exc:
+        _set_run_status(run_id, "failed", error_message=str(exc))
+        with _lock:
+            if _active_run_id == run_id:
+                _active_process = None
+                _active_run_id = None
+        raise
 
     return get_run(run_id) or {"id": run_id, "status": "running"}
 
@@ -351,9 +627,30 @@ def start_typed_run(
             stream=stream,
             dry_run=dry_run,
             force=force,
-            **kwargs,
+            min_score=int(kwargs.get("min_score", 7)),
+            workers=int(kwargs.get("workers", 1)),
+            validation_mode=str(kwargs.get("validation_mode", "normal")),
         )
-    if run_type in ("apply", "refer", "inbox"):
+    if run_type == "apply":
+        return start_apply_run(
+            limit=kwargs.get("limit"),
+            min_score=int(kwargs.get("min_score", 7)),
+            workers=int(kwargs.get("workers", 1)),
+            watch=bool(kwargs.get("watch", False)),
+            pace=bool(kwargs.get("pace", False)),
+            headless=bool(kwargs.get("headless", False)),
+            continuous=bool(kwargs.get("continuous", False)),
+            dry_run=dry_run,
+            force=force,
+        )
+    if run_type == "inbox":
+        return start_inbox_run(
+            action=str(kwargs.get("inbox_action") or "pipeline"),
+            limit=kwargs.get("limit"),
+            dry_run=dry_run,
+            force=force,
+        )
+    if run_type == "refer":
         run_id = str(uuid.uuid4())
         started = _now()
         conn = get_connection()
@@ -373,7 +670,7 @@ def start_typed_run(
             ),
         )
         conn.commit()
-        msg = f"{run_type} dashboard control is not implemented yet; use CLI for now."
+        msg = "refer dashboard control is not implemented yet; use applypilot refer for now."
         _set_run_status(run_id, "failed", error_message=msg)
         os.environ["APPLYPILOT_RUN_ID"] = run_id
         try:

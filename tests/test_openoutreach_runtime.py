@@ -24,6 +24,8 @@ def test_build_openoutreach_env_sets_api_key() -> None:
         max_messages_per_run=10,
         poll_connected_every_minutes=60,
         skip_if_applied=False,
+        require_applied_before_send=True,
+        referral_message_template="Hi {recruiter_name}",
         openoutreach_base_url="http://127.0.0.1:8741/v1",
         openoutreach_api_key="secret-from-applypilot",
         openoutreach_campaign="test",

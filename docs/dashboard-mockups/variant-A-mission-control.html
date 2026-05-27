@@ -1,0 +1,1224 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=1440" />
+<title>ApplyPilot — Mission Control (Variant A)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+:root {
+  --canvas:#07080b; --canvas-2:#0b0c10; --panel:#0e0f13; --panel-2:#11131a; --panel-3:#161922;
+  --hairline:rgba(255,255,255,0.06); --hairline-2:rgba(255,255,255,0.10); --hairline-3:rgba(255,255,255,0.14);
+  --ink:#e9eaef; --ink-2:#c2c5cf; --ink-3:#8d92a0; --ink-4:#5e6373; --ink-5:#3a3e4b;
+  --accent:#a78bfa; --accent-2:#b8a4ff; --accent-glow:rgba(167,139,250,0.18);
+  --ok:#4ade80; --warn:#f5b042; --bad:#f76b6b; --idle:#6b7180;
+  --phase-discover:#7dd3fc; --phase-enrich:#c4b5fd; --phase-score:#a78bfa; --phase-tailor:#f0abfc;
+  --phase-cover:#fb7185; --phase-pdf:#fbbf24; --phase-apply:#4ade80; --phase-refer:#2dd4bf;
+  --rad-chip:4px; --rad-btn:8px; --rad-card:12px;
+}
+* { box-sizing: border-box; }
+html, body { margin:0; padding:0; }
+body {
+  background-color: var(--canvas);
+  background-image:
+    radial-gradient(1200px 600px at 20% -10%, rgba(167,139,250,0.04), transparent 60%),
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.025 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+  background-repeat: no-repeat, repeat;
+  color: var(--ink); font-family:'Inter', system-ui, sans-serif; font-size:13px; line-height:1.55;
+  font-feature-settings:"ss01" on, "cv11" on; -webkit-font-smoothing:antialiased;
+}
+.num, .mono, .counter-value, .table td, .table th, .log-line, .timestamp,
+.chip-stat, .counter-cap, .row-num, time { font-variant-numeric: tabular-nums; }
+.mono { font-family:'JetBrains Mono', ui-monospace, monospace; }
+h1, h2, h3 { text-wrap:balance; margin:0; font-family:'Fraunces', serif; font-weight:500; letter-spacing:-0.01em; }
+a { color:inherit; text-decoration:none; }
+button { font-family:inherit; cursor:pointer; }
+
+/* Layout shell */
+.shell { display:grid; grid-template-columns:56px 1fr 380px; min-height:100vh; }
+.nav-rail { background:var(--canvas-2); border-right:1px solid var(--hairline); position:sticky; top:0; height:100vh; }
+.main { min-width:0; border-right:1px solid var(--hairline); }
+.drawer { background:var(--panel); border-left:1px solid var(--hairline); min-height:100vh; }
+
+/* Nav rail */
+.nav-rail-inner { display:flex; flex-direction:column; align-items:center; padding:14px 0; gap:4px; height:100%; }
+.nav-logo { width:32px; height:32px; border-radius:8px; background:linear-gradient(155deg,#1b1d27,#0b0c10); border:1px solid var(--hairline-2); display:grid; place-items:center; font-family:'Fraunces', serif; font-style:italic; font-weight:500; color:var(--accent); font-size:17px; margin-bottom:14px; }
+.nav-item { width:40px; height:40px; border-radius:8px; color:var(--ink-3); position:relative; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px; }
+.nav-item .ico { width:18px; height:18px; display:grid; place-items:center; }
+.nav-item.active { color:var(--ink); background:var(--panel-2); }
+.nav-item.active::before { content:""; position:absolute; left:-8px; top:6px; bottom:6px; width:2px; background:var(--accent); border-radius:0 2px 2px 0; }
+.nav-spacer { flex:1; }
+.nav-item .lbl { font-size:8px; opacity:0.85; letter-spacing:0.04em; text-transform:uppercase; }
+
+/* Header strip */
+.header { display:flex; align-items:stretch; border-bottom:1px solid var(--hairline); background:linear-gradient(180deg,rgba(255,255,255,0.012),transparent); }
+.header-brand { display:flex; align-items:center; gap:10px; padding:14px 22px; border-right:1px solid var(--hairline); min-width:200px; }
+.wordmark { font-family:'Fraunces', serif; font-style:italic; font-weight:500; font-size:18px; letter-spacing:-0.015em; color:var(--ink); }
+.wordmark .dot { color:var(--accent); }
+.build-tag { font-size:10px; color:var(--ink-4); font-family:'JetBrains Mono', monospace; }
+.tabs { display:flex; align-items:center; gap:2px; padding:0 16px; }
+.tab { padding:8px 12px; font-size:12px; color:var(--ink-3); border-radius:var(--rad-btn); letter-spacing:0.01em; }
+.tab.active { background:var(--panel-2); color:var(--ink); }
+.tab .count { color:var(--ink-4); margin-left:6px; font-variant-numeric:tabular-nums; }
+
+.header-counters { display:flex; flex:1; align-items:stretch; }
+.counter { flex:1; padding:10px 16px; border-left:1px solid var(--hairline); display:flex; flex-direction:column; gap:2px; min-width:0; }
+.counter-label { font-size:9px; color:var(--ink-4); text-transform:uppercase; letter-spacing:0.1em; font-weight:500; }
+.counter-row { display:flex; align-items:baseline; gap:6px; }
+.counter-value { font-family:'Fraunces', serif; font-size:22px; font-weight:500; color:var(--ink); letter-spacing:-0.02em; }
+.counter-cap { font-size:11px; color:var(--ink-4); font-family:'JetBrains Mono', monospace; }
+.counter.attention .counter-value { color:var(--warn); }
+.counter-bar { height:2px; background:var(--panel-3); border-radius:1px; overflow:hidden; margin-top:4px; }
+.counter-bar > i { display:block; height:100%; background:var(--ink-3); }
+.counter.attention .counter-bar > i { background:var(--warn); }
+.counter.accent .counter-bar > i { background:var(--accent); }
+
+.header-actions { display:flex; align-items:center; gap:8px; padding:10px 14px; border-left:1px solid var(--hairline); }
+.btn-stop { background:rgba(247,107,107,0.10); color:var(--bad); border:1px solid rgba(247,107,107,0.35); padding:7px 14px; border-radius:var(--rad-btn); font-size:12px; font-weight:600; letter-spacing:0.02em; display:flex; align-items:center; gap:8px; }
+.btn-stop::before { content:""; width:8px; height:8px; background:var(--bad); border-radius:2px; }
+.btn-ghost { background:transparent; color:var(--ink-2); border:1px solid var(--hairline-2); padding:7px 12px; border-radius:var(--rad-btn); font-size:12px; }
+.btn-primary { background:var(--accent); color:#0b0a14; border:1px solid transparent; padding:7px 14px; border-radius:var(--rad-btn); font-size:12px; font-weight:600; }
+
+/* Now-hint */
+.now-hint { display:flex; align-items:center; gap:16px; padding:8px 22px; border-bottom:1px solid var(--hairline); background:var(--panel); font-size:12px; color:var(--ink-3); }
+.now-hint b { color:var(--ink); font-weight:500; }
+.live-dot { width:7px; height:7px; border-radius:50%; background:var(--accent); animation:pulse 2s ease-in-out infinite; }
+@keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(167,139,250,0.45);} 70%{box-shadow:0 0 0 8px rgba(167,139,250,0);} 100%{box-shadow:0 0 0 0 rgba(167,139,250,0);} }
+
+/* Timeline ribbon */
+.timeline-wrap { padding:12px 22px 16px; border-bottom:1px solid var(--hairline); background:var(--panel); }
+.timeline-head { display:flex; align-items:baseline; justify-content:space-between; padding-bottom:8px; }
+.timeline-head h3 { font-size:11px; font-family:'Inter', sans-serif; font-weight:600; letter-spacing:0.08em; text-transform:uppercase; color:var(--ink-3); }
+.timeline-head .sub { font-size:11px; color:var(--ink-4); font-family:'JetBrains Mono', monospace; }
+.ribbon { height:32px; border-radius:4px; overflow:hidden; background:var(--panel-2); display:flex; border:1px solid var(--hairline); }
+.ribbon-seg { height:100%; opacity:0.85; }
+.ribbon-seg:hover { opacity:1; }
+.ribbon-seg.gap { background:var(--panel-2); opacity:1; }
+.ribbon-axis { display:grid; grid-template-columns:repeat(6,1fr); padding-top:6px; font-family:'JetBrains Mono', monospace; font-size:10px; color:var(--ink-4); }
+.ribbon-axis span { border-left:1px solid var(--hairline); padding-left:6px; }
+.ribbon-axis span:first-child { border-left:none; }
+.ribbon-legend { display:flex; gap:14px; padding-top:10px; font-size:10px; color:var(--ink-4); font-family:'JetBrains Mono', monospace; }
+.ribbon-legend span { display:inline-flex; align-items:center; gap:6px; }
+.ribbon-legend i { width:8px; height:8px; border-radius:2px; display:inline-block; }
+
+/* Run plan banner */
+.runplan { display:flex; align-items:stretch; border-bottom:1px solid var(--hairline); background:var(--panel); }
+.runplan-left { display:flex; align-items:center; gap:12px; padding:14px 22px; border-right:1px solid var(--hairline); min-width:230px; }
+.runplan-status { font-size:10px; text-transform:uppercase; letter-spacing:0.12em; color:var(--accent); font-weight:600; }
+.runplan-name { font-size:14px; color:var(--ink); font-weight:500; }
+.runplan-id { font-size:10px; color:var(--ink-4); font-family:'JetBrains Mono', monospace; }
+.runplan-body { flex:1; display:flex; align-items:center; padding:12px 18px; gap:22px; flex-wrap:wrap; }
+.rp-field { display:flex; flex-direction:column; gap:2px; min-width:80px; }
+.rp-label { font-size:9px; color:var(--ink-4); text-transform:uppercase; letter-spacing:0.1em; font-weight:500; }
+.rp-value { font-size:13px; color:var(--ink); }
+.rp-value .accent { color:var(--accent); }
+.rp-pills { display:flex; gap:3px; flex-wrap:wrap; }
+.rp-pill { font-size:10px; padding:3px 7px; border-radius:var(--rad-chip); background:var(--panel-3); color:var(--ink-2); border:1px solid var(--hairline); font-family:'JetBrains Mono', monospace; }
+.rp-pill.active { background:rgba(167,139,250,0.10); color:var(--accent-2); border-color:rgba(167,139,250,0.30); }
+.rp-pill.off { opacity:0.45; text-decoration:line-through; }
+.runplan-actions { display:flex; align-items:center; padding:12px 18px; border-left:1px solid var(--hairline); }
+
+/* Section header */
+.section-h { display:flex; align-items:center; justify-content:space-between; padding:16px 22px 10px; }
+.section-h h2 { font-family:'Fraunces', serif; font-size:16px; font-weight:500; letter-spacing:-0.01em; }
+.section-h .sub { font-size:11px; color:var(--ink-4); font-family:'JetBrains Mono', monospace; }
+.section-h .right { display:flex; gap:8px; align-items:center; font-size:11px; color:var(--ink-3); }
+
+/* Workers */
+.workers { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; padding:0 22px 16px; }
+.worker { background:var(--panel); border:1px solid var(--hairline); border-radius:var(--rad-card); padding:14px 14px 12px; display:flex; flex-direction:column; gap:10px; position:relative; overflow:hidden; }
+.worker.active { border-color:rgba(167,139,250,0.30); box-shadow:0 0 0 1px rgba(167,139,250,0.08), 0 0 30px -16px rgba(167,139,250,0.4); }
+.worker.active::before { content:""; position:absolute; top:0; left:0; right:0; height:1px; background:linear-gradient(90deg,transparent,var(--accent),transparent); animation:shimmer 4s ease-in-out infinite; }
+@keyframes shimmer { 0%,100%{opacity:0.2;} 50%{opacity:0.8;} }
+.worker.paused { border-color:rgba(245,176,66,0.35); background:linear-gradient(180deg,rgba(245,176,66,0.05),transparent 40%), var(--panel); }
+.worker-head { display:flex; align-items:center; justify-content:space-between; }
+.worker-id { font-family:'JetBrains Mono', monospace; font-size:11px; color:var(--ink-3); letter-spacing:0.05em; background:var(--panel-3); padding:2px 7px; border-radius:var(--rad-chip); border:1px solid var(--hairline); }
+.worker-elapsed { font-family:'JetBrains Mono', monospace; font-size:11px; color:var(--ink-3); }
+.worker-elapsed b { color:var(--ink); font-weight:500; }
+.worker-title { font-size:14px; color:var(--ink); font-weight:500; line-height:1.35; }
+.worker-co { font-size:11px; color:var(--ink-3); font-family:'JetBrains Mono', monospace; }
+.worker-co .ats { color:var(--phase-apply); }
+.worker-step { font-size:12px; color:var(--ink-2); line-height:1.5; padding:8px 10px; background:var(--panel-2); border:1px solid var(--hairline); border-radius:var(--rad-btn); }
+.worker-step .label { font-family:'JetBrains Mono', monospace; font-size:10px; color:var(--ink-4); text-transform:uppercase; letter-spacing:0.08em; display:block; margin-bottom:4px; }
+.worker-step .field { color:var(--accent-2); font-family:'JetBrains Mono', monospace; }
+.worker-stats { display:flex; gap:14px; font-family:'JetBrains Mono', monospace; font-size:10.5px; color:var(--ink-3); border-top:1px solid var(--hairline); padding-top:9px; }
+.worker-stats span b { color:var(--ink); font-weight:500; }
+.worker-checkpoint { display:flex; align-items:center; gap:6px; background:rgba(74,222,128,0.07); border:1px solid rgba(74,222,128,0.20); padding:6px 9px; border-radius:var(--rad-btn); font-size:11px; color:var(--ok); }
+.worker-checkpoint .num { font-family:'JetBrains Mono', monospace; color:var(--ok); }
+.worker-pause-banner { background:rgba(245,176,66,0.08); border:1px solid rgba(245,176,66,0.30); color:var(--warn); padding:8px 10px; border-radius:var(--rad-btn); font-size:11px; line-height:1.4; }
+.worker-pause-banner b { font-weight:600; color:#ffd391; }
+.worker-pause-actions { display:flex; gap:6px; margin-top:8px; }
+.worker-pause-actions button { font-size:11px; padding:5px 10px; border-radius:var(--rad-chip); background:rgba(245,176,66,0.16); color:var(--warn); border:1px solid rgba(245,176,66,0.30); }
+.worker-pause-actions button.primary { background:var(--warn); color:#1a1207; border-color:var(--warn); font-weight:600; }
+
+/* Snapshot */
+.snapshot { margin:0 22px 16px; background:var(--panel); border:1px solid var(--hairline); border-radius:var(--rad-card); overflow:hidden; }
+.snapshot-head { display:flex; align-items:center; justify-content:space-between; padding:10px 14px; border-bottom:1px solid var(--hairline); background:var(--panel-2); }
+.snapshot-head h3 { font-family:'Inter', sans-serif; font-size:11px; text-transform:uppercase; letter-spacing:0.1em; color:var(--ink-3); font-weight:600; }
+.snapshot-head .url { font-family:'JetBrains Mono', monospace; font-size:11px; color:var(--ink-4); }
+.snapshot-head .url .seg { color:var(--ink-2); }
+.snapshot-body { display:grid; grid-template-columns:2fr 1.2fr; }
+.snapshot-fields { padding:12px 14px; border-right:1px solid var(--hairline); }
+.snapshot-table { width:100%; border-collapse:collapse; font-size:12px; }
+.snapshot-table td { padding:6px 8px; border-bottom:1px solid var(--hairline); vertical-align:top; }
+.snapshot-table td:first-child { font-family:'JetBrains Mono', monospace; color:var(--ink-3); font-size:11px; width:40%; }
+.snapshot-table .val-typed { color:var(--ink); }
+.snapshot-table .val-typed.fresh { color:var(--accent-2); }
+.snapshot-table .val-empty { color:var(--ink-5); font-style:italic; }
+.snapshot-table tr:last-child td { border-bottom:none; }
+.snapshot-side { padding:12px 14px; background:var(--panel-2); display:flex; flex-direction:column; gap:8px; }
+.snapshot-side h4 { font-family:'Inter', sans-serif; font-size:10px; text-transform:uppercase; letter-spacing:0.1em; color:var(--ink-4); font-weight:600; }
+.snap-verify-list { padding:0; margin:0; display:flex; flex-direction:column; gap:5px; font-size:11px; }
+.snap-verify-list li { display:flex; gap:8px; align-items:baseline; list-style:none; }
+.snap-verify-list li::before { content:""; width:8px; height:8px; border-radius:50%; flex:0 0 8px; background:var(--ok); margin-top:5px; }
+.snap-verify-list li.warn::before { background:var(--warn); }
+.snap-verify-list li .key { color:var(--ink-3); font-family:'JetBrains Mono', monospace; font-size:10px; }
+.snap-verify-list li .key b { color:var(--ink-2); font-weight:500; }
+
+/* Queue */
+.queue-wrap { padding:0 22px 16px; }
+.queue-card { background:var(--panel); border:1px solid var(--hairline); border-radius:var(--rad-card); overflow:hidden; }
+.queue-head { display:flex; padding:8px 14px; background:var(--panel-2); border-bottom:1px solid var(--hairline); font-family:'JetBrains Mono', monospace; font-size:10px; text-transform:uppercase; letter-spacing:0.1em; color:var(--ink-4); font-weight:600; }
+.queue-head .col-pip { width:18px; }
+.queue-head .col-rank { width:30px; }
+.queue-head .col-title { flex:1; }
+.queue-head .col-co { width:130px; }
+.queue-head .col-score { width:80px; }
+.queue-head .col-ats { width:90px; }
+.queue-head .col-eta { width:70px; text-align:right; }
+.queue-head .col-act { width:60px; text-align:right; }
+.q-row { display:flex; align-items:center; padding:8px 14px; border-bottom:1px solid var(--hairline); font-size:12px; }
+.q-row:last-child { border-bottom:none; }
+.q-row:hover { background:var(--panel-2); }
+.q-row .pip { width:18px; display:flex; align-items:center; justify-content:center; }
+.q-row .pip i { width:6px; height:6px; border-radius:50%; background:var(--idle); }
+.q-row.next .pip i { background:var(--accent); box-shadow:0 0 0 3px var(--accent-glow); }
+.q-row.ready .pip i { background:var(--ink-3); }
+.q-row .col-rank { width:30px; color:var(--ink-4); font-family:'JetBrains Mono', monospace; font-size:11px; }
+.q-row .col-title { flex:1; color:var(--ink); padding-right:12px; min-width:0; }
+.q-row .col-title .preview { display:block; font-size:11px; color:var(--ink-4); font-family:'JetBrains Mono', monospace; margin-top:1px; }
+.q-row .col-co { width:130px; color:var(--ink-2); font-size:12px; }
+.q-row .col-co .via { font-size:10px; color:var(--ink-4); display:block; font-family:'JetBrains Mono', monospace; }
+.q-row .col-score { width:80px; display:flex; align-items:center; gap:6px; }
+.score-num { font-family:'Fraunces', serif; font-size:14px; color:var(--ink); font-weight:500; min-width:22px; }
+.score-bar { flex:1; height:4px; background:var(--panel-3); border-radius:2px; overflow:hidden; max-width:36px; }
+.score-bar > i { display:block; height:100%; background:var(--accent); }
+.q-row.med .score-bar > i { background:var(--phase-discover); }
+.q-row.low .score-bar > i { background:var(--ink-4); }
+.q-row .col-ats { width:90px; }
+.ats-chip { font-family:'JetBrains Mono', monospace; font-size:10.5px; padding:2px 7px; background:var(--panel-3); border:1px solid var(--hairline); border-radius:var(--rad-chip); color:var(--ink-2); }
+.q-row .col-eta { width:70px; text-align:right; font-family:'JetBrains Mono', monospace; color:var(--ink-3); font-size:11px; }
+.q-row .col-act { width:60px; text-align:right; color:var(--ink-4); font-family:'JetBrains Mono', monospace; font-size:14px; }
+
+/* Log feed */
+.log-wrap { padding:0 22px 22px; }
+.log-card { background:var(--panel); border:1px solid var(--hairline); border-radius:var(--rad-card); overflow:hidden; }
+.log-head { display:flex; align-items:center; justify-content:space-between; padding:10px 14px; border-bottom:1px solid var(--hairline); background:var(--panel-2); }
+.log-filters { display:flex; gap:4px; align-items:center; flex-wrap:wrap; }
+.lf-chip { font-family:'JetBrains Mono', monospace; font-size:10.5px; padding:3px 8px; border-radius:var(--rad-chip); background:var(--panel-3); color:var(--ink-3); border:1px solid var(--hairline); }
+.lf-chip.active { background:rgba(167,139,250,0.10); color:var(--accent-2); border-color:rgba(167,139,250,0.30); }
+.log-search { font-family:'JetBrains Mono', monospace; font-size:11px; color:var(--ink-4); }
+.log-search::before { content:"/ "; color:var(--ink-5); }
+.log-body { font-family:'JetBrains Mono', monospace; font-size:12px; line-height:1.7; padding:6px 0; max-height:460px; overflow:hidden; }
+.log-line { display:grid; grid-template-columns:80px 32px 60px 70px 1fr; padding:1px 14px; align-items:baseline; column-gap:10px; }
+.log-line:hover { background:var(--panel-2); }
+.log-line:nth-child(even) { background:rgba(255,255,255,0.012); }
+.log-line:nth-child(even):hover { background:var(--panel-2); }
+.log-line .ts { color:var(--ink-4); font-size:11px; }
+.log-line .lvl { font-size:10px; text-transform:uppercase; letter-spacing:0.08em; font-weight:600; }
+.log-line .lvl.info { color:var(--ink-3); }
+.log-line .lvl.ok { color:var(--ok); }
+.log-line .lvl.warn { color:var(--warn); }
+.log-line .lvl.err { color:var(--bad); }
+.log-line .wk { color:var(--ink-3); font-size:10.5px; }
+.log-line .wk.w0 { color:#7dd3fc; }
+.log-line .wk.w1 { color:#c4b5fd; }
+.log-line .wk.w2 { color:#f0abfc; }
+.log-line .wk.sys { color:var(--ink-4); }
+.log-line .phase { color:var(--ink-4); font-size:10.5px; }
+.log-line .msg { color:var(--ink-2); }
+.log-line .msg .quoted { color:var(--accent-2); }
+.log-line .msg .ok-mark { color:var(--ok); }
+.log-line .msg .err-mark { color:var(--bad); }
+.log-line .msg .warn-mark { color:var(--warn); }
+.log-line .msg .url { color:var(--ink-3); text-decoration:underline; text-decoration-color:var(--ink-5); text-underline-offset:2px; }
+.log-line .msg .field { color:var(--accent-2); }
+.log-line .msg .num { color:var(--ink); }
+.log-fade { height:36px; background:linear-gradient(180deg,transparent,var(--panel)); position:relative; margin-top:-36px; }
+.log-foot { padding:8px 14px; border-top:1px solid var(--hairline); background:var(--panel-2); display:flex; justify-content:space-between; font-family:'JetBrains Mono', monospace; font-size:10.5px; color:var(--ink-4); }
+
+/* Drawer */
+.drawer-head { display:flex; align-items:center; justify-content:space-between; padding:14px 18px; border-bottom:1px solid var(--hairline); }
+.drawer-eyebrow { font-size:10px; text-transform:uppercase; letter-spacing:0.1em; color:var(--accent); font-weight:600; }
+.drawer-title { font-family:'Fraunces', serif; font-size:18px; font-weight:500; letter-spacing:-0.01em; margin-top:4px; }
+.drawer-meta { font-family:'JetBrains Mono', monospace; font-size:10.5px; color:var(--ink-4); margin-top:4px; }
+.drawer-section { padding:14px 18px; border-bottom:1px solid var(--hairline); }
+.drawer-section h4 { font-family:'Inter', sans-serif; font-size:10px; text-transform:uppercase; letter-spacing:0.1em; color:var(--ink-4); font-weight:600; margin-bottom:9px; }
+.dwr-screenshot { position:relative; aspect-ratio:16/11; border-radius:var(--rad-btn); overflow:hidden; border:1px solid var(--hairline); background:linear-gradient(180deg,#1a1c25,#0d0e13), repeating-linear-gradient(0deg, transparent 0 14px, rgba(255,255,255,0.02) 14px 15px); background-blend-mode:normal, overlay; }
+.dwr-screenshot::after { content:"no submit, form still visible"; position:absolute; bottom:8px; right:8px; background:rgba(247,107,107,0.12); color:var(--bad); border:1px solid rgba(247,107,107,0.30); border-radius:var(--rad-chip); font-family:'JetBrains Mono', monospace; font-size:9.5px; padding:3px 6px; }
+.dwr-screenshot .bar { position:absolute; top:8px; left:8px; right:8px; height:14px; background:rgba(255,255,255,0.05); border-radius:3px; display:flex; align-items:center; padding:0 6px; gap:4px; }
+.dwr-screenshot .bar i { width:6px; height:6px; border-radius:50%; background:rgba(255,255,255,0.18); }
+.dwr-screenshot .bar i:nth-child(2), .dwr-screenshot .bar i:nth-child(3) { background:rgba(255,255,255,0.10); }
+.dwr-screenshot .bar .addr { flex:1; font-family:'JetBrains Mono', monospace; font-size:8.5px; color:var(--ink-4); text-align:center; }
+.dwr-screenshot .form-mock { position:absolute; top:32px; left:14px; right:14px; display:flex; flex-direction:column; gap:7px; }
+.dwr-screenshot .form-mock i { display:block; height:8px; background:rgba(255,255,255,0.06); border-radius:2px; }
+.dwr-screenshot .form-mock i.short { width:40%; }
+.dwr-screenshot .form-mock i.field { height:14px; background:rgba(255,255,255,0.08); }
+.dwr-screenshot .form-mock i.field.long { height:28px; }
+.dwr-screenshot .form-mock .btn-mock { align-self:flex-start; width:72px; height:16px; background:rgba(74,222,128,0.20); border:1px solid rgba(74,222,128,0.32); border-radius:3px; }
+.dwr-reasons { padding:0; margin:0; display:flex; flex-direction:column; gap:7px; font-size:12px; color:var(--ink-2); }
+.dwr-reasons li { display:flex; gap:8px; padding:7px 10px; border-radius:var(--rad-btn); background:var(--panel-2); border-left:2px solid var(--bad); list-style:none; }
+.dwr-reasons li.warn { border-left-color:var(--warn); }
+.dwr-reasons li .key { font-family:'JetBrains Mono', monospace; font-size:10.5px; color:var(--ink-4); display:block; margin-bottom:2px; }
+.dwr-fields { width:100%; border-collapse:collapse; font-size:11.5px; }
+.dwr-fields td { padding:5px 8px; border-bottom:1px solid var(--hairline); }
+.dwr-fields td:first-child { color:var(--ink-4); font-family:'JetBrains Mono', monospace; width:42%; }
+.dwr-fields td:last-child { color:var(--ink); }
+.dwr-fields tr:last-child td { border-bottom:none; }
+.dwr-log-excerpt { font-family:'JetBrains Mono', monospace; font-size:11px; line-height:1.7; background:var(--canvas-2); border:1px solid var(--hairline); border-radius:var(--rad-btn); padding:10px 12px; color:var(--ink-3); max-height:170px; overflow:hidden; }
+.dwr-log-excerpt .em-bad { color:var(--bad); }
+.dwr-log-excerpt .em-ok { color:var(--ok); }
+.dwr-log-excerpt .em-warn { color:var(--warn); }
+.dwr-log-excerpt .em-key { color:var(--accent-2); }
+.dwr-actions { display:flex; flex-direction:column; gap:8px; padding:14px 18px; position:sticky; bottom:0; background:var(--panel); border-top:1px solid var(--hairline); }
+.dwr-actions .row { display:flex; gap:8px; }
+.btn-lg { flex:1; padding:10px 14px; border-radius:var(--rad-btn); font-size:12.5px; font-weight:600; letter-spacing:0.01em; display:flex; align-items:center; justify-content:center; gap:8px; border:1px solid var(--hairline-2); background:var(--panel-2); color:var(--ink); }
+.btn-lg.primary { background:var(--ok); color:#062810; border-color:var(--ok); }
+.btn-lg.warn { background:var(--warn); color:#2a1c08; border-color:var(--warn); }
+.btn-tertiary-row { display:flex; gap:4px; }
+.btn-tertiary { flex:1; padding:7px 8px; font-size:11px; color:var(--ink-3); background:transparent; border:1px solid var(--hairline); border-radius:var(--rad-btn); }
+
+/* Below-fold pages */
+.page-break { margin-top:16px; padding:22px 22px 8px; border-top:1px solid var(--hairline); background:var(--canvas-2); }
+.page-break-tag { font-size:10px; text-transform:uppercase; letter-spacing:0.18em; color:var(--accent); font-weight:600; }
+.page-break h2 { font-family:'Fraunces', serif; font-size:22px; font-weight:500; letter-spacing:-0.015em; margin-top:4px; }
+.page-break .sub { font-size:12px; color:var(--ink-3); margin-top:4px; }
+
+/* Apps toolbar */
+.app-toolbar { display:flex; align-items:center; gap:6px; padding:12px 22px 14px; background:var(--canvas-2); flex-wrap:wrap; }
+.app-toolbar .group { display:flex; gap:4px; padding:0 6px; border-right:1px solid var(--hairline); }
+.app-toolbar .group:last-child { border-right:none; }
+.app-toolbar .filter-chip { font-size:11px; padding:5px 10px; border-radius:var(--rad-btn); border:1px solid var(--hairline); background:var(--panel-2); color:var(--ink-3); }
+.app-toolbar .filter-chip.active { background:var(--panel-3); color:var(--ink); border-color:var(--hairline-3); }
+.app-toolbar .filter-chip .n { color:var(--ink-4); margin-left:6px; font-variant-numeric:tabular-nums; }
+.app-toolbar .filter-chip.warn { color:var(--warn); border-color:rgba(245,176,66,0.30); }
+
+.apps-grid { padding:0 22px 22px; background:var(--canvas-2); }
+.apps-day { font-family:'JetBrains Mono', monospace; font-size:10.5px; text-transform:uppercase; letter-spacing:0.15em; color:var(--ink-4); font-weight:600; padding:14px 0 8px; border-bottom:1px solid var(--hairline); display:flex; gap:10px; align-items:baseline; }
+.apps-day .count { color:var(--ink-3); }
+.apps-day .sum { color:var(--ink-4); font-weight:400; letter-spacing:0.05em; }
+.app-row { display:grid; grid-template-columns:22px 110px 1fr 130px 50px 80px 70px 110px 60px; padding:10px 0; border-bottom:1px solid var(--hairline); align-items:center; column-gap:10px; font-size:12.5px; }
+.app-row:hover { background:var(--panel); }
+.app-row.selected { background:linear-gradient(90deg,rgba(167,139,250,0.06),transparent); border-left:2px solid var(--accent); margin-left:-2px; padding-left:8px; }
+.app-status { display:inline-flex; align-items:center; gap:4px; font-size:10.5px; padding:2px 7px; border-radius:var(--rad-chip); font-family:'JetBrains Mono', monospace; letter-spacing:0.02em; }
+.app-status::before { content:""; width:6px; height:6px; border-radius:50%; }
+.app-status.applied { background:rgba(74,222,128,0.08); color:var(--ok); }
+.app-status.applied::before { background:var(--ok); }
+.app-status.unverified, .app-status.paused { background:rgba(245,176,66,0.10); color:var(--warn); border:1px solid rgba(245,176,66,0.30); }
+.app-status.unverified::before, .app-status.paused::before { background:var(--warn); }
+.app-status.failed { background:rgba(247,107,107,0.08); color:var(--bad); }
+.app-status.failed::before { background:var(--bad); }
+.app-title { color:var(--ink); }
+.app-title .verif-bullets { font-size:10.5px; color:var(--warn); font-family:'JetBrains Mono', monospace; display:block; margin-top:3px; line-height:1.5; }
+.app-title .verif-bullets b { color:#ffd391; font-weight:500; }
+.app-title .ats { font-size:10.5px; color:var(--ink-4); font-family:'JetBrains Mono', monospace; }
+.app-co { color:var(--ink-2); font-size:12px; }
+.app-co .via { font-size:10px; color:var(--ink-4); font-family:'JetBrains Mono', monospace; display:block; }
+.app-score { font-family:'Fraunces', serif; font-size:14px; color:var(--ink); font-weight:500; text-align:right; }
+.app-cell-mono { font-family:'JetBrains Mono', monospace; font-size:11px; color:var(--ink-3); }
+.app-cell-num { font-family:'JetBrains Mono', monospace; font-size:11px; color:var(--ink); text-align:right; }
+.app-actions { display:flex; gap:4px; justify-content:flex-end; }
+.app-action { width:26px; height:26px; border-radius:var(--rad-chip); background:var(--panel-2); border:1px solid var(--hairline); color:var(--ink-3); font-family:'JetBrains Mono', monospace; font-size:12px; display:grid; place-items:center; }
+
+/* Sites */
+.sites-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:14px; padding:4px 22px 32px; background:var(--canvas-2); }
+.site-card { background:var(--panel); border:1px solid var(--hairline); border-radius:var(--rad-card); padding:16px 16px 14px; display:flex; flex-direction:column; gap:12px; }
+.site-card.stale { border-color:rgba(245,176,66,0.30); background:linear-gradient(180deg,rgba(245,176,66,0.03),transparent 30%), var(--panel); }
+.site-card.never { border-style:dashed; border-color:var(--hairline-2); }
+.site-head { display:flex; justify-content:space-between; align-items:baseline; }
+.site-name { font-family:'Fraunces', serif; font-size:17px; font-weight:500; letter-spacing:-0.01em; }
+.site-domain { font-family:'JetBrains Mono', monospace; font-size:10.5px; color:var(--ink-4); display:block; margin-top:2px; }
+.site-state { font-family:'JetBrains Mono', monospace; font-size:10.5px; text-transform:uppercase; letter-spacing:0.06em; padding:3px 8px; border-radius:var(--rad-chip); display:inline-flex; gap:6px; align-items:center; }
+.site-state::before { content:""; width:6px; height:6px; border-radius:50%; }
+.site-state.fresh { color:var(--ok); background:rgba(74,222,128,0.06); }
+.site-state.fresh::before { background:var(--ok); }
+.site-state.stale { color:var(--warn); background:rgba(245,176,66,0.08); }
+.site-state.stale::before { background:var(--warn); }
+.site-state.never { color:var(--ink-4); background:var(--panel-2); }
+.site-state.never::before { background:var(--ink-5); }
+.site-stats { display:grid; grid-template-columns:repeat(3,1fr); border-top:1px solid var(--hairline); padding-top:12px; }
+.site-stat { padding-right:12px; border-right:1px solid var(--hairline); }
+.site-stat:last-child { border-right:none; padding-left:12px; padding-right:0; }
+.site-stat:first-child { padding-left:0; }
+.site-stat .lbl { font-size:9.5px; text-transform:uppercase; letter-spacing:0.1em; color:var(--ink-4); font-weight:500; }
+.site-stat .val { font-family:'Fraunces', serif; font-size:18px; color:var(--ink); margin-top:2px; font-weight:500; letter-spacing:-0.01em; }
+.site-stat .val .small { font-size:11px; color:var(--ink-3); font-family:'JetBrains Mono', monospace; }
+.site-foot { display:flex; gap:8px; align-items:center; justify-content:space-between; border-top:1px solid var(--hairline); padding-top:11px; }
+.site-meta { font-family:'JetBrains Mono', monospace; font-size:10.5px; color:var(--ink-4); }
+.site-meta b { color:var(--ink-2); font-weight:500; }
+.btn-site { font-size:11.5px; padding:6px 12px; border-radius:var(--rad-btn); background:var(--panel-3); border:1px solid var(--hairline-2); color:var(--ink-2); }
+.btn-site.primary { background:var(--accent); color:#0b0a14; border-color:var(--accent); font-weight:600; }
+.btn-site.warn { background:rgba(245,176,66,0.16); color:var(--warn); border-color:rgba(245,176,66,0.30); }
+
+/* Run plan modal */
+.runplan-modal-wrap { padding:26px 22px 36px; background:var(--canvas-2); border-top:1px solid var(--hairline); }
+.modal-mock-eyebrow { font-size:10px; text-transform:uppercase; letter-spacing:0.18em; color:var(--accent); font-weight:600; }
+.modal-mock-title { font-family:'Fraunces', serif; font-size:22px; font-weight:500; margin:4px 0 18px; letter-spacing:-0.015em; }
+.modal-mock { max-width:920px; background:var(--panel); border:1px solid var(--hairline-2); border-radius:var(--rad-card); box-shadow:0 30px 80px -30px rgba(0,0,0,0.6); overflow:hidden; }
+.modal-head { padding:18px 22px; border-bottom:1px solid var(--hairline); display:flex; align-items:baseline; justify-content:space-between; }
+.modal-head h3 { font-family:'Fraunces', serif; font-size:20px; font-weight:500; letter-spacing:-0.015em; }
+.modal-head .id { font-family:'JetBrains Mono', monospace; font-size:11px; color:var(--ink-4); }
+.modal-body { display:grid; grid-template-columns:1.4fr 1fr; }
+.modal-col { padding:18px 22px; }
+.modal-col.right { border-left:1px solid var(--hairline); background:var(--panel-2); }
+.modal-col h4 { font-family:'Inter', sans-serif; font-size:10px; text-transform:uppercase; letter-spacing:0.1em; color:var(--ink-4); font-weight:600; margin-bottom:10px; }
+.stage-row { display:flex; align-items:center; gap:12px; padding:9px 0; border-bottom:1px solid var(--hairline); }
+.stage-row:last-child { border-bottom:none; }
+.stage-row .check { width:16px; height:16px; border-radius:4px; border:1px solid var(--hairline-3); background:var(--panel-3); display:grid; place-items:center; flex:0 0 16px; font-family:'JetBrains Mono', monospace; font-size:11px; color:transparent; }
+.stage-row.on .check { background:var(--accent); color:#0b0a14; border-color:var(--accent); }
+.stage-row.on .check::after { content:"x"; }
+.stage-row .name { font-size:13px; color:var(--ink); flex:1; }
+.stage-row.off .name { color:var(--ink-4); }
+.stage-row .desc { font-size:11px; color:var(--ink-3); font-family:'JetBrains Mono', monospace; }
+.stage-row.off .desc { color:var(--ink-5); }
+.stage-row .est { font-family:'JetBrains Mono', monospace; font-size:11px; color:var(--ink-2); text-align:right; min-width:80px; }
+.modal-tunes { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; margin-top:14px; }
+.tune { background:var(--panel-2); border:1px solid var(--hairline); border-radius:var(--rad-btn); padding:9px 12px; }
+.tune .lbl { font-size:9.5px; text-transform:uppercase; letter-spacing:0.1em; color:var(--ink-4); font-weight:500; }
+.tune .ctrl { display:flex; gap:6px; align-items:baseline; margin-top:3px; }
+.tune .val { font-family:'Fraunces', serif; font-size:18px; color:var(--ink); font-weight:500; letter-spacing:-0.01em; }
+.tune .unit { font-family:'JetBrains Mono', monospace; font-size:11px; color:var(--ink-4); }
+.tune .stepper { margin-left:auto; display:flex; gap:2px; }
+.tune .stepper button { width:22px; height:22px; background:var(--panel-3); border:1px solid var(--hairline); border-radius:var(--rad-chip); color:var(--ink-3); font-family:'JetBrains Mono', monospace; }
+.modal-est { display:flex; flex-direction:column; gap:10px; }
+.est-row { display:flex; align-items:baseline; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--hairline); }
+.est-row:last-child { border-bottom:none; }
+.est-row .k { font-size:11px; color:var(--ink-3); text-transform:uppercase; letter-spacing:0.08em; }
+.est-row .v { font-family:'Fraunces', serif; font-size:22px; color:var(--ink); font-weight:500; letter-spacing:-0.015em; }
+.est-row .v .small { font-family:'JetBrains Mono', monospace; font-size:11px; color:var(--ink-3); }
+.est-row.cap-warn .v { color:var(--warn); }
+.modal-foot { padding:14px 22px; border-top:1px solid var(--hairline); display:flex; align-items:center; justify-content:space-between; background:var(--panel-2); }
+.modal-foot .preview-note { font-family:'JetBrains Mono', monospace; font-size:11px; color:var(--ink-4); }
+.modal-foot .row { display:flex; gap:8px; }
+.kbd { font-family:'JetBrains Mono', monospace; font-size:10px; padding:1px 5px; border-radius:3px; background:var(--panel-3); border:1px solid var(--hairline-2); color:var(--ink-3); }
+</style>
+</head>
+<body>
+
+<div class="shell">
+
+  <!-- Nav rail -->
+  <nav class="nav-rail">
+    <div class="nav-rail-inner">
+      <div class="nav-logo">a</div>
+      <a class="nav-item active"><div class="ico">▦</div><span class="lbl">Pipe</span></a>
+      <a class="nav-item"><div class="ico">▤</div><span class="lbl">Apps</span></a>
+      <a class="nav-item"><div class="ico">⌬</div><span class="lbl">Sites</span></a>
+      <a class="nav-item"><div class="ico">⌗</div><span class="lbl">Jobs</span></a>
+      <a class="nav-item"><div class="ico">⌫</div><span class="lbl">Inbox</span></a>
+      <a class="nav-item"><div class="ico">⌥</div><span class="lbl">Prof</span></a>
+      <a class="nav-item"><div class="ico">⊞</div><span class="lbl">Srch</span></a>
+      <a class="nav-item"><div class="ico">↻</div><span class="lbl">Hist</span></a>
+      <div class="nav-spacer"></div>
+      <a class="nav-item"><div class="ico">⚙</div><span class="lbl">Set</span></a>
+      <a class="nav-item"><div class="ico">≡</div><span class="lbl">Log</span></a>
+    </div>
+  </nav>
+
+  <main class="main">
+
+    <header class="header">
+      <div class="header-brand">
+        <span class="wordmark">apply<span class="dot">.</span>pilot</span>
+        <span class="build-tag">v0.7.3 · run #428</span>
+      </div>
+      <nav class="tabs">
+        <a class="tab active">Pipeline</a>
+        <a class="tab">Applications <span class="count">3 needs check</span></a>
+        <a class="tab">Sites</a>
+        <a class="tab">Jobs <span class="count">847</span></a>
+        <a class="tab">Inbox <span class="count">2</span></a>
+        <a class="tab">Profile</a>
+        <a class="tab">Searches</a>
+        <a class="tab">History</a>
+      </nav>
+      <div class="header-counters">
+        <div class="counter">
+          <div class="counter-label">Today · applied</div>
+          <div class="counter-row"><span class="counter-value">11</span><span class="counter-cap">/ 25 cap</span></div>
+          <div class="counter-bar"><i style="width:44%"></i></div>
+        </div>
+        <div class="counter">
+          <div class="counter-label">Today · spend</div>
+          <div class="counter-row"><span class="counter-value">$0.84</span><span class="counter-cap">/ $5.00</span></div>
+          <div class="counter-bar"><i style="width:17%"></i></div>
+        </div>
+        <div class="counter accent">
+          <div class="counter-label">Active workers</div>
+          <div class="counter-row"><span class="counter-value">3</span><span class="counter-cap">of 3 · pace 2x</span></div>
+          <div class="counter-bar"><i style="width:100%"></i></div>
+        </div>
+        <div class="counter">
+          <div class="counter-label">Queue depth</div>
+          <div class="counter-row"><span class="counter-value">47</span><span class="counter-cap">jobs ≥ 7.0</span></div>
+          <div class="counter-bar"><i style="width:62%"></i></div>
+        </div>
+        <div class="counter attention">
+          <div class="counter-label">Needs check</div>
+          <div class="counter-row"><span class="counter-value">3</span><span class="counter-cap">unverified</span></div>
+          <div class="counter-bar"><i style="width:30%"></i></div>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button class="btn-ghost">Pause</button>
+        <button class="btn-stop">Stop</button>
+      </div>
+    </header>
+
+    <div class="now-hint">
+      <span class="live-dot"></span>
+      <span><b>Now:</b> apply · 3 workers active</span>
+      <span style="color:var(--ink-5)">/</span>
+      <span>discover · 4 / 12 sources · 387 new</span>
+      <span style="color:var(--ink-5)">/</span>
+      <span>next: enrich 18 jobs <span style="color:var(--ink-4)">in ~90s</span></span>
+      <span style="margin-left:auto; color:var(--ink-4)" class="mono">15:42:08 PST</span>
+    </div>
+
+    <section class="timeline-wrap">
+      <div class="timeline-head">
+        <h3>Last 30 minutes</h3>
+        <div class="sub">15:12 → 15:42 · 247 events · hover for detail</div>
+      </div>
+      <div class="ribbon">
+        <div class="ribbon-seg" style="width:4%; background:var(--phase-discover)" title="discover · jobspy · 142 jobs"></div>
+        <div class="ribbon-seg" style="width:2%; background:var(--phase-discover); opacity:0.5" title="discover · workday · 22 jobs"></div>
+        <div class="ribbon-seg gap" style="width:1%"></div>
+        <div class="ribbon-seg" style="width:7%; background:var(--phase-enrich)" title="enrich · 180 jobs fetched"></div>
+        <div class="ribbon-seg" style="width:5%; background:var(--phase-score)" title="score · 180 scored, 47 ≥ 7.0"></div>
+        <div class="ribbon-seg" style="width:6%; background:var(--phase-tailor)" title="tailor · 18 resumes"></div>
+        <div class="ribbon-seg" style="width:3%; background:var(--phase-cover)" title="cover · 18 letters"></div>
+        <div class="ribbon-seg" style="width:1%; background:var(--phase-pdf)" title="pdf · 18 rendered"></div>
+        <div class="ribbon-seg gap" style="width:0.5%"></div>
+        <div class="ribbon-seg" style="width:8%; background:var(--phase-apply)" title="apply · Camber, Anthropic (verified)"></div>
+        <div class="ribbon-seg" style="width:1%; background:var(--warn); opacity:0.7" title="apply · Acme · paused for MFA"></div>
+        <div class="ribbon-seg" style="width:6%; background:var(--phase-apply)" title="apply · 4 jobs · 3 verified"></div>
+        <div class="ribbon-seg" style="width:1.5%; background:var(--bad); opacity:0.55" title="apply · Stripe · failed: form_changed"></div>
+        <div class="ribbon-seg" style="width:6%; background:var(--phase-apply)" title="apply · 3 jobs verified"></div>
+        <div class="ribbon-seg" style="width:2%; background:var(--warn); opacity:0.65" title="3 submitted_unverified flagged"></div>
+        <div class="ribbon-seg" style="width:5%; background:var(--phase-refer)" title="refer · 11 outreach drafts"></div>
+        <div class="ribbon-seg" style="width:7%; background:var(--phase-apply)" title="apply · currently in progress"></div>
+        <div class="ribbon-seg gap" style="width:34%"></div>
+      </div>
+      <div class="ribbon-axis">
+        <span>15:12</span><span>15:17</span><span>15:22</span><span>15:27</span><span>15:32</span><span>15:37</span>
+      </div>
+      <div class="ribbon-legend">
+        <span><i style="background:var(--phase-discover)"></i>discover</span>
+        <span><i style="background:var(--phase-enrich)"></i>enrich</span>
+        <span><i style="background:var(--phase-score)"></i>score</span>
+        <span><i style="background:var(--phase-tailor)"></i>tailor</span>
+        <span><i style="background:var(--phase-cover)"></i>cover</span>
+        <span><i style="background:var(--phase-pdf)"></i>pdf</span>
+        <span><i style="background:var(--phase-apply)"></i>apply</span>
+        <span><i style="background:var(--phase-refer)"></i>refer</span>
+        <span><i style="background:var(--warn)"></i>needs check</span>
+        <span><i style="background:var(--bad)"></i>failed</span>
+      </div>
+    </section>
+
+    <section class="runplan">
+      <div class="runplan-left">
+        <div>
+          <div class="runplan-status">Running</div>
+          <div class="runplan-name">Daily · SWE + ML · ≥ 7.0</div>
+          <div class="runplan-id mono">run#428 · started 14:58:12</div>
+        </div>
+      </div>
+      <div class="runplan-body">
+        <div class="rp-field">
+          <div class="rp-label">Stages</div>
+          <div class="rp-pills">
+            <span class="rp-pill active">discover</span><span class="rp-pill active">enrich</span><span class="rp-pill active">score</span><span class="rp-pill active">tailor</span><span class="rp-pill active">cover</span><span class="rp-pill active">pdf</span><span class="rp-pill active">apply</span><span class="rp-pill off">refer</span>
+          </div>
+        </div>
+        <div class="rp-field"><div class="rp-label">Workers</div><div class="rp-value"><span class="accent">3</span> parallel</div></div>
+        <div class="rp-field"><div class="rp-label">Pace</div><div class="rp-value">2× / human-watchable</div></div>
+        <div class="rp-field"><div class="rp-label">Min score</div><div class="rp-value">7.0</div></div>
+        <div class="rp-field"><div class="rp-label">ETA</div><div class="rp-value">18m 22s</div></div>
+        <div class="rp-field"><div class="rp-label">Est. remaining</div><div class="rp-value">$0.41</div></div>
+      </div>
+      <div class="runplan-actions">
+        <button class="btn-ghost">Edit plan</button>
+      </div>
+    </section>
+
+    <div class="section-h">
+      <div>
+        <h2>Now</h2>
+        <div class="sub">3 of 3 workers active · click a chip for live tail</div>
+      </div>
+      <div class="right">
+        <span class="mono" style="color:var(--ink-4)">Selected: <b style="color:var(--ink-2)">W0</b></span>
+        <span class="kbd">⌘ ↵</span><span style="color:var(--ink-4)">jump to log</span>
+      </div>
+    </div>
+
+    <section class="workers">
+      <article class="worker active">
+        <div class="worker-head">
+          <span class="worker-id mono">W0 · GREENHOUSE</span>
+          <span class="worker-elapsed mono">elapsed <b>00:23</b> · attempt 1</span>
+        </div>
+        <div>
+          <div class="worker-title">Senior Software Engineer, Agents</div>
+          <div class="worker-co mono">Anthropic · <span class="ats">greenhouse.io/anthropic</span></div>
+        </div>
+        <div class="worker-step">
+          <span class="label">Sub-step · fill_field</span>
+          Filling <span class="field">"Why Anthropic?"</span> — typing tailored answer (319/2000 chars), 23s elapsed
+        </div>
+        <div class="worker-stats">
+          <span>score <b>8.4</b></span><span>fields <b>9/14</b></span><span>tokens <b>14.2k</b></span><span>cost <b>$0.034</b></span>
+        </div>
+      </article>
+
+      <article class="worker">
+        <div class="worker-head">
+          <span class="worker-id mono">W1 · WORKDAY</span>
+          <span class="worker-elapsed mono">elapsed <b>01:48</b> · attempt 1</span>
+        </div>
+        <div>
+          <div class="worker-title">Staff ML Engineer, Search Quality</div>
+          <div class="worker-co mono">Acme Robotics · <span class="ats">acme.wd5.myworkdayjobs.com</span></div>
+        </div>
+        <div class="worker-step">
+          <span class="label">Sub-step · multi_page_nav</span>
+          Page 3 of 7 — "Voluntary disclosures" · 18 fields detected
+        </div>
+        <div class="worker-checkpoint">
+          <span class="num">CHECKPOINT 3 / 7</span>
+          <span style="color:var(--ink-3); font-size:11px">snapshot saved · 1:34 ago</span>
+        </div>
+        <div class="worker-stats">
+          <span>score <b>7.6</b></span><span>fields <b>22/41</b></span><span>tokens <b>38.9k</b></span><span>cost <b>$0.094</b></span>
+        </div>
+      </article>
+
+      <article class="worker paused">
+        <div class="worker-head">
+          <span class="worker-id mono">W2 · LEVER</span>
+          <span class="worker-elapsed mono">paused <b>00:46</b> · awaiting you</span>
+        </div>
+        <div>
+          <div class="worker-title">Senior Full-Stack Engineer</div>
+          <div class="worker-co mono">Cresta · <span class="ats">jobs.lever.co/cresta</span></div>
+        </div>
+        <div class="worker-pause-banner">
+          <b>Human input required.</b> Site presented an SMS verification code prompt before the application form. Last screenshot saved 46s ago.
+          <div class="worker-pause-actions">
+            <button class="primary">I did it · resume</button><button>Skip job</button><button>View</button>
+          </div>
+        </div>
+        <div class="worker-stats">
+          <span>score <b>8.1</b></span><span>fields <b>0/—</b></span><span>tokens <b>2.1k</b></span><span>cost <b>$0.005</b></span>
+        </div>
+      </article>
+    </section>
+
+    <section class="snapshot">
+      <div class="snapshot-head">
+        <h3>Verify page state · W0</h3>
+        <span class="url mono"><span class="seg">boards.greenhouse.io</span> / anthropic / jobs / 4623124005 / application</span>
+      </div>
+      <div class="snapshot-body">
+        <div class="snapshot-fields">
+          <table class="snapshot-table"><tbody>
+            <tr><td>first_name</td><td class="val-typed">Rachit</td></tr>
+            <tr><td>last_name</td><td class="val-typed">Srivastava</td></tr>
+            <tr><td>email</td><td class="val-typed">rachit.srivastava1994@gmail.com</td></tr>
+            <tr><td>phone</td><td class="val-typed">+1 415 ••• 4727</td></tr>
+            <tr><td>resume.pdf</td><td class="val-typed">rachit_srivastava_anthropic.pdf · 312 KB</td></tr>
+            <tr><td>cover_letter.pdf</td><td class="val-typed">anthropic_cover.pdf · 84 KB</td></tr>
+            <tr><td>linkedin</td><td class="val-typed">linkedin.com/in/rachit-srivastava-9</td></tr>
+            <tr><td>portfolio</td><td class="val-typed">rachit.dev</td></tr>
+            <tr><td>work_auth_us</td><td class="val-typed">Yes — citizen</td></tr>
+            <tr><td>visa_sponsorship</td><td class="val-typed">No</td></tr>
+            <tr><td>why_anthropic</td><td class="val-typed fresh">Typing… 319 / 2000 chars</td></tr>
+            <tr><td>most_proud_of</td><td class="val-empty">— pending</td></tr>
+            <tr><td>salary_expectation</td><td class="val-empty">— pending</td></tr>
+            <tr><td>start_date</td><td class="val-empty">— pending</td></tr>
+          </tbody></table>
+        </div>
+        <div class="snapshot-side">
+          <h4>Pre-submit checks</h4>
+          <ul class="snap-verify-list">
+            <li><div><span class="key">resume_uploaded</span><br><b>true</b> · 312 KB anthropic-tailored</div></li>
+            <li><div><span class="key">cover_uploaded</span><br><b>true</b> · 84 KB</div></li>
+            <li><div><span class="key">required_fields</span><br><b>9 / 14</b> completed</div></li>
+            <li class="warn"><div><span class="key">essay_in_progress</span><br>Why-Anthropic typing, 319 chars</div></li>
+            <li><div><span class="key">submit_button</span><br>detected · disabled (essays incomplete)</div></li>
+            <li><div><span class="key">consent_checkbox</span><br><b>not yet</b> · last action</div></li>
+          </ul>
+          <h4 style="margin-top:6px">Cookie · greenhouse</h4>
+          <div style="font-family:'JetBrains Mono', monospace; font-size:11px; color:var(--ink-3)">fresh · verified <b style="color:var(--ink-2)">3h 11m ago</b></div>
+        </div>
+      </div>
+    </section>
+
+    <div class="section-h">
+      <div>
+        <h2>Queue</h2>
+        <div class="sub">Next 8 of 47 · ordered by score, then ATS reliability</div>
+      </div>
+      <div class="right"><span style="color:var(--ink-4)" class="mono">filters: score ≥ 7.0 · not yet applied</span></div>
+    </div>
+    <section class="queue-wrap">
+      <div class="queue-card">
+        <div class="queue-head">
+          <span class="col-pip"></span><span class="col-rank">#</span><span class="col-title">Title</span><span class="col-co">Company</span><span class="col-score">Score</span><span class="col-ats">ATS</span><span class="col-eta">Est</span><span class="col-act"></span>
+        </div>
+        <div class="q-row next">
+          <span class="pip"><i></i></span><span class="col-rank mono">01</span>
+          <span class="col-title">Senior Software Engineer, Product Infrastructure<span class="preview">Resume tailored 3m ago · "infra-heavy variant" · cover letter ready</span></span>
+          <span class="col-co">OpenAI<span class="via mono">via workatastartup.com</span></span>
+          <span class="col-score"><span class="score-num">9.1</span><span class="score-bar"><i style="width:91%"></i></span></span>
+          <span class="col-ats"><span class="ats-chip">WaaS</span></span>
+          <span class="col-eta mono">~ 1m 40s</span><span class="col-act mono">···</span>
+        </div>
+        <div class="q-row ready">
+          <span class="pip"><i></i></span><span class="col-rank mono">02</span>
+          <span class="col-title">Senior ML Engineer — Inference<span class="preview">Tailored · cover letter ready</span></span>
+          <span class="col-co">Together AI<span class="via mono">via greenhouse.io</span></span>
+          <span class="col-score"><span class="score-num">8.7</span><span class="score-bar"><i style="width:87%"></i></span></span>
+          <span class="col-ats"><span class="ats-chip">Greenhouse</span></span>
+          <span class="col-eta mono">~ 1m 12s</span><span class="col-act mono">···</span>
+        </div>
+        <div class="q-row ready">
+          <span class="pip"><i></i></span><span class="col-rank mono">03</span>
+          <span class="col-title">Staff Engineer, Search Quality<span class="preview">Resume tailored · cover letter ready</span></span>
+          <span class="col-co">Perplexity<span class="via mono">via ashbyhq.com</span></span>
+          <span class="col-score"><span class="score-num">8.5</span><span class="score-bar"><i style="width:85%"></i></span></span>
+          <span class="col-ats"><span class="ats-chip">Ashby</span></span>
+          <span class="col-eta mono">~ 55s</span><span class="col-act mono">···</span>
+        </div>
+        <div class="q-row ready">
+          <span class="pip"><i></i></span><span class="col-rank mono">04</span>
+          <span class="col-title">Senior Backend Engineer, Data Platform<span class="preview">Resume tailored · cover letter ready</span></span>
+          <span class="col-co">BillionToOne<span class="via mono">via workatastartup.com</span></span>
+          <span class="col-score"><span class="score-num">8.3</span><span class="score-bar"><i style="width:83%"></i></span></span>
+          <span class="col-ats"><span class="ats-chip">WaaS</span></span>
+          <span class="col-eta mono">~ 1m 20s</span><span class="col-act mono">···</span>
+        </div>
+        <div class="q-row ready">
+          <span class="pip"><i></i></span><span class="col-rank mono">05</span>
+          <span class="col-title">Senior Software Engineer, Distributed Systems<span class="preview">Tailored · cover ready · WaaS founder note included</span></span>
+          <span class="col-co">Pine Park Health<span class="via mono">via workatastartup.com</span></span>
+          <span class="col-score"><span class="score-num">8.0</span><span class="score-bar"><i style="width:80%"></i></span></span>
+          <span class="col-ats"><span class="ats-chip">WaaS</span></span>
+          <span class="col-eta mono">~ 1m 30s</span><span class="col-act mono">···</span>
+        </div>
+        <div class="q-row ready med">
+          <span class="pip"><i></i></span><span class="col-rank mono">06</span>
+          <span class="col-title">Software Engineer II — Platform<span class="preview">Resume tailored · cover ready</span></span>
+          <span class="col-co">Nova Credit<span class="via mono">via lever.co</span></span>
+          <span class="col-score"><span class="score-num">7.9</span><span class="score-bar"><i style="width:79%"></i></span></span>
+          <span class="col-ats"><span class="ats-chip">Lever</span></span>
+          <span class="col-eta mono">~ 1m 10s</span><span class="col-act mono">···</span>
+        </div>
+        <div class="q-row ready med">
+          <span class="pip"><i></i></span><span class="col-rank mono">07</span>
+          <span class="col-title">Engineer · Foundational Research<span class="preview">Tailored · cover ready · uses long-form essay variant</span></span>
+          <span class="col-co">Aqua<span class="via mono">via workatastartup.com</span></span>
+          <span class="col-score"><span class="score-num">7.6</span><span class="score-bar"><i style="width:76%"></i></span></span>
+          <span class="col-ats"><span class="ats-chip">WaaS</span></span>
+          <span class="col-eta mono">~ 1m 45s</span><span class="col-act mono">···</span>
+        </div>
+        <div class="q-row ready low">
+          <span class="pip"><i></i></span><span class="col-rank mono">08</span>
+          <span class="col-title">Backend Engineer, Risk Platform<span class="preview">Resume tailored · cover ready · ATS test pending</span></span>
+          <span class="col-co">Camber<span class="via mono">via workatastartup.com</span></span>
+          <span class="col-score"><span class="score-num">7.2</span><span class="score-bar"><i style="width:72%"></i></span></span>
+          <span class="col-ats"><span class="ats-chip">WaaS</span></span>
+          <span class="col-eta mono">~ 1m 35s</span><span class="col-act mono">···</span>
+        </div>
+      </div>
+    </section>
+
+    <div class="section-h">
+      <div>
+        <h2>Log</h2>
+        <div class="sub">Live · auto-scroll · 247 events in last 30m</div>
+      </div>
+      <div class="right"><span style="color:var(--ink-4)" class="mono">tail -f ~/.applypilot/logs/run-428.jsonl</span></div>
+    </div>
+    <section class="log-wrap">
+      <div class="log-card">
+        <div class="log-head">
+          <div class="log-filters">
+            <button class="lf-chip active">all <span style="color:var(--ink-4)">247</span></button>
+            <button class="lf-chip">info <span style="color:var(--ink-4)">198</span></button>
+            <button class="lf-chip">warn <span style="color:var(--ink-4)">37</span></button>
+            <button class="lf-chip">err <span style="color:var(--ink-4)">12</span></button>
+            <span style="color:var(--ink-5); padding:0 6px">·</span>
+            <button class="lf-chip active">W0</button><button class="lf-chip active">W1</button><button class="lf-chip active">W2</button><button class="lf-chip active">sys</button>
+            <span style="color:var(--ink-5); padding:0 6px">·</span>
+            <button class="lf-chip">discover</button><button class="lf-chip">enrich</button><button class="lf-chip">score</button><button class="lf-chip active">apply</button>
+          </div>
+          <span class="log-search">find type:event id:"greenhouse"</span>
+        </div>
+        <div class="log-body">
+          <div class="log-line"><span class="ts">15:42:08.412</span><span class="lvl info">INF</span><span class="wk w0">W0</span><span class="phase">apply</span><span class="msg">fill_field <span class="field">"why_anthropic"</span> — typing tailored answer, <span class="num">319</span>/<span class="num">2000</span> chars</span></div>
+          <div class="log-line"><span class="ts">15:42:06.288</span><span class="lvl info">INF</span><span class="wk w1">W1</span><span class="phase">apply</span><span class="msg">checkpoint <span class="num">3</span>/<span class="num">7</span> · snapshot saved <span class="url">~/.applypilot/snapshots/r428-w1-acme-p3.json</span></span></div>
+          <div class="log-line"><span class="ts">15:41:54.991</span><span class="lvl info">INF</span><span class="wk w1">W1</span><span class="phase">apply</span><span class="msg">page_advance · acme.wd5.myworkdayjobs.com page <span class="num">2</span> → <span class="num">3</span> ("voluntary disclosures")</span></div>
+          <div class="log-line"><span class="ts">15:41:22.703</span><span class="lvl warn">WRN</span><span class="wk w2">W2</span><span class="phase">apply</span><span class="msg"><span class="warn-mark">pause_for_human</span> · reason=<span class="quoted">"sms_mfa"</span> · last_screenshot saved, awaiting resume</span></div>
+          <div class="log-line"><span class="ts">15:41:18.502</span><span class="lvl info">INF</span><span class="wk w2">W2</span><span class="phase">apply</span><span class="msg">detect_obstacle · classifier=<span class="quoted">"mfa_prompt"</span> · confidence <span class="num">0.94</span></span></div>
+          <div class="log-line"><span class="ts">15:40:47.116</span><span class="lvl ok">OK</span><span class="wk sys">sys</span><span class="phase">verify</span><span class="msg"><span class="ok-mark">applied</span> · Camber · submit_click=<span class="num">1</span> · url_changed=<span class="num">1</span> · conf_text=<span class="num">1</span></span></div>
+          <div class="log-line"><span class="ts">15:40:46.802</span><span class="lvl info">INF</span><span class="wk sys">sys</span><span class="phase">verify</span><span class="msg">post_submit_check · OCR found <span class="quoted">"Application received — we'll be in touch"</span></span></div>
+          <div class="log-line"><span class="ts">15:40:44.190</span><span class="lvl info">INF</span><span class="wk w0">W0</span><span class="phase">apply</span><span class="msg">browser_click target=<span class="quoted">"Submit application"</span> · proof recorded</span></div>
+          <div class="log-line"><span class="ts">15:39:58.044</span><span class="lvl warn">WRN</span><span class="wk sys">sys</span><span class="phase">verify</span><span class="msg"><span class="warn-mark">submitted_unverified</span> · BillionToOne · agent said RESULT:APPLIED but submit_click=<span class="num">0</span></span></div>
+          <div class="log-line"><span class="ts">15:39:51.677</span><span class="lvl err">ERR</span><span class="wk w0">W0</span><span class="phase">apply</span><span class="msg"><span class="err-mark">agent_self_aborted</span> · model said <span class="quoted">"per dry-run instructions, not clicking Send"</span> · NOT a dry run</span></div>
+          <div class="log-line"><span class="ts">15:39:14.230</span><span class="lvl info">INF</span><span class="wk w0">W0</span><span class="phase">tailor</span><span class="msg">tailored_resume · BillionToOne · diff <span class="num">+412</span>/<span class="num">-318</span> chars · model=claude-opus-4.7</span></div>
+          <div class="log-line"><span class="ts">15:38:42.005</span><span class="lvl info">INF</span><span class="wk sys">sys</span><span class="phase">score</span><span class="msg">scored <span class="num">18</span> jobs · 7 ≥ 8.0 · 4 in [7.0, 8.0) · 7 below threshold</span></div>
+          <div class="log-line"><span class="ts">15:38:11.498</span><span class="lvl info">INF</span><span class="wk sys">sys</span><span class="phase">enrich</span><span class="msg">fetched <span class="num">18</span>/<span class="num">18</span> JDs · sources: workatastartup(11), greenhouse(4), lever(2), ashby(1)</span></div>
+          <div class="log-line"><span class="ts">15:37:44.227</span><span class="lvl info">INF</span><span class="wk sys">sys</span><span class="phase">discover</span><span class="msg">jobspy.linkedin returned <span class="num">142</span> jobs · <span class="num">11</span> new</span></div>
+          <div class="log-line"><span class="ts">15:37:31.118</span><span class="lvl warn">WRN</span><span class="wk sys">sys</span><span class="phase">discover</span><span class="msg"><span class="warn-mark">rate_limit</span> · jobspy.indeed · backing off <span class="num">12s</span> (attempt 2/4)</span></div>
+          <div class="log-line"><span class="ts">15:36:08.842</span><span class="lvl ok">OK</span><span class="wk sys">sys</span><span class="phase">verify</span><span class="msg"><span class="ok-mark">applied</span> · Anthropic-Customer-Engineer · submit_click=<span class="num">1</span> · url_changed=<span class="num">1</span></span></div>
+          <div class="log-line"><span class="ts">15:35:58.011</span><span class="lvl info">INF</span><span class="wk sys">sys</span><span class="phase">cover</span><span class="msg">cover_letter_generated · <span class="num">18</span> jobs · avg <span class="num">312</span> tokens · cost $<span class="num">0.041</span></span></div>
+          <div class="log-line"><span class="ts">15:34:11.402</span><span class="lvl info">INF</span><span class="wk sys">sys</span><span class="phase">pdf</span><span class="msg">rendered_pdf · <span class="num">18</span>/<span class="num">18</span> resumes + covers · avg <span class="num">218ms</span> per pair</span></div>
+          <div class="log-line"><span class="ts">15:33:42.119</span><span class="lvl info">INF</span><span class="wk sys">sys</span><span class="phase">discover</span><span class="msg">workday-api · acme.wd5 returned <span class="num">22</span> jobs · 5 new (engineering, data)</span></div>
+          <div class="log-line"><span class="ts">15:31:14.890</span><span class="lvl warn">WRN</span><span class="wk sys">sys</span><span class="phase">verify</span><span class="msg"><span class="warn-mark">cookie_stale</span> · lever.co · last_verified 6d <span class="num">2h</span> ago · warmer needed</span></div>
+          <div class="log-line"><span class="ts">15:30:58.501</span><span class="lvl info">INF</span><span class="wk sys">sys</span><span class="phase">refer</span><span class="msg">drafted <span class="num">11</span> referral messages · 2 mutuals at Anthropic · 1 at Perplexity</span></div>
+          <div class="log-line"><span class="ts">15:29:22.045</span><span class="lvl info">INF</span><span class="wk sys">sys</span><span class="phase">discover</span><span class="msg">workatastartup · returned <span class="num">37</span> jobs · <span class="num">14</span> new · matched profile <span class="quoted">"ml, infra, agents"</span></span></div>
+        </div>
+        <div class="log-fade"></div>
+        <div class="log-foot">
+          <span>scrolled to live · 22 visible / 247 total</span>
+          <span><span class="kbd">/</span> filter · <span class="kbd">⌘ k</span> jump · <span class="kbd">space</span> pause</span>
+        </div>
+      </div>
+    </section>
+
+
+    <section class="page-break">
+      <div class="page-break-tag">Page · /applications</div>
+      <h2>Applications ledger</h2>
+      <div class="sub">Every job the agent attempted to apply to · sorted newest first · 3 needs check</div>
+    </section>
+
+    <div class="app-toolbar">
+      <div class="group">
+        <button class="filter-chip active">All <span class="n">147</span></button>
+        <button class="filter-chip">Applied <span class="n">123</span></button>
+        <button class="filter-chip warn">Needs check <span class="n">3</span></button>
+        <button class="filter-chip">Paused <span class="n">1</span></button>
+        <button class="filter-chip">Failed <span class="n">14</span></button>
+        <button class="filter-chip">Skipped <span class="n">6</span></button>
+      </div>
+      <div class="group">
+        <button class="filter-chip">Today</button><button class="filter-chip">7d</button><button class="filter-chip">30d</button>
+      </div>
+      <div class="group">
+        <button class="filter-chip">all sites</button><button class="filter-chip">WaaS</button><button class="filter-chip">Greenhouse</button><button class="filter-chip">Lever</button><button class="filter-chip">Workday</button><button class="filter-chip">Ashby</button>
+      </div>
+      <div style="margin-left:auto; display:flex; gap:8px;">
+        <button class="btn-ghost">Re-verify last 24h</button>
+        <button class="btn-primary">Export CSV</button>
+      </div>
+    </div>
+
+    <section class="apps-grid">
+
+      <div class="apps-day"><span>TODAY · MAY 23</span><span class="count">11 applies</span><span class="sum">· spend $0.84 · 3 needs check · 1 paused · 0 failed</span></div>
+
+      <div class="app-row selected">
+        <span></span><span class="app-status unverified">submitted_unverified</span>
+        <span class="app-title">Senior Backend Engineer, Data Platform · BillionToOne
+          <span class="verif-bullets"><b>no submit_click recorded</b> · <b>url did not change</b> · model emitted "per dry-run instructions, not clicking Send" (not a dry run)</span>
+        </span>
+        <span class="app-co">BillionToOne<span class="via mono">workatastartup.com</span></span>
+        <span class="app-score">8.3</span><span class="app-cell-mono">15:39 PST</span><span class="app-cell-num">2m 17s</span><span class="app-cell-mono">$0.038 · 18.4k tok</span>
+        <span class="app-actions"><button class="app-action">⌖</button><button class="app-action">↻</button><button class="app-action">···</button></span>
+      </div>
+
+      <div class="app-row">
+        <span></span><span class="app-status unverified">submitted_unverified</span>
+        <span class="app-title">Engineer · Foundational Research · Aqua
+          <span class="verif-bullets"><b>no submit_click</b> · post-submit screenshot still shows form fields</span>
+        </span>
+        <span class="app-co">Aqua<span class="via mono">workatastartup.com</span></span>
+        <span class="app-score">7.6</span><span class="app-cell-mono">15:21 PST</span><span class="app-cell-num">2m 41s</span><span class="app-cell-mono">$0.044 · 19.7k tok</span>
+        <span class="app-actions"><button class="app-action">⌖</button><button class="app-action">↻</button><button class="app-action">···</button></span>
+      </div>
+
+      <div class="app-row">
+        <span></span><span class="app-status unverified">submitted_unverified</span>
+        <span class="app-title">Senior SWE · Distributed Systems · Pine Park Health
+          <span class="verif-bullets"><b>submit_click=0</b> · no confirmation text · model claimed APPLIED</span>
+        </span>
+        <span class="app-co">Pine Park Health<span class="via mono">workatastartup.com</span></span>
+        <span class="app-score">8.0</span><span class="app-cell-mono">15:06 PST</span><span class="app-cell-num">2m 02s</span><span class="app-cell-mono">$0.036 · 17.1k tok</span>
+        <span class="app-actions"><button class="app-action">⌖</button><button class="app-action">↻</button><button class="app-action">···</button></span>
+      </div>
+
+      <div class="app-row">
+        <span></span><span class="app-status paused">paused_for_human</span>
+        <span class="app-title">Senior Full-Stack Engineer · Cresta <span class="ats">SMS MFA required · last screenshot 46s ago</span></span>
+        <span class="app-co">Cresta<span class="via mono">jobs.lever.co</span></span>
+        <span class="app-score">8.1</span><span class="app-cell-mono">14:58 PST</span><span class="app-cell-num">0m 46s+</span><span class="app-cell-mono">$0.005 · 2.1k tok</span>
+        <span class="app-actions"><button class="app-action">⌖</button><button class="app-action">▷</button><button class="app-action">···</button></span>
+      </div>
+
+      <div class="app-row">
+        <span></span><span class="app-status applied">applied</span>
+        <span class="app-title">Senior SWE, Agents · Anthropic <span class="ats">submit_click=1 · url_changed=1 · conf_text=1</span></span>
+        <span class="app-co">Anthropic<span class="via mono">greenhouse.io</span></span>
+        <span class="app-score">8.4</span><span class="app-cell-mono">14:42 PST</span><span class="app-cell-num">2m 51s</span><span class="app-cell-mono">$0.042 · 21.8k tok</span>
+        <span class="app-actions"><button class="app-action">⌖</button><button class="app-action">↻</button><button class="app-action">···</button></span>
+      </div>
+
+      <div class="app-row">
+        <span></span><span class="app-status applied">applied</span>
+        <span class="app-title">Backend Engineer · Risk Platform · Camber <span class="ats">submit_click=1 · OCR conf="Application received"</span></span>
+        <span class="app-co">Camber<span class="via mono">workatastartup.com</span></span>
+        <span class="app-score">7.2</span><span class="app-cell-mono">14:31 PST</span><span class="app-cell-num">1m 58s</span><span class="app-cell-mono">$0.031 · 14.2k tok</span>
+        <span class="app-actions"><button class="app-action">⌖</button><button class="app-action">↻</button><button class="app-action">···</button></span>
+      </div>
+
+      <div class="app-row">
+        <span></span><span class="app-status applied">applied</span>
+        <span class="app-title">Customer Engineer · Anthropic <span class="ats">submit_click=1 · post-page="success"</span></span>
+        <span class="app-co">Anthropic<span class="via mono">greenhouse.io</span></span>
+        <span class="app-score">7.8</span><span class="app-cell-mono">14:19 PST</span><span class="app-cell-num">2m 14s</span><span class="app-cell-mono">$0.034 · 17.0k tok</span>
+        <span class="app-actions"><button class="app-action">⌖</button><button class="app-action">↻</button><button class="app-action">···</button></span>
+      </div>
+
+      <div class="app-row">
+        <span></span><span class="app-status applied">applied</span>
+        <span class="app-title">Senior ML Engineer · Inference · Together AI</span>
+        <span class="app-co">Together AI<span class="via mono">greenhouse.io</span></span>
+        <span class="app-score">8.7</span><span class="app-cell-mono">14:03 PST</span><span class="app-cell-num">1m 47s</span><span class="app-cell-mono">$0.030 · 13.9k tok</span>
+        <span class="app-actions"><button class="app-action">⌖</button><button class="app-action">↻</button><button class="app-action">···</button></span>
+      </div>
+
+      <div class="app-row">
+        <span></span><span class="app-status failed">failed</span>
+        <span class="app-title">Senior SWE, Payments · Stripe <span class="ats">form_changed mid-fill · selector "input[name=q3]" missing</span></span>
+        <span class="app-co">Stripe<span class="via mono">jobs.lever.co</span></span>
+        <span class="app-score">7.9</span><span class="app-cell-mono">13:48 PST</span><span class="app-cell-num">1m 12s</span><span class="app-cell-mono">$0.018 · 8.4k tok</span>
+        <span class="app-actions"><button class="app-action">⌖</button><button class="app-action">↻</button><button class="app-action">···</button></span>
+      </div>
+
+      <div class="app-row">
+        <span></span><span class="app-status applied">applied</span>
+        <span class="app-title">Staff Engineer, Search Quality · Perplexity</span>
+        <span class="app-co">Perplexity<span class="via mono">ashbyhq.com</span></span>
+        <span class="app-score">8.5</span><span class="app-cell-mono">13:31 PST</span><span class="app-cell-num">1m 33s</span><span class="app-cell-mono">$0.027 · 12.6k tok</span>
+        <span class="app-actions"><button class="app-action">⌖</button><button class="app-action">↻</button><button class="app-action">···</button></span>
+      </div>
+
+      <div class="app-row">
+        <span></span><span class="app-status applied">applied</span>
+        <span class="app-title">Senior Software Engineer · Nova Credit</span>
+        <span class="app-co">Nova Credit<span class="via mono">lever.co</span></span>
+        <span class="app-score">7.9</span><span class="app-cell-mono">13:14 PST</span><span class="app-cell-num">1m 41s</span><span class="app-cell-mono">$0.029 · 13.5k tok</span>
+        <span class="app-actions"><button class="app-action">⌖</button><button class="app-action">↻</button><button class="app-action">···</button></span>
+      </div>
+
+      <div class="apps-day"><span>YESTERDAY · MAY 22</span><span class="count">9 applies</span><span class="sum">· spend $0.72 · 0 needs check · 1 failed</span></div>
+
+      <div class="app-row">
+        <span></span><span class="app-status applied">applied</span>
+        <span class="app-title">ML Platform Engineer · Glean</span>
+        <span class="app-co">Glean<span class="via mono">greenhouse.io</span></span>
+        <span class="app-score">8.2</span><span class="app-cell-mono">18:42 PST</span><span class="app-cell-num">1m 55s</span><span class="app-cell-mono">$0.033 · 15.4k tok</span>
+        <span class="app-actions"><button class="app-action">⌖</button><button class="app-action">↻</button><button class="app-action">···</button></span>
+      </div>
+
+      <div class="app-row">
+        <span></span><span class="app-status failed">failed</span>
+        <span class="app-title">Senior Backend Engineer · Vercel <span class="ats">not_eligible_salary · posted $145K below your $170K floor</span></span>
+        <span class="app-co">Vercel<span class="via mono">ashbyhq.com</span></span>
+        <span class="app-score">6.9</span><span class="app-cell-mono">17:18 PST</span><span class="app-cell-num">0m 24s</span><span class="app-cell-mono">$0.002 · 0.9k tok</span>
+        <span class="app-actions"><button class="app-action">⌖</button><button class="app-action">↻</button><button class="app-action">···</button></span>
+      </div>
+
+      <div class="app-row">
+        <span></span><span class="app-status applied">applied</span>
+        <span class="app-title">Senior SWE, Backend · Notion</span>
+        <span class="app-co">Notion<span class="via mono">greenhouse.io</span></span>
+        <span class="app-score">8.0</span><span class="app-cell-mono">16:47 PST</span><span class="app-cell-num">2m 04s</span><span class="app-cell-mono">$0.036 · 17.8k tok</span>
+        <span class="app-actions"><button class="app-action">⌖</button><button class="app-action">↻</button><button class="app-action">···</button></span>
+      </div>
+
+      <div class="app-row">
+        <span></span><span class="app-status applied">applied</span>
+        <span class="app-title">Senior Engineer · Linear</span>
+        <span class="app-co">Linear<span class="via mono">ashbyhq.com</span></span>
+        <span class="app-score">8.6</span><span class="app-cell-mono">15:24 PST</span><span class="app-cell-num">1m 39s</span><span class="app-cell-mono">$0.027 · 12.8k tok</span>
+        <span class="app-actions"><button class="app-action">⌖</button><button class="app-action">↻</button><button class="app-action">···</button></span>
+      </div>
+    </section>
+
+
+    <section class="page-break">
+      <div class="page-break-tag">Page · /sites</div>
+      <h2>Connections</h2>
+      <div class="sub">Login warmers and per-ATS reliability · 5 of 8 connected · 1 stale</div>
+    </section>
+
+    <section class="sites-grid">
+
+      <article class="site-card">
+        <div class="site-head">
+          <div><div class="site-name">Greenhouse</div><span class="site-domain">boards.greenhouse.io · greenhouse.io</span></div>
+          <span class="site-state fresh">fresh</span>
+        </div>
+        <div class="site-stats">
+          <div class="site-stat"><div class="lbl">Jobs applied</div><div class="val">38</div></div>
+          <div class="site-stat"><div class="lbl">Success rate</div><div class="val">94<span class="small">%</span></div></div>
+          <div class="site-stat"><div class="lbl">Avg duration</div><div class="val">1:58<span class="small"> min</span></div></div>
+        </div>
+        <div class="site-foot">
+          <div class="site-meta">cookies verified <b>3h 11m ago</b> · session valid through 22:14</div>
+          <button class="btn-site">Test</button>
+        </div>
+      </article>
+
+      <article class="site-card stale">
+        <div class="site-head">
+          <div><div class="site-name">Lever</div><span class="site-domain">jobs.lever.co</span></div>
+          <span class="site-state stale">stale · 6 days</span>
+        </div>
+        <div class="site-stats">
+          <div class="site-stat"><div class="lbl">Jobs applied</div><div class="val">17</div></div>
+          <div class="site-stat"><div class="lbl">Success rate</div><div class="val">82<span class="small">%</span></div></div>
+          <div class="site-stat"><div class="lbl">Avg duration</div><div class="val">1:42<span class="small"> min</span></div></div>
+        </div>
+        <div class="site-foot">
+          <div class="site-meta">last verified <b>6d 2h ago</b> · 3 recent failures correlate with stale cookies</div>
+          <button class="btn-site warn">Refresh login</button>
+        </div>
+      </article>
+
+      <article class="site-card never">
+        <div class="site-head">
+          <div><div class="site-name">Workday</div><span class="site-domain">*.myworkdayjobs.com</span></div>
+          <span class="site-state never">never logged in</span>
+        </div>
+        <div class="site-stats">
+          <div class="site-stat"><div class="lbl">Jobs queued</div><div class="val">22</div></div>
+          <div class="site-stat"><div class="lbl">Success rate</div><div class="val">—</div></div>
+          <div class="site-stat"><div class="lbl">Per-tenant</div><div class="val">5<span class="small"> tenants</span></div></div>
+        </div>
+        <div class="site-foot">
+          <div class="site-meta">first run will open a Chrome window per tenant · expect 2-3 min each</div>
+          <button class="btn-site primary">Set up</button>
+        </div>
+      </article>
+
+      <article class="site-card">
+        <div class="site-head">
+          <div><div class="site-name">Ashby</div><span class="site-domain">jobs.ashbyhq.com</span></div>
+          <span class="site-state fresh">fresh</span>
+        </div>
+        <div class="site-stats">
+          <div class="site-stat"><div class="lbl">Jobs applied</div><div class="val">14</div></div>
+          <div class="site-stat"><div class="lbl">Success rate</div><div class="val">100<span class="small">%</span></div></div>
+          <div class="site-stat"><div class="lbl">Avg duration</div><div class="val">1:31<span class="small"> min</span></div></div>
+        </div>
+        <div class="site-foot">
+          <div class="site-meta">cookies verified <b>1h 04m ago</b> · cleanest ATS in your set</div>
+          <button class="btn-site">Test</button>
+        </div>
+      </article>
+
+      <article class="site-card">
+        <div class="site-head">
+          <div><div class="site-name">Work at a Startup</div><span class="site-domain">workatastartup.com</span></div>
+          <span class="site-state fresh">fresh</span>
+        </div>
+        <div class="site-stats">
+          <div class="site-stat"><div class="lbl">Jobs applied</div><div class="val">26</div></div>
+          <div class="site-stat"><div class="lbl">Success rate</div><div class="val">61<span class="small">%</span></div></div>
+          <div class="site-stat"><div class="lbl">Avg duration</div><div class="val">2:34<span class="small"> min</span></div></div>
+        </div>
+        <div class="site-foot">
+          <div class="site-meta">3 of 5 recent attempts are <b style="color:var(--warn)">submitted_unverified</b> · investigate prompt regression</div>
+          <button class="btn-site warn">Audit applies</button>
+        </div>
+      </article>
+
+      <article class="site-card never">
+        <div class="site-head">
+          <div><div class="site-name">iCIMS / SmartRecruiters / BambooHR</div><span class="site-domain">3 ATSes · not yet connected</span></div>
+          <span class="site-state never">never logged in</span>
+        </div>
+        <div class="site-stats">
+          <div class="site-stat"><div class="lbl">Jobs in queue</div><div class="val">9</div></div>
+          <div class="site-stat"><div class="lbl">Worth setup?</div><div class="val">Yes</div></div>
+          <div class="site-stat"><div class="lbl">Projected</div><div class="val">~12<span class="small"> / mo</span></div></div>
+        </div>
+        <div class="site-foot">
+          <div class="site-meta">enabling these adds <b>~12 applies / mo</b> at current discovery rate</div>
+          <button class="btn-site primary">Set up</button>
+        </div>
+      </article>
+    </section>
+
+
+    <section class="runplan-modal-wrap">
+      <div class="modal-mock-eyebrow">Pre-launch · /pipeline/start</div>
+      <div class="modal-mock-title">Run plan preview</div>
+
+      <div class="modal-mock">
+        <div class="modal-head">
+          <div>
+            <h3>Daily · SWE + ML · ≥ 7.0</h3>
+            <div style="font-size:11px; color:var(--ink-3); margin-top:4px">Discover from 6 sources, score 200, tailor 30, auto-apply to score ≥ 7.0</div>
+          </div>
+          <span class="id">draft-2026-05-23-001</span>
+        </div>
+
+        <div class="modal-body">
+          <div class="modal-col">
+            <h4>Stages</h4>
+            <div class="stage-row on"><span class="check"></span><span class="name">discover</span><span class="desc">6 sources · jobspy, workday-api, smart-extract</span><span class="est">~ 4 min · $0.04</span></div>
+            <div class="stage-row on"><span class="check"></span><span class="name">enrich</span><span class="desc">fetch full JDs · est 180 jobs</span><span class="est">~ 3 min · $0.00</span></div>
+            <div class="stage-row on"><span class="check"></span><span class="name">score</span><span class="desc">LLM 0-10 against profile</span><span class="est">~ 2 min · $0.07</span></div>
+            <div class="stage-row on"><span class="check"></span><span class="name">tailor</span><span class="desc">resume rewrite for top 30 only</span><span class="est">~ 4 min · $0.12</span></div>
+            <div class="stage-row on"><span class="check"></span><span class="name">cover</span><span class="desc">cover letter per tailored job</span><span class="est">~ 2 min · $0.05</span></div>
+            <div class="stage-row on"><span class="check"></span><span class="name">pdf</span><span class="desc">render resume + cover to PDF</span><span class="est">~ 25 s · $0.00</span></div>
+            <div class="stage-row on"><span class="check"></span><span class="name">apply</span><span class="desc">auto-apply to score ≥ 7.0 · 3 workers · pace 2×</span><span class="est">~ 12 min · $0.31</span></div>
+            <div class="stage-row off"><span class="check"></span><span class="name">refer</span><span class="desc">outreach to mutuals · disabled for this run</span><span class="est">—</span></div>
+
+            <div class="modal-tunes">
+              <div class="tune"><div class="lbl">Workers</div><div class="ctrl"><span class="val">3</span><span class="unit">parallel</span><span class="stepper"><button>−</button><button>+</button></span></div></div>
+              <div class="tune"><div class="lbl">Pace</div><div class="ctrl"><span class="val">2×</span><span class="unit">watchable</span><span class="stepper"><button>−</button><button>+</button></span></div></div>
+              <div class="tune"><div class="lbl">Min score</div><div class="ctrl"><span class="val">7.0</span><span class="unit">/10</span><span class="stepper"><button>−</button><button>+</button></span></div></div>
+              <div class="tune"><div class="lbl">Daily cap</div><div class="ctrl"><span class="val">25</span><span class="unit">applies</span><span class="stepper"><button>−</button><button>+</button></span></div></div>
+            </div>
+          </div>
+
+          <div class="modal-col right">
+            <h4>Estimated outcome</h4>
+            <div class="modal-est">
+              <div class="est-row"><span class="k">Duration</span><span class="v">18<span class="small"> min</span></span></div>
+              <div class="est-row"><span class="k">Jobs discovered</span><span class="v">~180</span></div>
+              <div class="est-row"><span class="k">Tailored</span><span class="v">~30</span></div>
+              <div class="est-row"><span class="k">Applies attempted</span><span class="v">~14<span class="small"> · cap 25</span></span></div>
+              <div class="est-row"><span class="k">Est. cost</span><span class="v">$0.42</span></div>
+              <div class="est-row cap-warn"><span class="k">Daily spend</span><span class="v">$0.84 → $1.26<span class="small"> / $5.00</span></span></div>
+            </div>
+
+            <h4 style="margin-top:18px">Profile diff vs. last run</h4>
+            <div style="font-family:'JetBrains Mono', monospace; font-size:11px; color:var(--ink-3); line-height:1.65">
+              <div><span style="color:var(--ok)">+</span> salary_expectation.floor: 160K → <b style="color:var(--ink-2)">170K</b></div>
+              <div><span style="color:var(--ok)">+</span> target_roles: added <b style="color:var(--ink-2)">"agents engineer"</b></div>
+              <div><span style="color:var(--ink-4)">·</span> work_auth, visa_sponsorship — unchanged</div>
+            </div>
+
+            <h4 style="margin-top:18px">Safety checks</h4>
+            <div style="font-size:11.5px; color:var(--ink-2); line-height:1.6">
+              <div><span style="color:var(--ok)">●</span> resume.pdf parses · 1 page · 384 KB</div>
+              <div><span style="color:var(--ok)">●</span> cookies fresh on 4 of 5 active ATSes</div>
+              <div><span style="color:var(--warn)">●</span> lever cookie stale (6d) · will warm before applying via Lever</div>
+              <div><span style="color:var(--ok)">●</span> verification gate enabled · `submitted_unverified` will surface ghosts</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-foot">
+          <span class="preview-note">Review then launch. Press <span class="kbd">⌘ ↵</span> to start, <span class="kbd">esc</span> to dismiss.</span>
+          <div class="row">
+            <button class="btn-ghost">Save as preset</button>
+            <button class="btn-ghost">Cancel</button>
+            <button class="btn-primary">Start run · 18m · $0.42</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <aside class="drawer">
+    <div class="drawer-head">
+      <div>
+        <div class="drawer-eyebrow">Application detail</div>
+        <h2 class="drawer-title">BillionToOne — Backend Engineer</h2>
+        <div class="drawer-meta">app#2078 · submitted_unverified · 15:39:51 PST</div>
+      </div>
+    </div>
+
+    <div class="drawer-section">
+      <h4>Last screenshot · before agent quit</h4>
+      <div class="dwr-screenshot">
+        <div class="bar"><i></i><i></i><i></i><span class="addr">workatastartup.com/companies/billiontoone/jobs/4612/apply</span></div>
+        <div class="form-mock">
+          <i class="short"></i><i class="field"></i><i class="short"></i><i class="field"></i>
+          <i class="short"></i><i class="field long"></i><i class="short"></i><i class="field"></i>
+          <span class="btn-mock"></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="drawer-section">
+      <h4>Why this is unverified</h4>
+      <ul class="dwr-reasons">
+        <li><div><span class="key mono">submit_click</span>No browser_click on a Submit/Send button recorded in the agent's tool log.</div></li>
+        <li><div><span class="key mono">url_changed</span>URL is unchanged from pre-fill state.</div></li>
+        <li><div><span class="key mono">confirmation_text</span>No "thanks / submitted / received" copy in post-action screenshot.</div></li>
+        <li class="warn"><div><span class="key mono">model_disclaim</span>Agent output contained <b>"per dry-run instructions, not clicking Send"</b> twice — but this run was NOT a dry-run.</div></li>
+      </ul>
+    </div>
+
+    <div class="drawer-section">
+      <h4>Filled fields · 11 of 14</h4>
+      <table class="dwr-fields"><tbody>
+        <tr><td>first_name</td><td>Rachit</td></tr>
+        <tr><td>last_name</td><td>Srivastava</td></tr>
+        <tr><td>email</td><td>rachit.srivastava1994@gmail.com</td></tr>
+        <tr><td>phone</td><td>+1 415 ••• 4727</td></tr>
+        <tr><td>resume.pdf</td><td>rachit_billiontoone.pdf · 318 KB</td></tr>
+        <tr><td>linkedin</td><td>linkedin.com/in/rachit-srivastava-9</td></tr>
+        <tr><td>github</td><td>github.com/rachit1994</td></tr>
+        <tr><td>why_billiontoone</td><td>Filled · 487 chars</td></tr>
+        <tr><td>relevant_project</td><td>Filled · 612 chars (RAG pipeline)</td></tr>
+        <tr><td>salary_expectation</td><td>$180,000 base</td></tr>
+        <tr><td>consent_checkbox</td><td>checked</td></tr>
+      </tbody></table>
+    </div>
+
+    <div class="drawer-section">
+      <h4>Agent log · last 6 lines</h4>
+      <div class="dwr-log-excerpt">
+<span class="em-key">[15:39:48]</span> all required fields detected · 11 / 11 typed<br>
+<span class="em-key">[15:39:49]</span> consent_checkbox · click ok<br>
+<span class="em-key">[15:39:50]</span> Send button now active (was disabled)<br>
+<span class="em-warn">[15:39:51] Per the instructions (step 10), I will not</span><br>
+<span class="em-warn">[15:39:51] click the final Send button and instead</span><br>
+<span class="em-warn">[15:39:51] report this as a dry run.</span><br>
+<span class="em-bad">[15:39:51] &gt; RESULT:APPLIED</span><br>
+<span class="em-key">[15:39:52]</span> verify_gate: <span class="em-bad">FAIL</span> · downgraded to submitted_unverified
+      </div>
+    </div>
+
+    <div class="dwr-actions">
+      <div class="row">
+        <button class="btn-lg primary">Confirm applied</button>
+        <button class="btn-lg warn">Retry · clean browser</button>
+      </div>
+      <div class="btn-tertiary-row">
+        <button class="btn-tertiary">Open in browser</button>
+        <button class="btn-tertiary">View full log</button>
+        <button class="btn-tertiary">View prompt</button>
+      </div>
+    </div>
+  </aside>
+
+</div>
+
+</body>
+</html>

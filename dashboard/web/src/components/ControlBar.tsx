@@ -29,6 +29,14 @@ const PHASE2_TYPES = [
   { id: "inbox", label: "Inbox" },
 ];
 
+const STAGE_LABELS: Record<string, string> = {
+  refer: "Refer prep",
+};
+
+const STAGE_TITLES: Record<string, string> = {
+  refer: "Scrape recruiters and fill message templates only (no OpenOutreach)",
+};
+
 export function ControlBar({
   isRunning,
   starting,
@@ -65,7 +73,7 @@ export function ControlBar({
             value={runType}
             onChange={(e) => onRunTypeChange(e.target.value)}
             disabled={isRunning}
-            className="rounded-lg border border-zinc-700 bg-zinc-900/80 px-3 py-2 text-sm text-zinc-200 shadow-sm outline-none focus:border-blue-500/60 focus:ring-1 focus:ring-blue-500/40 disabled:opacity-50"
+            className="rounded-lg border border-panel-border-strong bg-panel-elevated/80 px-3 py-2 text-sm text-ink-2 shadow-sm outline-none focus:border-blue-500/60 focus:ring-1 focus:ring-blue-500/40 disabled:opacity-50"
           >
             <option value="pipeline">Pipeline</option>
             {PHASE2_TYPES.map((t) => (
@@ -89,30 +97,30 @@ export function ControlBar({
           type="button"
           disabled={!isRunning}
           onClick={onStop}
-          className="rounded-lg border border-zinc-600 bg-zinc-900/50 px-4 py-2 text-sm text-zinc-200 hover:border-zinc-500 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40"
+          className="rounded-lg border border-panel-border-strong bg-zinc-900/50 px-4 py-2 text-sm text-ink-2 hover:border-zinc-500 hover:bg-panel-muted disabled:cursor-not-allowed disabled:opacity-40"
         >
           Stop
         </button>
 
         <div className="h-6 w-px bg-zinc-700/80" aria-hidden />
 
-        <label className="flex cursor-pointer items-center gap-2 text-sm text-zinc-400">
+        <label className="flex cursor-pointer items-center gap-2 text-sm text-ink-3">
           <input
             type="checkbox"
             checked={stream}
             onChange={(e) => onStreamChange(e.target.checked)}
             disabled={isRunning}
-            className="rounded border-zinc-600 bg-zinc-900 text-blue-500"
+            className="rounded border-panel-border-strong bg-zinc-900 text-blue-500"
           />
           Stream
         </label>
-        <label className="flex cursor-pointer items-center gap-2 text-sm text-zinc-400">
+        <label className="flex cursor-pointer items-center gap-2 text-sm text-ink-3">
           <input
             type="checkbox"
             checked={dryRun}
             onChange={(e) => onDryRunChange(e.target.checked)}
             disabled={isRunning}
-            className="rounded border-zinc-600 bg-zinc-900 text-blue-500"
+            className="rounded border-panel-border-strong bg-zinc-900 text-blue-500"
           />
           Dry run
         </label>
@@ -127,8 +135,8 @@ export function ControlBar({
         </button>
 
         {activeRun && (
-          <span className="ml-auto text-xs text-zinc-500">
-            <span className="font-mono text-zinc-300">{activeRun.id.slice(0, 8)}</span>
+          <span className="ml-auto text-xs text-ink-4">
+            <span className="font-mono text-ink-2">{activeRun.id.slice(0, 8)}</span>
             {" · "}
             <span
               className={
@@ -136,7 +144,7 @@ export function ControlBar({
                   ? "text-emerald-400"
                   : activeRun.status === "failed"
                     ? "text-red-400"
-                    : "text-zinc-300"
+                    : "text-ink-2"
               }
             >
               {activeRun.status}
@@ -146,8 +154,8 @@ export function ControlBar({
       </div>
 
       {advancedOpen && pipelineOnly && (
-        <div className="mt-3 flex flex-wrap items-end gap-4 border-t border-zinc-800/80 pt-3">
-          <label className="block text-xs text-zinc-500">
+        <div className="mt-3 flex flex-wrap items-end gap-4 border-t border-panel-border/80 pt-3">
+          <label className="block text-xs text-ink-4">
             Min score
             <input
               type="number"
@@ -156,10 +164,10 @@ export function ControlBar({
               value={minScore}
               onChange={(e) => onMinScoreChange(Number(e.target.value))}
               disabled={isRunning}
-              className="mt-1 block w-24 rounded-lg border border-zinc-700 bg-zinc-900/80 px-2 py-1.5 text-sm"
+              className="mt-1 block w-24 rounded-lg border border-panel-border-strong bg-panel-elevated/80 px-2 py-1.5 text-sm"
             />
           </label>
-          <label className="block text-xs text-zinc-500">
+          <label className="block text-xs text-ink-4">
             Workers
             <input
               type="number"
@@ -168,16 +176,16 @@ export function ControlBar({
               value={workers}
               onChange={(e) => onWorkersChange(Number(e.target.value))}
               disabled={isRunning}
-              className="mt-1 block w-24 rounded-lg border border-zinc-700 bg-zinc-900/80 px-2 py-1.5 text-sm"
+              className="mt-1 block w-24 rounded-lg border border-panel-border-strong bg-panel-elevated/80 px-2 py-1.5 text-sm"
             />
           </label>
         </div>
       )}
 
       {pipelineOnly && (
-        <div className="mt-4 border-t border-zinc-800/80 pt-4">
+        <div className="mt-4 border-t border-panel-border/80 pt-4">
           <div className="mb-2 flex items-center justify-between">
-            <span className="text-xs font-medium text-zinc-500">Stages</span>
+            <span className="text-xs font-medium text-ink-4">Stages</span>
             <button
               type="button"
               onClick={onSelectAll}
@@ -196,13 +204,14 @@ export function ControlBar({
                   type="button"
                   disabled={isRunning}
                   onClick={() => onToggleStage(stage)}
+                  title={STAGE_TITLES[stage]}
                   className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
                     on
                       ? "border-blue-500/50 bg-blue-500/15 text-blue-200"
-                      : "border-zinc-700 bg-zinc-900/50 text-zinc-500 hover:border-zinc-600"
+                      : "border-panel-border-strong bg-zinc-900/50 text-ink-4 hover:border-panel-border-strong"
                   }`}
                 >
-                  {stage}
+                  {STAGE_LABELS[stage] ?? stage}
                 </button>
               );
             })}

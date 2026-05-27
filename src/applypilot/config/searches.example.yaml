@@ -93,10 +93,29 @@ boards:
   - zip_recruiter
   - google
 
+# Boards to skip (same names as above). Use when a site logs API errors but others work.
+# Example: Glassdoor often returns "Error encountered in API response" on glassdoor.co.in.
+# skip_boards:
+#   - glassdoor
+
+# Optional: map long location strings to names Glassdoor's API accepts
+# glassdoor_location_map:
+#   "Bengaluru, Karnataka": "Bangalore"
+#   "Bangalore, Karnataka": "Bangalore"
+
 # Search defaults
 defaults:
   results_per_site: 100  # Max results per board per query
   hours_old: 72          # Only jobs posted within this many hours
+
+# Optional positive title keywords (case-insensitive). When set, at least one must
+# appear in the title at discover time and in the pre-score filter.
+#include_titles:
+#  - "frontend"
+#  - "full stack"
+#  - "react"
+#  - "typescript"
+#  - "ai engineer"
 
 # Negative keywords -- skip jobs with these in the title (case-insensitive)
 exclude_titles:

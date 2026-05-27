@@ -199,8 +199,9 @@ In the May 2026 job market, candidate sentiment is characterized by a mix of pro
 | Direct ATS apply | Workday discovery + `apply --watch` on a shortlist |
 | Niche boards | Smart extract / `sites.yaml` |
 | Tailor resume per role | `tailor` → `pdf` → `cover` (refer also tailors per job when drafting) |
-| Referral outreach (10–15/wk) | `applypilot refer` — scrape poster → Gemini draft (names role + tailored resume) → OpenOutreach connect → message |
-| Referral timing (24–72h) | Pipeline runs `refer` after `tailor` on fresh LinkedIn jobs (`max_job_age_hours: 72` in `outreach.yaml`) |
+| Referral prep (pipeline) | `applypilot run` with **Refer prep** stage — scrape LinkedIn poster + fill message template (no OpenOutreach, no Gemini by default) |
+| Referral send (manual) | Dashboard **Referrals** tab or `applypilot refer connect` / `refer message` after `applypilot apply` (`require_applied_before_send: true`) |
+| Referral timing (24–72h) | Pipeline **Refer prep** runs after `tailor` on fresh LinkedIn jobs (`max_job_age_hours: 72` in `outreach.yaml`) |
 | Referral metrics (weekly review) | `applypilot status` — referral funnel vs `weekly_connect_target` |
 | Quality gate | Raise `min_score`; apply to a small batch only |
 

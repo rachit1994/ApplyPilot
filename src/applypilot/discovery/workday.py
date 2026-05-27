@@ -45,9 +45,7 @@ def _load_location_filter(search_cfg: dict | None = None):
     if search_cfg is None:
         search_cfg = config.load_search_config()
 
-    accept = search_cfg.get("location_accept", [])
-    reject = search_cfg.get("location_reject_non_remote", [])
-    return accept, reject
+    return config.load_location_filter_patterns(search_cfg)
 
 
 def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> bool:
@@ -306,7 +304,13 @@ def store_results(conn: sqlite3.Connection, jobs: list[dict], employers: dict) -
     new = 0
     existing = 0
 
+    from applypilot.discovery._filters import discover_job_passes
+
     for job in jobs:
+        if not discover_job_passes(
+            {"title": job.get("title"), "location": job.get("location")}
+        ):
+            continue
         url = job.get("apply_url", "")
         if not url:
             emp = employers.get(job.get("employer_key", ""), {})

@@ -42,10 +42,26 @@ def _pick_poster_slug(page, slugs: list[str]) -> str | None:
     return slugs[0]
 
 
-def scrape_public_id_for_job_url(job_url: str, *, headless: bool = True) -> tuple[str | None, str | None]:
-    """Open a LinkedIn job URL and return (public_id, error_message)."""
+def _recruiter_display_name(page, public_id: str) -> str | None:
+    try:
+        anchor = page.locator(f'a[href*="/in/{public_id}"]').first
+        text = (anchor.inner_text(timeout=3000) or "").strip()
+        if not text:
+            return None
+        line = text.split("\n")[0].strip()
+        if 1 < len(line) < 80 and "linkedin" not in line.lower():
+            return line
+    except Exception:
+        pass
+    return None
+
+
+def scrape_public_id_for_job_url(
+    job_url: str, *, headless: bool = True
+) -> tuple[str | None, str | None, str | None]:
+    """Open a LinkedIn job URL and return (public_id, recruiter_name, error_message)."""
     if not is_linkedin_job_url(job_url):
-        return None, "not a LinkedIn job URL"
+        return None, None, "not a LinkedIn job URL"
 
     from playwright.sync_api import sync_playwright
 
@@ -61,17 +77,23 @@ def scrape_public_id_for_job_url(job_url: str, *, headless: bool = True) -> tupl
             page.wait_for_timeout(2000)
             slugs = _collect_profile_slugs(page)
             public_id = _pick_poster_slug(page, slugs)
+            recruiter_name = _recruiter_display_name(page, public_id) if public_id else None
             browser.close()
     except Exception as exc:
         log.warning("Recruiter scrape failed for %s: %s", job_url, exc)
-        return None, str(exc)
+        return None, None, str(exc)
 
     if not public_id:
-        return None, "no recruiter profile link found on job page"
-    return public_id, None
+        return None, None, "no recruiter profile link found on job page"
+    return public_id, recruiter_name, None
 
 
-def _eligible_scrape_rows(conn, settings: OutreachSettings) -> list[dict]:
+def _eligible_scrape_rows(
+    conn,
+    settings: OutreachSettings,
+    *,
+    urls: list[str] | None = None,
+) -> list[dict]:
     query = """
         SELECT * FROM jobs
         WHERE fit_score >= ?
@@ -85,7 +107,12 @@ def _eligible_scrape_rows(conn, settings: OutreachSettings) -> list[dict]:
           )
     """
     age_param = f"-{settings.max_job_age_hours}"
-    rows = conn.execute(query, (settings.min_fit_score, age_param)).fetchall()
+    params: list = [settings.min_fit_score, age_param]
+    if urls:
+        placeholders = ",".join("?" * len(urls))
+        query += f" AND url IN ({placeholders})"
+        params.extend(urls)
+    rows = conn.execute(query, params).fetchall()
     columns = rows[0].keys() if rows else []
     jobs = [dict(zip(columns, row)) for row in rows]
     return [j for j in jobs if job_linkedin_url(j)]
@@ -97,11 +124,12 @@ def run_recruiter_scrape(
     limit: int = 50,
     headless: bool = True,
     dry_run: bool = False,
+    urls: list[str] | None = None,
 ) -> dict:
     """Scrape recruiter public_id for eligible LinkedIn jobs."""
     settings = settings or load_outreach_config()
     conn = get_connection()
-    jobs = _eligible_scrape_rows(conn, settings)[:limit]
+    jobs = _eligible_scrape_rows(conn, settings, urls=urls)[:limit]
     scraped = 0
     skipped = 0
     errors = 0
@@ -114,20 +142,27 @@ def run_recruiter_scrape(
             log.info("[dry-run] would scrape recruiter from %s", job_url)
             continue
 
-        public_id, err = scrape_public_id_for_job_url(job_url, headless=headless)
+        public_id, recruiter_name, err = scrape_public_id_for_job_url(job_url, headless=headless)
         now = datetime.now(timezone.utc).isoformat()
         if public_id:
             conn.execute(
                 """
                 UPDATE jobs SET
                     recruiter_public_id = ?,
+                    recruiter_name = COALESCE(?, recruiter_name),
                     recruiter_linkedin_url = ?,
                     recruiter_scraped_at = ?,
                     recruiter_scrape_error = NULL,
                     referral_status = COALESCE(referral_status, 'pending_connect')
                 WHERE url = ?
                 """,
-                (public_id, f"https://www.linkedin.com/in/{public_id}/", now, job["url"]),
+                (
+                    public_id,
+                    recruiter_name,
+                    f"https://www.linkedin.com/in/{public_id}/",
+                    now,
+                    job["url"],
+                ),
             )
             scraped += 1
         else:

@@ -32,6 +32,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "ruff>=0.1", "httpx>=0.24"]
+embedding = ["sentence-transformers>=2.7"]
 # python-jobspy is not listed here — metadata pins numpy==1.26.3. Use: applypilot install-discovery
 discovery = [
     "pydantic>=2.0",

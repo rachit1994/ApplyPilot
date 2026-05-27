@@ -1,386 +1,245 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   fetchActiveRun,
-  fetchRun,
-  fetchRunEventsHistory,
-  fetchJobs,
-  fetchRecentJobs,
-  fetchStages,
   fetchStats,
-  startRun,
   stopRun,
-  subscribeRunEvents,
-  type Run,
-  type RunEvent,
+  type Application,
+  type Job,
 } from "./api";
-import { ControlBar } from "./components/ControlBar";
-import { PhaseStepper } from "./components/PhaseStepper";
-import { LogConsole } from "./components/LogConsole";
-import { StatsRow } from "./components/StatsRow";
-import { JobsTable } from "./components/JobsTable";
-import { ApplicationsPage } from "./components/ApplicationsPage";
-import { RunHistory } from "./components/RunHistory";
-import { RunBanner } from "./components/RunBanner";
-import { ConnectionStatus } from "./components/ConnectionStatus";
+import { DashboardLayout } from "./components/layout/DashboardLayout";
+import type { HeaderMetrics } from "./components/layout/HeaderStrip";
+import { HomePage } from "./components/HomePage";
+import { JobsExplorerPage } from "./components/JobsExplorerPage";
+import { ApplyPage } from "./components/ApplyPage";
+import { AppliedApplicationsPage } from "./components/AppliedApplicationsPage";
+import type { DashboardPage } from "./dashboardNav";
+import type { ApplyStatusFilter } from "./utils/applicationAudit";
 
-type DashboardPage = "pipeline" | "applications";
+const JOBS_FILTER_KEYS = [
+  "stage",
+  "min_score",
+  "site",
+  "search",
+  "sort",
+  "apply_status",
+  "limit",
+] as const;
+
+const APPLICATIONS_FILTER_KEYS = ["filter"] as const;
+
+function readPageFromUrl(): DashboardPage {
+  const params = new URLSearchParams(window.location.search);
+  const tab = params.get("tab");
+  if (tab === "applications") return "applications";
+  if (tab === "apply") return "apply";
+  if (tab === "jobs") return "jobs";
+  // Legacy: ?page=jobs before pagination reused `page`
+  const legacyPage = params.get("page");
+  if (legacyPage === "applications") return "applications";
+  if (legacyPage === "apply") return "apply";
+  if (legacyPage === "jobs") return "jobs";
+  // Deep links with filters but no tab (e.g. ?stage=needs_check&page=2)
+  if (JOBS_FILTER_KEYS.some((key) => params.has(key))) return "jobs";
+  if (legacyPage && /^\d+$/.test(legacyPage)) return "jobs";
+  return "home";
+}
+
+function jobsParamsFromUrl(): URLSearchParams {
+  const params = new URLSearchParams(window.location.search);
+  const jobs = new URLSearchParams();
+  for (const key of [...JOBS_FILTER_KEYS, "page"]) {
+    const v = params.get(key);
+    if (v) jobs.set(key, v);
+  }
+  return jobs;
+}
+
+function applicationsFilterFromUrl(): string | null {
+  return new URLSearchParams(window.location.search).get("filter");
+}
+
+function applyFilterToUrlParam(filter: ApplyStatusFilter): string | null {
+  if (filter === "submitted_unverified") return "unverified";
+  if (filter === "all") return null;
+  return filter;
+}
 
 export default function App() {
-  const [page, setPage] = useState<DashboardPage>("pipeline");
   const queryClient = useQueryClient();
-  const [activeRun, setActiveRun] = useState<Run | null>(null);
-  const [events, setEvents] = useState<RunEvent[]>([]);
-  const [selectedStages, setSelectedStages] = useState<string[]>([]);
-  const [runType, setRunType] = useState("pipeline");
-  const [stream, setStream] = useState(false);
-  const [dryRun, setDryRun] = useState(false);
-  const [pipelineMinScore, setPipelineMinScore] = useState(7);
-  const [workers, setWorkers] = useState(1);
-  const [minScoreFilter, setMinScoreFilter] = useState(5);
-  const [jobSearch, setJobSearch] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [starting, setStarting] = useState(false);
-  const eventsRef = useRef(events);
+  const [page, setPage] = useState<DashboardPage>(readPageFromUrl);
+  const [jobsSearch, setJobsSearch] = useState<URLSearchParams>(jobsParamsFromUrl);
+  const [applicationsFilter, setApplicationsFilter] = useState<string | null>(
+    applicationsFilterFromUrl,
+  );
+  const [selectedJob, setSelectedJob] = useState<Job | null>(null);
+  const [selectedApplication, setSelectedApplication] = useState<Application | null>(null);
+  const [stopping, setStopping] = useState(false);
+
+  const syncUrl = useCallback(
+    (nextPage: DashboardPage, jobsParams: URLSearchParams, appFilter: string | null) => {
+      const url = new URL(window.location.href);
+      const jobsFilterKeys = [...JOBS_FILTER_KEYS, "page"] as const;
+      for (const key of jobsFilterKeys) {
+        url.searchParams.delete(key);
+      }
+      for (const key of APPLICATIONS_FILTER_KEYS) {
+        url.searchParams.delete(key);
+      }
+      url.searchParams.delete("page");
+
+      if (nextPage === "jobs") {
+        url.searchParams.set("tab", "jobs");
+        jobsParams.forEach((value, key) => {
+          if (value) url.searchParams.set(key, value);
+        });
+      } else if (nextPage === "apply") {
+        url.searchParams.set("tab", "apply");
+      } else if (nextPage === "applications") {
+        url.searchParams.set("tab", "applications");
+        if (appFilter) url.searchParams.set("filter", appFilter);
+      } else {
+        url.searchParams.delete("tab");
+      }
+
+      const qs = url.searchParams.toString();
+      const path = `${url.pathname}${qs ? `?${qs}` : ""}`;
+      window.history.replaceState(null, "", path);
+    },
+    [],
+  );
 
   useEffect(() => {
-    eventsRef.current = events;
-  }, [events]);
-
-  const { data: stagesMeta } = useQuery({
-    queryKey: ["stages"],
-    queryFn: fetchStages,
-  });
-
-  const stageOrder = stagesMeta?.order ?? [];
+    syncUrl(page, jobsSearch, applicationsFilter);
+  }, [page, jobsSearch, applicationsFilter, syncUrl]);
 
   useEffect(() => {
-    if (stageOrder.length && selectedStages.length === 0) {
-      setSelectedStages(stageOrder);
-    }
-  }, [stageOrder, selectedStages.length]);
+    const onPopState = () => {
+      setPage(readPageFromUrl());
+      setJobsSearch(jobsParamsFromUrl());
+      setApplicationsFilter(applicationsFilterFromUrl());
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
 
-  const {
-    data: stats,
-    isLoading: statsLoading,
-  } = useQuery({
+  const { data: stats } = useQuery({
     queryKey: ["stats"],
     queryFn: fetchStats,
   });
 
-  const {
-    data: jobsData,
-    isLoading: jobsLoading,
-  } = useQuery({
-    queryKey: ["jobs", minScoreFilter, jobSearch],
-    queryFn: () =>
-      fetchJobs({
-        min_score: minScoreFilter,
-        search: jobSearch.trim() || undefined,
-        sort: "activity_desc",
-        limit: 150,
-      }),
+  const { data: activeRun } = useQuery({
+    queryKey: ["runs", "active"],
+    queryFn: fetchActiveRun,
+    refetchInterval: 5000,
   });
 
-  const { data: recentJobs } = useQuery({
-    queryKey: ["jobs-recent"],
-    queryFn: () => fetchRecentJobs(120),
-    refetchInterval: activeRun?.status === "running" ? 3000 : false,
-  });
+  const headerMetrics: HeaderMetrics = useMemo(() => {
+    const extra = stats?.extra ?? {};
+    const spendRaw = extra.llm_cost_today ?? extra.cost_today ?? extra.spend_today;
+    const spend =
+      typeof spendRaw === "number"
+        ? spendRaw.toFixed(2)
+        : typeof spendRaw === "string"
+          ? spendRaw
+          : "—";
 
-  const loadRunDetail = useCallback(async (runId: string, status: string) => {
-    const run = await fetchRun(runId);
-    setActiveRun(run);
-    if (status === "running") {
-      return;
-    }
-    const history = await fetchRunEventsHistory(runId);
-    setEvents(history);
-  }, []);
+    return {
+      applied: stats?.applied ?? "—",
+      queue: stats?.ready_to_apply ?? stats?.pipeline?.pending_apply ?? "—",
+      spend,
+      unverified: stats?.pipeline?.submitted_unverified ?? 0,
+      workers: extra.active_workers ?? "—",
+    };
+  }, [stats]);
 
-  useEffect(() => {
-    fetchActiveRun()
-      .then((run) => {
-        if (!run) return;
-        setActiveRun(run);
-        if (run.status !== "running") {
-          fetchRunEventsHistory(run.id)
-            .then(setEvents)
-            .catch(() => {});
+  const handlePageChange = (next: DashboardPage) => {
+    setPage(next);
+    setSelectedJob(null);
+    setSelectedApplication(null);
+  };
+
+  const handleOpenJobs = useCallback(
+    (params?: Record<string, string>) => {
+      const next = new URLSearchParams();
+      if (params) {
+        for (const [k, v] of Object.entries(params)) {
+          if (v) next.set(k, v);
         }
-      })
-      .catch(() => {});
-  }, []);
-
-  const refreshRun = useCallback((runId: string) => {
-    fetchRun(runId)
-      .then(setActiveRun)
-      .catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    if (!activeRun?.id || activeRun.status !== "running") return;
-    const lastId = eventsRef.current.reduce((m, e) => Math.max(m, e.id ?? 0), 0);
-    const unsub = subscribeRunEvents(
-      activeRun.id,
-      (event) => {
-        setEvents((prev) => {
-          const next = [...prev, event];
-          if (next.length > 2000) return next.slice(-1500);
-          return next;
-        });
-        if (event.event_type === "stats_tick" || event.event_type === "stage_progress") {
-          queryClient.invalidateQueries({ queryKey: ["stats"] });
-          queryClient.invalidateQueries({ queryKey: ["jobs"] });
-          queryClient.invalidateQueries({ queryKey: ["jobs-recent"] });
-        }
-        if (event.event_type === "run_finished") {
-          const runId = event.run_id;
-          if (runId) refreshRun(runId);
-          queryClient.invalidateQueries({ queryKey: ["stats"] });
-          queryClient.invalidateQueries({ queryKey: ["jobs"] });
-          queryClient.invalidateQueries({ queryKey: ["jobs-recent"] });
-          queryClient.invalidateQueries({ queryKey: ["runs"] });
-        }
-      },
-      lastId,
-    );
-    return unsub;
-  }, [activeRun?.id, activeRun?.status, queryClient, refreshRun]);
-
-  useEffect(() => {
-    if (!activeRun?.id || activeRun.status !== "running") return;
-    const timer = window.setInterval(() => refreshRun(activeRun.id), 4000);
-    return () => window.clearInterval(timer);
-  }, [activeRun?.id, activeRun?.status, refreshRun]);
-
-  const handleSelectHistoryRun = useCallback(
-    async (run: Run) => {
-      setError(null);
-      setEvents([]);
-      try {
-        await loadRunDetail(run.id, run.status);
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Failed to load run");
       }
+      setJobsSearch(next);
+      setPage("jobs");
+      setSelectedJob(null);
+      setSelectedApplication(null);
     },
-    [loadRunDetail],
+    [],
   );
 
-  const stageStates = useMemo(() => {
-    const states: Record<string, "pending" | "active" | "done" | "error"> = {};
-    for (const s of stageOrder) states[s] = "pending";
-    if (activeRun?.current_stage) {
-      for (const s of stageOrder) {
-        if (s === activeRun.current_stage) states[s] = "active";
-      }
-    }
-    for (const e of events) {
-      if (e.event_type === "stage_end" && e.stage) states[e.stage] = "done";
-      if (e.event_type === "stage_start" && e.stage) states[e.stage] = "active";
-      if (e.event_type === "stage_error" && e.stage) states[e.stage] = "error";
-    }
-    return states;
-  }, [stageOrder, activeRun?.current_stage, events]);
+  const handleOpenApplications = useCallback((params?: Record<string, string>) => {
+    setApplicationsFilter(params?.filter ?? null);
+    setPage("applications");
+    setSelectedJob(null);
+    setSelectedApplication(null);
+  }, []);
 
-  const errors = useMemo(
-    () => events.filter((e) => e.event_type === "stage_error"),
-    [events],
-  );
+  const handleApplicationsFilterChange = useCallback((filter: ApplyStatusFilter) => {
+    setApplicationsFilter(applyFilterToUrlParam(filter));
+  }, []);
 
-  const handleStart = useCallback(async () => {
-    setError(null);
-    setStarting(true);
-    setEvents([]);
+  const handleStopRun = useCallback(async () => {
+    if (!activeRun?.id || activeRun.status !== "running") return;
+    setStopping(true);
     try {
-      const run = await startRun({
-        run_type: runType,
-        stages: selectedStages.length === stageOrder.length ? null : selectedStages,
-        stream,
-        dry_run: dryRun,
-        min_score: pipelineMinScore,
-        workers,
-      });
-      setActiveRun(run);
-      if (run.status === "failed" || run.status === "stopped") {
-        setError(run.error_message ?? `Run ended with status: ${run.status}`);
-        if (run.id) {
-          fetchRunEventsHistory(run.id)
-            .then(setEvents)
-            .catch(() => {});
-        }
-      }
-      queryClient.invalidateQueries({ queryKey: ["runs"] });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Start failed");
+      await stopRun(activeRun.id);
+      queryClient.invalidateQueries({ queryKey: ["runs", "active"] });
     } finally {
-      setStarting(false);
+      setStopping(false);
     }
-  }, [
-    selectedStages,
-    stageOrder.length,
-    stream,
-    dryRun,
-    runType,
-    pipelineMinScore,
-    workers,
-    queryClient,
-  ]);
+  }, [activeRun?.id, activeRun?.status, queryClient]);
 
-  const handleStop = useCallback(async () => {
-    if (!activeRun?.id) return;
-    setError(null);
-    try {
-      const run = await stopRun(activeRun.id);
-      setActiveRun(run);
-      refreshRun(run.id);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Stop failed");
-    }
-  }, [activeRun?.id, refreshRun]);
-
-  const isRunning = activeRun?.status === "running";
-  const displayStages = selectedStages.length ? selectedStages : stageOrder;
+  let content;
+  if (page === "jobs") {
+    content = (
+      <JobsExplorerPage
+        searchParams={jobsSearch}
+        onSearchParamsChange={setJobsSearch}
+        onJobSelect={setSelectedJob}
+      />
+    );
+  } else if (page === "apply") {
+    content = (
+      <ApplyPage
+        unverifiedCount={stats?.pipeline?.submitted_unverified ?? 0}
+        onOpenApplications={handleOpenApplications}
+      />
+    );
+  } else if (page === "applications") {
+    content = (
+      <AppliedApplicationsPage
+        initialFilter={applicationsFilter}
+        onFilterChange={handleApplicationsFilterChange}
+      />
+    );
+  } else {
+    content = <HomePage onOpenJobs={handleOpenJobs} onOpenApplications={handleOpenApplications} />;
+  }
 
   return (
-    <div className="flex h-screen overflow-hidden">
-      <aside className="flex w-56 shrink-0 flex-col border-r border-zinc-800/80 bg-zinc-950/80">
-        <div className="border-b border-zinc-800/80 px-4 py-5">
-          <div className="flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-blue-500 to-indigo-600 text-xs font-bold text-white shadow-lg shadow-blue-500/20">
-              AP
-            </div>
-            <div>
-              <h1 className="text-sm font-semibold tracking-tight text-zinc-100">
-                ApplyPilot
-              </h1>
-              <p className="text-[10px] text-zinc-500">Control panel</p>
-            </div>
-          </div>
-        </div>
-
-        <nav className="flex flex-col gap-1 px-3 pt-2">
-          <button
-            type="button"
-            onClick={() => setPage("pipeline")}
-            className={`rounded-lg px-3 py-2 text-left text-sm ${
-              page === "pipeline"
-                ? "bg-zinc-800 text-zinc-100"
-                : "text-zinc-500 hover:bg-zinc-900 hover:text-zinc-300"
-            }`}
-          >
-            Pipeline
-          </button>
-          <button
-            type="button"
-            onClick={() => setPage("applications")}
-            className={`rounded-lg px-3 py-2 text-left text-sm ${
-              page === "applications"
-                ? "bg-zinc-800 text-zinc-100"
-                : "text-zinc-500 hover:bg-zinc-900 hover:text-zinc-300"
-            }`}
-          >
-            Applications
-          </button>
-        </nav>
-
-        <div className="flex flex-1 flex-col gap-3 overflow-hidden p-3">
-          <ConnectionStatus />
-          {page === "pipeline" && (
-            <RunHistory
-              activeRunId={activeRun?.id ?? null}
-              onSelectRun={handleSelectHistoryRun}
-            />
-          )}
-        </div>
-
-        <footer className="border-t border-zinc-800/80 px-4 py-3 text-[10px] text-zinc-600">
-          Local-first · ~/.applypilot
-        </footer>
-      </aside>
-
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <header className="shrink-0 border-b border-zinc-800/80 bg-zinc-950/50 px-6 py-4 backdrop-blur-sm">
-          <h2 className="text-lg font-semibold text-zinc-100">
-            {page === "applications" ? "Applications" : "Pipeline dashboard"}
-          </h2>
-          <p className="mt-0.5 text-sm text-zinc-500">
-            {page === "applications"
-              ? "Applied jobs with form values and errors from session logs."
-              : "Discover, score, and tailor jobs — watch each stage live."}
-          </p>
-        </header>
-
-        <main className="scroll-thin min-h-0 flex-1 space-y-4 overflow-y-auto p-6">
-          {page === "applications" ? (
-            <ApplicationsPage />
-          ) : (
-          <>
-          {error && (
-            <div
-              role="alert"
-              className="rounded-lg border border-red-800/60 bg-red-950/40 px-4 py-3 text-sm text-red-200"
-            >
-              {error}
-            </div>
-          )}
-
-          <RunBanner run={activeRun} />
-
-          <ControlBar
-            isRunning={isRunning}
-            starting={starting}
-            runType={runType}
-            onRunTypeChange={setRunType}
-            stream={stream}
-            dryRun={dryRun}
-            minScore={pipelineMinScore}
-            workers={workers}
-            onMinScoreChange={setPipelineMinScore}
-            onWorkersChange={setWorkers}
-            stageOrder={stageOrder}
-            selectedStages={selectedStages}
-            onToggleStage={(stage) =>
-              setSelectedStages((prev) =>
-                prev.includes(stage) ? prev.filter((s) => s !== stage) : [...prev, stage],
-              )
-            }
-            onSelectAll={() => setSelectedStages(stageOrder)}
-            onStreamChange={setStream}
-            onDryRunChange={setDryRun}
-            onStart={handleStart}
-            onStop={handleStop}
-            activeRun={activeRun}
-          />
-
-          <StatsRow stats={stats} isLoading={statsLoading} />
-
-          <PhaseStepper
-            stageOrder={displayStages}
-            stageMeta={stagesMeta?.meta ?? {}}
-            stageStates={stageStates}
-            events={events}
-            stats={stats}
-            minScore={pipelineMinScore}
-          />
-
-          <div className="grid gap-4 pb-4 xl:grid-cols-2">
-            <LogConsole events={events} errors={errors} />
-            <JobsTable
-              jobs={jobsData?.jobs ?? []}
-              recentJobs={recentJobs ?? []}
-              minScoreFilter={minScoreFilter}
-              onMinScoreChange={setMinScoreFilter}
-              search={jobSearch}
-              onSearchChange={setJobSearch}
-              total={jobsData?.total ?? 0}
-              isLoading={jobsLoading}
-            />
-          </div>
-          </>
-          )}
-        </main>
-      </div>
-    </div>
+    <DashboardLayout
+      page={page}
+      onPageChange={handlePageChange}
+      headerMetrics={headerMetrics}
+      selectedJob={selectedJob}
+      selectedApplication={selectedApplication}
+      onCloseDrawer={() => {
+        setSelectedJob(null);
+        setSelectedApplication(null);
+      }}
+      activeRun={activeRun ?? null}
+      onStopRun={handleStopRun}
+      stopping={stopping}
+    >
+      {content}
+    </DashboardLayout>
   );
 }

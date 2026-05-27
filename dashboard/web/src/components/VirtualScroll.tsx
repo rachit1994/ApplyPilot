@@ -129,7 +129,7 @@ export function VirtualGrid<T>({
   if (items.length === 0) {
     return (
       <div className={className}>
-        <div className={`sticky top-0 z-10 bg-zinc-950/95 backdrop-blur ${headerCls}`}>
+        <div className={`sticky top-0 z-10 bg-canvas/95 backdrop-blur ${headerCls}`}>
           {header}
         </div>
         {empty}
@@ -141,7 +141,7 @@ export function VirtualGrid<T>({
 
   return (
     <div ref={scrollRef} className={className}>
-      <div className={`sticky top-0 z-10 bg-zinc-950/95 backdrop-blur ${headerCls}`}>
+      <div className={`sticky top-0 z-10 bg-canvas/95 backdrop-blur ${headerCls}`}>
         {header}
       </div>
       <div

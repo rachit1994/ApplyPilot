@@ -19,6 +19,7 @@ ENV_PATH = APP_DIR / ".env"
 # Generated output
 TAILORED_DIR = APP_DIR / "tailored_resumes"
 COVER_LETTER_DIR = APP_DIR / "cover_letters"
+TEMPLATES_DIR = APP_DIR / "templates"
 LOG_DIR = APP_DIR / "logs"
 
 # Chrome worker isolation
@@ -85,10 +86,32 @@ def get_chrome_user_data() -> Path:
         return Path.home() / ".config" / "google-chrome"
 
 
+def templates_dir() -> Path:
+    """User template store (~/.applypilot/templates); creates resumes/ and cover_letters/."""
+    TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
+    (TEMPLATES_DIR / "resumes").mkdir(parents=True, exist_ok=True)
+    (TEMPLATES_DIR / "cover_letters").mkdir(parents=True, exist_ok=True)
+    return TEMPLATES_DIR
+
+
+def load_tailor_a_grade_config(profile: dict) -> dict:
+    """A-grade tailoring thresholds from profile['tailor']['a_grade']."""
+    tailor = profile.get("tailor") or {}
+    a_grade = tailor.get("a_grade") or {}
+    companies = a_grade.get("target_companies") or []
+    return {
+        "min_score": int(a_grade.get("min_score", 9)),
+        "target_companies": {
+            str(c).strip().lower() for c in companies if str(c).strip()
+        },
+    }
+
+
 def ensure_dirs():
     """Create all required directories."""
     for d in [APP_DIR, TAILORED_DIR, COVER_LETTER_DIR, LOG_DIR, CHROME_WORKER_DIR, APPLY_WORKER_DIR]:
         d.mkdir(parents=True, exist_ok=True)
+    templates_dir()
 
 
 def load_profile() -> dict:
@@ -124,6 +147,17 @@ def load_search_config() -> dict:
             return yaml.safe_load(example.read_text(encoding="utf-8"))
         return {}
     return yaml.safe_load(SEARCH_CONFIG_PATH.read_text(encoding="utf-8"))
+
+
+def load_location_filter_patterns(
+    search_cfg: dict | None = None,
+) -> tuple[list[str], list[str]]:
+    """Location accept/reject lists from nested location.* or legacy flat keys."""
+    cfg = search_cfg if search_cfg is not None else load_search_config()
+    loc = cfg.get("location") or {}
+    accept = loc.get("accept_patterns") or cfg.get("location_accept") or []
+    reject = loc.get("reject_patterns") or cfg.get("location_reject_non_remote") or []
+    return [str(x) for x in accept if x], [str(x) for x in reject if x]
 
 
 def load_sites_config() -> dict:
@@ -186,10 +220,15 @@ def load_base_urls() -> dict[str, str | None]:
 
 DEFAULTS = {
     "min_score": 7,
+    "apply_min_score": 0,
+    "apply_min_experience_years": 5,
+    "apply_queue_mode": "all_tailored",
     "max_apply_attempts": 3,
     "max_tailor_attempts": 5,
     "poll_interval": 60,
     "apply_timeout": 600,
+    "apply_inactivity_timeout": 120,
+    "apply_quota_pause": 1800,
     "viewport": "1280x900",
 }
 

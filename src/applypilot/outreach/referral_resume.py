@@ -12,7 +12,7 @@ from pathlib import Path
 from applypilot.config import RESUME_PATH, TAILORED_DIR, load_profile
 from applypilot.database import get_connection
 from applypilot.scoring.pdf import convert_to_pdf
-from applypilot.scoring.tailor import tailor_resume
+from applypilot.scoring.tailor import tailor_resume_with_routing
 
 log = logging.getLogger(__name__)
 
@@ -82,7 +82,7 @@ def _persist_tailored(
 
 def _tailor_and_save(job: dict, profile: dict, validation_mode: str) -> ResumeBundle:
     resume_text = RESUME_PATH.read_text(encoding="utf-8")
-    tailored, report = tailor_resume(
+    tailored, report = tailor_resume_with_routing(
         resume_text, job, profile, validation_mode=validation_mode
     )
     if report.get("status") not in _SUCCESS_STATUSES:

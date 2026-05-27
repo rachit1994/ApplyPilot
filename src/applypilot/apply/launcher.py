@@ -10,14 +10,16 @@ import json
 import logging
 import os
 import platform
+import queue
 import re
+import shutil
 import signal
 import subprocess
 import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from rich.console import Console
@@ -27,7 +29,12 @@ from applypilot import config
 from applypilot.config import load_profile
 from applypilot.database import get_connection
 from applypilot.apply import chrome, dashboard, prompt as prompt_mod
-from applypilot.apply.salary import salary_meets_regional_minimum
+from applypilot.apply.eligibility import (
+    ApplyDecision,
+    ats_only_where_clause,
+    ats_priority_sql_case,
+    classify_apply_target,
+)
 from applypilot.apply.chrome import (
     launch_chrome, cleanup_worker, kill_all_chrome,
     reset_worker_dir, cleanup_on_exit, _kill_process_tree,
@@ -65,20 +72,37 @@ if platform.system() != "Windows":
 # MCP config
 # ---------------------------------------------------------------------------
 
+def _resolve_npx_command() -> str:
+    """Find npx even when ApplyPilot is launched from a sparse GUI PATH."""
+    found = shutil.which("npx")
+    if found:
+        return found
+    for candidate in (
+        "/opt/homebrew/bin/npx",
+        "/usr/local/bin/npx",
+        str(Path.home() / ".local/bin/npx"),
+    ):
+        if Path(candidate).exists():
+            return candidate
+    return "npx"
+
+
 def _make_mcp_config(cdp_port: int) -> dict:
     """Build MCP config dict for a specific CDP port."""
+    npx = _resolve_npx_command()
     return {
         "mcpServers": {
             "playwright": {
-                "command": "npx",
+                "command": npx,
                 "args": [
+                    "-y",
                     "@playwright/mcp@latest",
                     f"--cdp-endpoint=http://localhost:{cdp_port}",
                     f"--viewport-size={config.DEFAULTS['viewport']}",
                 ],
             },
             "gmail": {
-                "command": "npx",
+                "command": npx,
                 "args": ["-y", "@gongrzhe/server-gmail-autoauth-mcp"],
             },
         }
@@ -89,8 +113,165 @@ def _make_mcp_config(cdp_port: int) -> dict:
 # Database operations
 # ---------------------------------------------------------------------------
 
-def acquire_job(target_url: str | None = None, min_score: int = 7,
-                worker_id: int = 0) -> dict | None:
+def _persist_ineligible_job(conn, row: dict, result) -> None:
+    url = row["url"]
+    if result.decision == ApplyDecision.MANUAL:
+        conn.execute(
+            "UPDATE jobs SET apply_status = 'manual', apply_error = ?, agent_id = NULL WHERE url = ?",
+            (result.reason or "manual", url),
+        )
+        conn.commit()
+        logger.info("Skipping manual apply (%s): %s", result.reason, url[:80])
+        return
+    if result.decision == ApplyDecision.SKIP_PERMANENT:
+        conn.execute(
+            """
+            UPDATE jobs SET apply_status = 'failed', apply_error = ?,
+                           apply_attempts = 99, agent_id = NULL
+            WHERE url = ?
+            """,
+            (result.reason or "ineligible", url),
+        )
+        conn.commit()
+        logger.info("Skipping permanent ineligible (%s): %s", result.reason, url[:80])
+
+
+def _acquirable_jobs_where(
+    *,
+    min_score: int | None = None,
+    ats_only: bool = False,
+) -> tuple[str, list]:
+    """SQL WHERE fragment matching acquire_job queue selection (before eligibility loop)."""
+    blocked_sites, blocked_patterns = _load_blocked()
+    max_attempts = config.DEFAULTS["max_apply_attempts"]
+    if min_score is None:
+        min_score = int(config.DEFAULTS.get("apply_min_score", 0))
+    params: list = [max_attempts]
+    score_clause = ""
+    if min_score > 0:
+        score_clause = "AND fit_score >= ?"
+        params.append(min_score)
+    site_clause = ""
+    if blocked_sites:
+        placeholders = ",".join("?" * len(blocked_sites))
+        site_clause = f"AND site NOT IN ({placeholders})"
+        params.extend(blocked_sites)
+    url_clauses = ""
+    if blocked_patterns:
+        url_clauses = " ".join("AND url NOT LIKE ?" for _ in blocked_patterns)
+        params.extend(blocked_patterns)
+    ats_clause = ats_only_where_clause() if ats_only else ""
+    where = f"""
+        WHERE tailored_resume_path IS NOT NULL
+          AND applied_at IS NULL
+          AND (apply_status IS NULL OR apply_status = 'failed')
+          AND (
+            apply_not_before IS NULL
+            OR datetime(apply_not_before) <= datetime('now')
+          )
+          AND (apply_attempts IS NULL OR apply_attempts < ?)
+          {score_clause}
+          {site_clause}
+          {url_clauses}
+          {ats_clause}
+    """
+    return where, params
+
+
+def count_acquirable_jobs(
+    *,
+    min_score: int | None = None,
+    ats_only: bool = False,
+) -> int:
+    """Count jobs matching acquire_job SQL filters (eligibility may skip more at runtime)."""
+    where, params = _acquirable_jobs_where(min_score=min_score, ats_only=ats_only)
+    conn = get_connection()
+    return int(conn.execute(f"SELECT COUNT(*) FROM jobs {where}", params).fetchone()[0])
+
+
+def apply_queue_snapshot() -> dict[str, int]:
+    """Summarize why the apply queue may look empty."""
+    conn = get_connection()
+    max_attempts = int(config.DEFAULTS["max_apply_attempts"])
+    row = conn.execute(
+        """
+        SELECT
+          SUM(CASE WHEN tailored_resume_path IS NOT NULL AND applied_at IS NULL
+                    THEN 1 ELSE 0 END),
+          SUM(CASE WHEN apply_status = 'in_progress' THEN 1 ELSE 0 END),
+          SUM(CASE WHEN apply_status = 'failed'
+                    AND COALESCE(apply_attempts, 0) >= ?
+                    AND COALESCE(apply_attempts, 0) < 99 THEN 1 ELSE 0 END),
+          SUM(CASE WHEN apply_status = 'failed'
+                    AND COALESCE(apply_attempts, 0) < 99 THEN 1 ELSE 0 END),
+          SUM(CASE WHEN apply_status = 'failed'
+                    AND COALESCE(apply_attempts, 0) >= 99 THEN 1 ELSE 0 END),
+          SUM(CASE WHEN apply_status = 'submitted_unverified' THEN 1 ELSE 0 END),
+          SUM(CASE WHEN apply_status = 'manual' THEN 1 ELSE 0 END)
+        FROM jobs
+        """,
+        (max_attempts,),
+    ).fetchone()
+    return {
+        "tailored_pending": int(row[0] or 0),
+        "in_progress": int(row[1] or 0),
+        "failed_exhausted": int(row[2] or 0),
+        "failed_resettable": int(row[3] or 0),
+        "failed_permanent": int(row[4] or 0),
+        "submitted_unverified": int(row[5] or 0),
+        "manual": int(row[6] or 0),
+    }
+
+
+def format_apply_queue_hint(
+    *,
+    min_score: int | None = None,
+    ats_only: bool = False,
+) -> str:
+    """Human-readable hint when apply cannot start."""
+    snap = apply_queue_snapshot()
+    acquirable = count_acquirable_jobs(min_score=min_score, ats_only=ats_only)
+    lines = [
+        f"Acquirable now (score/min filters): {acquirable}",
+        f"Tailored, not applied: {snap['tailored_pending']}",
+        f"In progress (stale locks cleared on start): {snap['in_progress']}",
+        f"Failed — retryable with --reset-failed: {snap['failed_resettable']}",
+        f"Failed — hit max attempts ({config.DEFAULTS['max_apply_attempts']}): {snap['failed_exhausted']}",
+        f"Failed — permanent/skip (attempts=99): {snap['failed_permanent']}",
+        f"Needs check (submitted_unverified): {snap['submitted_unverified']}",
+        f"Manual apply only: {snap['manual']}",
+    ]
+    if acquirable == 0 and snap["failed_resettable"] > 0:
+        lines.append(
+            "Try: applypilot apply --reset-failed   (or --reset-pre-filter for attempts=99 skips)"
+        )
+    if snap["tailored_pending"] == 0:
+        lines.append("Run: applypilot run score tailor cover pdf")
+    return "\n".join(lines)
+
+
+def _persist_resume_pdf_missing(conn, row: dict, detail: str) -> None:
+    """Skip jobs whose tailored resume has no PDF and cannot be generated."""
+    url = row["url"]
+    conn.execute(
+        """
+        UPDATE jobs SET apply_status = 'failed', apply_error = ?,
+                       apply_attempts = 99, agent_id = NULL
+        WHERE url = ?
+        """,
+        (detail, url),
+    )
+    conn.commit()
+    logger.info("Skipping job — resume PDF missing: %s", url[:80])
+
+
+def acquire_job(
+    target_url: str | None = None,
+    min_score: int | None = None,
+    worker_id: int = 0,
+    ats_only: bool = False,
+    min_experience_years: int | None = None,
+) -> dict | None:
     """Atomically acquire the next job to apply to.
 
     Args:
@@ -103,6 +284,12 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
     """
     conn = get_connection()
     try:
+        try:
+            apply_profile = config.load_profile()
+        except Exception:
+            apply_profile = {}
+        if min_score is None:
+            min_score = int(config.DEFAULTS.get("apply_min_score", 0))
         conn.execute("BEGIN IMMEDIATE")
 
         while True:
@@ -110,91 +297,64 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
                 like = f"%{target_url.split('?')[0].rstrip('/')}%"
                 row = conn.execute("""
                     SELECT url, title, site, application_url, tailored_resume_path,
-                           fit_score, location, full_description, cover_letter_path, salary
+                           fit_score, location, full_description, cover_letter_path, salary,
+                           strategy
                     FROM jobs
                     WHERE (url = ? OR application_url = ? OR application_url LIKE ? OR url LIKE ?)
                       AND tailored_resume_path IS NOT NULL
                       AND applied_at IS NULL
-                      AND (apply_status IS NULL OR apply_status NOT IN ('in_progress', 'applied'))
+                      AND (
+                        apply_status IS NULL
+                        OR apply_status NOT IN ('in_progress', 'applied', 'submitted_unverified')
+                      )
                     LIMIT 1
                 """, (target_url, target_url, like, like)).fetchone()
             else:
-                blocked_sites, blocked_patterns = _load_blocked()
-                params: list = [min_score]
-                site_clause = ""
-                if blocked_sites:
-                    placeholders = ",".join("?" * len(blocked_sites))
-                    site_clause = f"AND site NOT IN ({placeholders})"
-                    params.extend(blocked_sites)
-                url_clauses = ""
-                if blocked_patterns:
-                    url_clauses = " ".join(f"AND url NOT LIKE ?" for _ in blocked_patterns)
-                    params.extend(blocked_patterns)
+                where, params = _acquirable_jobs_where(
+                    min_score=min_score, ats_only=ats_only
+                )
+                priority = ats_priority_sql_case()
                 row = conn.execute(f"""
                     SELECT url, title, site, application_url, tailored_resume_path,
-                           fit_score, location, full_description, cover_letter_path, salary
+                           fit_score, location, full_description, cover_letter_path, salary,
+                           strategy
                     FROM jobs
-                    WHERE tailored_resume_path IS NOT NULL
-                      AND applied_at IS NULL
-                      AND (apply_status IS NULL OR apply_status = 'failed')
-                      AND (apply_attempts IS NULL OR apply_attempts < ?)
-                      AND fit_score >= ?
-                      {site_clause}
-                      {url_clauses}
-                    ORDER BY (application_url IS NOT NULL) DESC, fit_score DESC, url
+                    {where}
+                    ORDER BY {priority}, fit_score DESC, url
                     LIMIT 1
-                """, [config.DEFAULTS["max_apply_attempts"]] + params).fetchone()
+                """, params).fetchone()
 
             if not row:
                 conn.rollback()
                 return None
 
-            from applypilot.config import is_contractor_marketplace, is_manual_ats
-            apply_url = row["application_url"] or row["url"]
-            if is_manual_ats(apply_url):
-                conn.execute(
-                    "UPDATE jobs SET apply_status = 'manual', apply_error = 'manual ATS' WHERE url = ?",
-                    (row["url"],),
-                )
-                conn.commit()
-                logger.info("Skipping manual ATS: %s", row["url"][:80])
-                if target_url:
-                    return None
-                continue
-
-            if is_contractor_marketplace(apply_url):
-                conn.execute(
-                    """
-                    UPDATE jobs SET apply_status = 'failed', apply_error = 'not_a_job_application',
-                                   apply_attempts = 99, agent_id = NULL
-                    WHERE url = ?
-                    """,
-                    (row["url"],),
-                )
-                conn.commit()
-                logger.info("Skipping contractor marketplace: %s", row["url"][:80])
-                if target_url:
-                    return None
-                continue
-
-            salary_ok = salary_meets_regional_minimum(
-                row["salary"],
-                row["full_description"],
-                row["location"],
+            job_row = dict(row)
+            eligibility = classify_apply_target(
+                job_row,
+                ats_only=ats_only,
+                profile=apply_profile,
+                min_experience_years=min_experience_years,
             )
-            if not salary_ok:
-                conn.execute(
-                    """
-                    UPDATE jobs SET apply_status = 'failed', apply_error = 'not_eligible_salary',
-                                   apply_attempts = 99, agent_id = NULL
-                    WHERE url = ?
-                    """,
-                    (row["url"],),
-                )
-                conn.commit()
-                logger.info("Skipping below-minimum salary: %s", row["url"][:80])
+            if eligibility.decision != ApplyDecision.ELIGIBLE:
+                _persist_ineligible_job(conn, job_row, eligibility)
                 if target_url:
                     return None
+                conn.execute("BEGIN IMMEDIATE")
+                continue
+
+            resume_path = job_row.get("tailored_resume_path")
+            try:
+                prompt_mod.ensure_resume_pdf(resume_path)
+            except (ValueError, OSError) as exc:
+                logger.warning(
+                    "Resume PDF not ready for %s: %s",
+                    job_row.get("url", "")[:80],
+                    exc,
+                )
+                _persist_resume_pdf_missing(conn, job_row, "resume_pdf_missing")
+                if target_url:
+                    return None
+                conn.execute("BEGIN IMMEDIATE")
                 continue
 
             now = datetime.now(timezone.utc).isoformat()
@@ -217,26 +377,55 @@ def mark_result(url: str, status: str, error: str | None = None,
                 task_id: str | None = None,
                 log_path: str | Path | None = None) -> None:
     """Update a job's apply status in the database."""
+    import json
+
+    from applypilot.apply.apply_log_parser import form_filled_from_log_text
+
     conn = get_connection()
     now = datetime.now(timezone.utc).isoformat()
     log_value = str(log_path) if log_path else None
+    form_json: str | None = None
+    if log_path:
+        path = Path(log_path)
+        if path.is_file():
+            try:
+                log_text = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                log_text = ""
+            if log_text:
+                record = form_filled_from_log_text(log_text)
+                if record:
+                    form_json = json.dumps(record, ensure_ascii=False)
+
     if status == "applied":
         conn.execute("""
             UPDATE jobs SET apply_status = 'applied', applied_at = ?,
                            apply_error = NULL, agent_id = NULL,
                            apply_duration_ms = ?, apply_task_id = ?,
-                           apply_log_path = COALESCE(?, apply_log_path)
+                           apply_log_path = COALESCE(?, apply_log_path),
+                           apply_form_filled = COALESCE(?, apply_form_filled),
+                           apply_not_before = NULL
             WHERE url = ?
-        """, (now, duration_ms, task_id, log_value, url))
+        """, (now, duration_ms, task_id, log_value, form_json, url))
+    elif status == "submitted_unverified":
+        conn.execute("""
+            UPDATE jobs SET apply_status = 'submitted_unverified', applied_at = ?,
+                           apply_error = ?, apply_attempts = COALESCE(apply_attempts, 0) + 1,
+                           agent_id = NULL, apply_duration_ms = ?, apply_task_id = ?,
+                           apply_log_path = COALESCE(?, apply_log_path),
+                           apply_form_filled = COALESCE(?, apply_form_filled)
+            WHERE url = ?
+        """, (now, error or "unverified", duration_ms, task_id, log_value, form_json, url))
     else:
         attempts = 99 if permanent else "COALESCE(apply_attempts, 0) + 1"
         conn.execute(f"""
             UPDATE jobs SET apply_status = ?, apply_error = ?,
                            apply_attempts = {attempts}, agent_id = NULL,
                            apply_duration_ms = ?, apply_task_id = ?,
-                           apply_log_path = COALESCE(?, apply_log_path)
+                           apply_log_path = COALESCE(?, apply_log_path),
+                           apply_form_filled = COALESCE(?, apply_form_filled)
             WHERE url = ?
-        """, (status, error or "unknown", duration_ms, task_id, log_value, url))
+        """, (status, error or "unknown", duration_ms, task_id, log_value, form_json, url))
     conn.commit()
 
 
@@ -262,6 +451,19 @@ def release_stale_locks(max_age_minutes: int = 45) -> int:
           AND datetime(last_attempted_at) < datetime('now', ?)
         """,
         (f"-{max_age_minutes} minutes",),
+    )
+    conn.commit()
+    return cur.rowcount
+
+
+def release_orphan_in_progress_locks() -> int:
+    """Release all in_progress rows (local single-user apply; prior run interrupted)."""
+    conn = get_connection()
+    cur = conn.execute(
+        """
+        UPDATE jobs SET apply_status = NULL, agent_id = NULL
+        WHERE apply_status = 'in_progress'
+        """
     )
     conn.commit()
     return cur.rowcount
@@ -322,38 +524,268 @@ def mark_job(url: str, status: str, reason: str | None = None) -> None:
         conn.execute("""
             UPDATE jobs SET apply_status = 'applied', applied_at = ?,
                            apply_error = NULL, agent_id = NULL
-            WHERE url = ?
-        """, (now, url))
+            WHERE url = ? OR application_url = ?
+        """, (now, url, url))
     else:
         conn.execute("""
             UPDATE jobs SET apply_status = 'failed', apply_error = ?,
                            apply_attempts = 99, agent_id = NULL
-            WHERE url = ?
-        """, (reason or "manual", url))
+            WHERE url = ? OR application_url = ?
+        """, (reason or "manual", url, url))
     conn.commit()
 
 
 def reset_failed() -> int:
-    """Reset all failed jobs so they can be retried.
+    """Reset failed jobs for retry (excludes permanent skips with apply_attempts=99).
 
     Returns:
         Number of jobs reset.
     """
     conn = get_connection()
-    cursor = conn.execute("""
+    cursor = conn.execute(
+        """
         UPDATE jobs SET apply_status = NULL, apply_error = NULL,
                        apply_attempts = 0, agent_id = NULL
         WHERE apply_status = 'failed'
-          OR (apply_status IS NOT NULL AND apply_status != 'applied'
-              AND apply_status != 'in_progress')
-    """)
+          AND COALESCE(apply_attempts, 0) < 99
+        """
+    )
     conn.commit()
     return cursor.rowcount
+
+
+def reset_pre_filter_skips() -> int:
+    """Re-queue tailored jobs stuck with apply_attempts=99 (pre-filter or old skips)."""
+    conn = get_connection()
+    cursor = conn.execute(
+        """
+        UPDATE jobs SET apply_status = NULL, apply_error = NULL,
+                       apply_attempts = 0, agent_id = NULL
+        WHERE tailored_resume_path IS NOT NULL
+          AND applied_at IS NULL
+          AND apply_status = 'failed'
+          AND COALESCE(apply_attempts, 0) >= 99
+        """,
+    )
+    conn.commit()
+    return cursor.rowcount
+
+
+def triage_apply_queue(
+    *,
+    min_score: int | None = None,
+    min_experience_years: int | None = None,
+) -> dict[str, int]:
+    """Classify tailored jobs without launching Chrome; mark manual / permanent skip.
+
+    Reclassifies never-tried and retryable failed rows so the dashboard ready count
+    matches what auto-apply will actually pick up.
+    """
+    conn = get_connection()
+    max_attempts = config.DEFAULTS["max_apply_attempts"]
+    if min_score is None:
+        min_score = int(config.DEFAULTS.get("apply_min_score", 5))
+    try:
+        profile = config.load_profile()
+    except Exception:
+        profile = {}
+    rows = conn.execute(
+        """
+        SELECT url, title, site, application_url, tailored_resume_path,
+               fit_score, location, full_description, cover_letter_path, salary,
+               strategy, apply_status, apply_error, apply_attempts
+        FROM jobs
+        WHERE tailored_resume_path IS NOT NULL
+          AND applied_at IS NULL
+          AND (
+            apply_status IS NULL
+            OR apply_status IN ('failed', 'manual')
+          )
+          AND (apply_attempts IS NULL OR apply_attempts < ?)
+          AND fit_score >= ?
+        """,
+        (max_attempts, min_score),
+    ).fetchall()
+
+    summary: dict[str, int] = {
+        "scanned": 0,
+        "eligible": 0,
+        "marked_manual": 0,
+        "marked_permanent": 0,
+        "unchanged": 0,
+    }
+    for row in rows:
+        summary["scanned"] += 1
+        job = dict(row)
+        result = classify_apply_target(
+            job,
+            min_experience_years=min_experience_years,
+            profile=profile,
+            strict=True,
+        )
+        if result.decision == ApplyDecision.ELIGIBLE:
+            summary["eligible"] += 1
+            if job.get("apply_status") in ("failed", "manual") and (
+                job.get("apply_attempts", 0) or 0
+            ) < 99:
+                conn.execute(
+                    """
+                    UPDATE jobs SET apply_status = NULL, apply_error = NULL,
+                                   apply_attempts = 0, agent_id = NULL
+                    WHERE url = ?
+                    """,
+                    (job["url"],),
+                )
+                if job.get("apply_status") == "manual":
+                    summary["reopened_manual"] = summary.get("reopened_manual", 0) + 1
+            continue
+        if result.decision == ApplyDecision.MANUAL:
+            if (
+                job.get("apply_status") == "manual"
+                and (job.get("apply_error") or "") == (result.reason or "manual")
+            ):
+                summary["unchanged"] += 1
+                continue
+            _persist_ineligible_job(conn, job, result)
+            summary["marked_manual"] += 1
+            continue
+        if result.decision == ApplyDecision.SKIP_PERMANENT:
+            if (
+                job.get("apply_status") == "failed"
+                and job.get("apply_error") == result.reason
+                and job.get("apply_attempts") == 99
+            ):
+                summary["unchanged"] += 1
+                continue
+            _persist_ineligible_job(conn, job, result)
+            summary["marked_permanent"] += 1
+    conn.commit()
+    return summary
 
 
 # ---------------------------------------------------------------------------
 # Per-job execution
 # ---------------------------------------------------------------------------
+
+def _resolve_apply_result(
+    output: str,
+    worker_id: int,
+    job: dict,
+    elapsed: int,
+    job_log: Path,
+) -> str:
+    """Map agent output to launcher result string (with Tier 1 verification)."""
+    from applypilot.apply.apply_log_parser import extract_result_json, parse_apply_log
+    from applypilot.apply.verification import VerificationRecord, evaluate as verify_apply
+
+    def _clean_reason(s: str) -> str:
+        return re.sub(r'[*`"]+$', '', s).strip()
+
+    result_json = extract_result_json(output)
+    if result_json:
+        parsed = parse_apply_log(output)
+        record = VerificationRecord(
+            status=str(result_json.get("status", "failed")),
+            submit_click_ref=result_json.get("submit_click_ref"),
+            submit_button_text=result_json.get("submit_button_text"),
+            pre_submit_url=result_json.get("pre_submit_url"),
+            post_submit_url=result_json.get("post_submit_url"),
+            post_submit_snapshot=result_json.get("post_submit_snapshot"),
+            confirmation_copy=result_json.get("confirmation_copy"),
+            screenshot_path=result_json.get("screenshot_path"),
+            verification_code_used=result_json.get("verification_code_used"),
+            fill_actions=parsed["fill_actions"],
+        )
+        verdict = verify_apply(record)
+
+        if record.status == "applied":
+            if verdict.decision == "verified":
+                return "applied"
+            if verdict.decision == "unverified":
+                return "submitted_unverified:" + ";".join(verdict.reasons)
+
+        status = record.status
+        if status == "dry_run":
+            return "failed:dry_run"
+        if status in ("captcha", "login_issue", "expired"):
+            return status
+        if status == "failed":
+            reason = _clean_reason(str(result_json.get("reason", "unknown")))
+            return f"failed:{reason}"
+        if status == "pause_for_human":
+            reason = _clean_reason(str(result_json.get("reason", "pause_for_human")))
+            return f"failed:{reason}"
+        return f"failed:{status}"
+
+    if "RESULT:APPLIED" in output:
+        logger.warning(
+            "[W%s] Legacy RESULT:APPLIED without RESULT_JSON for %s — downgrading to submitted_unverified",
+            worker_id,
+            job.get("title", "")[:30],
+        )
+        return "submitted_unverified:legacy RESULT:APPLIED without structured proof"
+
+    for result_status in ["EXPIRED", "CAPTCHA", "LOGIN_ISSUE"]:
+        if f"RESULT:{result_status}" in output:
+            return result_status.lower()
+
+    if "RESULT:FAILED" in output:
+        for out_line in output.split("\n"):
+            if "RESULT:FAILED" in out_line:
+                reason = (
+                    out_line.split("RESULT:FAILED:")[-1].strip()
+                    if ":" in out_line[out_line.index("FAILED") + 6:]
+                    else "unknown"
+                )
+                reason = _clean_reason(reason)
+                promote = {"captcha", "expired", "login_issue"}
+                if reason in promote:
+                    return reason
+                return f"failed:{reason}"
+        return "failed:unknown"
+
+    return "failed:no_result_line"
+
+
+FAST_FAIL_TEXT_PATTERNS: dict[str, tuple[str, ...]] = {
+    "claude_quota_exhausted": (
+        "you've hit your limit",
+        "you have hit your limit",
+        "session limit · resets",
+    ),
+    "claude_auth_failed": (
+        "please run `claude login`",
+        "not authenticated",
+        "invalid api key",
+    ),
+}
+
+
+def _detect_fast_fail(text: str) -> str | None:
+    lower = text.lower()
+    for reason, needles in FAST_FAIL_TEXT_PATTERNS.items():
+        if any(n in lower for n in needles):
+            return reason
+    return None
+
+
+def _stream_stdout_reader(stdout, q: queue.Queue) -> None:
+    try:
+        for line in stdout:
+            q.put(("line", line))
+    finally:
+        q.put(("eof", None))
+
+
+def _sync_worker_line(worker_id: int, detail: str, **state) -> None:
+    """Update in-memory dashboard state and emit a line for web SSE."""
+    update_state(worker_id, **state)
+    status = state.get("status")
+    if status is not None:
+        logger.info("[worker-%d] status=%s %s", worker_id, status, detail)
+    else:
+        logger.info("[worker-%d] %s", worker_id, detail)
+
 
 def run_job(job: dict, port: int, worker_id: int = 0,
             model: str = "sonnet", dry_run: bool = False,
@@ -373,14 +805,23 @@ def run_job(job: dict, port: int, worker_id: int = 0,
     if txt_path and txt_path.exists():
         resume_text = txt_path.read_text(encoding="utf-8")
 
-    # Build the prompt
-    agent_prompt = prompt_mod.build_prompt(
-        job=job,
-        tailored_resume=resume_text,
-        dry_run=dry_run,
-        pace_seconds=pace_seconds,
-        confirm_submit=confirm_submit,
-    )
+    worker_dir = reset_worker_dir(worker_id)
+
+    try:
+        agent_prompt = prompt_mod.build_prompt(
+            job=job,
+            tailored_resume=resume_text,
+            dry_run=dry_run,
+            pace_seconds=pace_seconds,
+            confirm_submit=confirm_submit,
+            upload_dir=worker_dir,
+        )
+    except ValueError as exc:
+        msg = str(exc)
+        if "resume" in msg.lower() or "tailored" in msg.lower():
+            logger.warning("Cannot build apply prompt for %s: %s", job.get("url", "")[:80], msg)
+            return "failed:resume_pdf_missing", 0, None
+        raise
 
     # Write per-worker MCP config
     mcp_config_path = config.APP_DIR / f".mcp-apply-{worker_id}.json"
@@ -412,8 +853,6 @@ def run_job(job: dict, port: int, worker_id: int = 0,
     env.pop("CLAUDECODE", None)
     env.pop("CLAUDE_CODE_ENTRYPOINT", None)
 
-    worker_dir = reset_worker_dir(worker_id)
-
     update_state(worker_id, status="applying", job_title=job["title"],
                  company=job.get("site", ""), score=job.get("fit_score", 0),
                  start_time=time.time(), actions=0, last_action="starting")
@@ -434,6 +873,9 @@ def run_job(job: dict, port: int, worker_id: int = 0,
     proc = None
 
     try:
+        popen_kwargs: dict = {}
+        if platform.system() != "Windows":
+            popen_kwargs["start_new_session"] = True
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
@@ -444,6 +886,7 @@ def run_job(job: dict, port: int, worker_id: int = 0,
             errors="replace",
             env=env,
             cwd=str(worker_dir),
+            **popen_kwargs,
         )
         with _claude_lock:
             _claude_procs[worker_id] = proc
@@ -451,12 +894,58 @@ def run_job(job: dict, port: int, worker_id: int = 0,
         proc.stdin.write(agent_prompt)
         proc.stdin.close()
 
+        inactivity = config.DEFAULTS.get("apply_inactivity_timeout", 120)
+        wall_deadline = start + config.DEFAULTS["apply_timeout"]
+        stream_q: queue.Queue = queue.Queue()
+        reader = threading.Thread(
+            target=_stream_stdout_reader,
+            args=(proc.stdout, stream_q),
+            daemon=True,
+        )
+        reader.start()
+
+        def _abort_apply(reason: str) -> tuple[str, int, None]:
+            add_event(f"[W{worker_id}] {reason.upper().replace('_', ' ')}")
+            nonlocal proc
+            if proc is not None and proc.poll() is None:
+                _kill_process_tree(proc.pid)
+            proc = None
+            return (
+                f"failed:{reason}",
+                int((time.time() - start) * 1000),
+                None,
+            )
+
+        def _abort_quota(text_hint: str) -> tuple[str, int, None]:
+            not_before = _parse_quota_reset_not_before(text_hint) or _quota_backoff_not_before()
+            add_event(f"[W{worker_id}] FAST_FAIL: claude_quota_exhausted until {not_before}")
+            nonlocal proc
+            if proc is not None and proc.poll() is None:
+                _kill_process_tree(proc.pid)
+            proc = None
+            return (
+                f"failed:claude_quota_exhausted:{not_before}",
+                int((time.time() - start) * 1000),
+                None,
+            )
+
         text_parts: list[str] = []
         with open(worker_log, "a", encoding="utf-8") as lf:
             lf.write(log_header)
 
-            for line in proc.stdout:
-                line = line.strip()
+            while True:
+                if time.time() > wall_deadline:
+                    return _abort_apply("wall_timeout")
+
+                try:
+                    kind, item = stream_q.get(timeout=inactivity)
+                except queue.Empty:
+                    return _abort_apply("inactivity_timeout")
+
+                if kind == "eof":
+                    break
+
+                line = item.strip()
                 if not line:
                     continue
                 try:
@@ -466,8 +955,14 @@ def run_job(job: dict, port: int, worker_id: int = 0,
                         for block in msg.get("message", {}).get("content", []):
                             bt = block.get("type")
                             if bt == "text":
-                                text_parts.append(block["text"])
-                                lf.write(block["text"] + "\n")
+                                text = block["text"]
+                                text_parts.append(text)
+                                lf.write(text + "\n")
+                                if fail_reason := _detect_fast_fail(text):
+                                    if fail_reason == "claude_quota_exhausted":
+                                        return _abort_quota(text)
+                                    add_event(f"[W{worker_id}] FAST_FAIL: {fail_reason}")
+                                    return _abort_apply(fail_reason)
                             elif bt == "tool_use":
                                 name = (
                                     block.get("name", "")
@@ -505,8 +1000,14 @@ def run_job(job: dict, port: int, worker_id: int = 0,
                 except json.JSONDecodeError:
                     text_parts.append(line)
                     lf.write(line + "\n")
+                    if fail_reason := _detect_fast_fail(line):
+                        if fail_reason == "claude_quota_exhausted":
+                            return _abort_quota(line)
+                        add_event(f"[W{worker_id}] FAST_FAIL: {fail_reason}")
+                        return _abort_apply(fail_reason)
 
-        proc.wait(timeout=config.DEFAULTS["apply_timeout"])
+        remaining = max(0.1, wall_deadline - time.time())
+        proc.wait(timeout=remaining)
         returncode = proc.returncode
         proc = None
 
@@ -527,39 +1028,41 @@ def run_job(job: dict, port: int, worker_id: int = 0,
             prev_cost = ws.total_cost if ws else 0.0
             update_state(worker_id, total_cost=prev_cost + cost)
 
-        def _clean_reason(s: str) -> str:
-            return re.sub(r'[*`"]+$', '', s).strip()
+        result = _resolve_apply_result(output, worker_id, job, elapsed, job_log)
 
-        for result_status in ["APPLIED", "EXPIRED", "CAPTCHA", "LOGIN_ISSUE"]:
-            if f"RESULT:{result_status}" in output:
-                add_event(f"[W{worker_id}] {result_status} ({elapsed}s): {job['title'][:30]}")
-                update_state(worker_id, status=result_status.lower(),
-                             last_action=f"{result_status} ({elapsed}s)")
-                return result_status.lower(), duration_ms, job_log
+        if result == "applied":
+            add_event(f"[W{worker_id}] APPLIED ({elapsed}s): {job['title'][:30]}")
+            update_state(worker_id, status="applied",
+                         last_action=f"APPLIED ({elapsed}s)")
+            return "applied", duration_ms, job_log
 
-        if "RESULT:FAILED" in output:
-            for out_line in output.split("\n"):
-                if "RESULT:FAILED" in out_line:
-                    reason = (
-                        out_line.split("RESULT:FAILED:")[-1].strip()
-                        if ":" in out_line[out_line.index("FAILED") + 6:]
-                        else "unknown"
-                    )
-                    reason = _clean_reason(reason)
-                    PROMOTE_TO_STATUS = {"captcha", "expired", "login_issue"}
-                    if reason in PROMOTE_TO_STATUS:
-                        add_event(f"[W{worker_id}] {reason.upper()} ({elapsed}s): {job['title'][:30]}")
-                        update_state(worker_id, status=reason,
-                                     last_action=f"{reason.upper()} ({elapsed}s)")
-                        return reason, duration_ms, job_log
-                    add_event(f"[W{worker_id}] FAILED ({elapsed}s): {reason[:30]}")
-                    update_state(worker_id, status="failed",
-                                 last_action=f"FAILED: {reason[:25]}")
-                    return f"failed:{reason}", duration_ms, job_log
-            return "failed:unknown", duration_ms, job_log
+        if result.startswith("submitted_unverified"):
+            reasons = result.split(":", 1)[-1] if ":" in result else "unverified"
+            add_event(f"[W{worker_id}] UNVERIFIED ({elapsed}s): {reasons[:60]}")
+            update_state(worker_id, status="submitted_unverified",
+                         last_action=f"UNVERIFIED ({elapsed}s)")
+            return result, duration_ms, job_log
+
+        if result in ("expired", "captcha", "login_issue"):
+            label = result.upper()
+            add_event(f"[W{worker_id}] {label} ({elapsed}s): {job['title'][:30]}")
+            update_state(worker_id, status=result,
+                         last_action=f"{label} ({elapsed}s)")
+            return result, duration_ms, job_log
+
+        if result.startswith("failed:"):
+            reason = result.split(":", 1)[-1]
+            add_event(f"[W{worker_id}] FAILED ({elapsed}s): {reason[:30]}")
+            update_state(worker_id, status="failed",
+                         last_action=f"FAILED: {reason[:25]}")
+            return result, duration_ms, job_log
+
+        from applypilot.apply.apply_log_parser import session_log_incomplete
 
         add_event(f"[W{worker_id}] NO RESULT ({elapsed}s)")
         update_state(worker_id, status="failed", last_action=f"no result ({elapsed}s)")
+        if session_log_incomplete(job_log):
+            return "failed:incomplete", duration_ms, job_log
         return "failed:no_result_line", duration_ms, job_log
 
     except subprocess.TimeoutExpired:
@@ -586,14 +1089,99 @@ def run_job(job: dict, port: int, worker_id: int = 0,
 
 PERMANENT_FAILURES: set[str] = {
     "expired", "captcha", "login_issue",
-    "not_eligible_location", "not_eligible_salary",
+    "not_eligible_location", "not_eligible_salary", "not_eligible_experience",
     "already_applied", "account_required",
     "not_a_job_application", "unsafe_permissions",
-    "unsafe_verification", "sso_required",
+    "unsafe_verification",
     "site_blocked", "cloudflare_blocked", "blocked_by_cloudflare",
+    "claude_auth_failed",
+    "inactivity_timeout", "wall_timeout",
+    "resume_pdf_missing",
 }
 
+# Do not burn apply_attempts or session-log-retry on these infrastructure outcomes.
+QUOTA_SESSION_FAILURES: frozenset[str] = frozenset({"claude_quota_exhausted"})
+
 PERMANENT_PREFIXES: tuple[str, ...] = ("site_blocked", "cloudflare", "blocked_by")
+
+
+_QUOTA_RESET_TIME_RE = re.compile(
+    r"resets\s+(?P<h>\d{1,2})(?::(?P<m>\d{2}))?\s*(?P<ampm>am|pm)",
+    re.IGNORECASE,
+)
+
+
+def _parse_quota_reset_not_before(text: str) -> str | None:
+    """Parse a quota reset hint into a UTC ISO timestamp."""
+    match = _QUOTA_RESET_TIME_RE.search(text)
+    if not match:
+        return None
+
+    hour = int(match.group("h"))
+    minute = int(match.group("m") or "0")
+    ampm = (match.group("ampm") or "").lower()
+
+    if ampm == "pm" and hour != 12:
+        hour += 12
+    if ampm == "am" and hour == 12:
+        hour = 0
+
+    local_now = datetime.now().astimezone()
+    candidate = local_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if candidate <= local_now:
+        candidate = candidate + timedelta(days=1)
+    return candidate.astimezone(timezone.utc).isoformat()
+
+
+def _quota_backoff_not_before() -> str:
+    """Fallback backoff when no reset time is provided by Claude."""
+    return (datetime.now(timezone.utc) + timedelta(hours=5)).isoformat()
+
+
+def _parse_worker_result(result: str) -> tuple[str, str | None]:
+    """Return (reason, detail) while preserving colon-heavy detail strings."""
+    if result.startswith("failed:"):
+        rest = result[len("failed:") :]
+        if ":" in rest:
+            reason, detail = rest.split(":", 1)
+            return reason, detail
+        return rest, None
+    return result, None
+
+
+def _park_job_for_retry(url: str, *, not_before: str, error: str) -> None:
+    """Mark a job as retryable, but not acquirable until not_before."""
+    conn = get_connection()
+    conn.execute(
+        """
+        UPDATE jobs
+        SET apply_status = 'failed',
+            apply_error = ?,
+            apply_not_before = ?,
+            agent_id = NULL
+        WHERE url = ?
+        """,
+        (error, not_before, url),
+    )
+    conn.commit()
+
+
+def repair_invalid_quota_retry_windows() -> int:
+    """Release quota retry rows whose not-before timestamp is not SQLite-parseable."""
+    conn = get_connection()
+    cur = conn.execute(
+        """
+        UPDATE jobs
+        SET apply_not_before = NULL,
+            apply_error = COALESCE(apply_error, 'claude_quota_exhausted') || ' (retry window repaired)'
+        WHERE apply_status = 'failed'
+          AND apply_not_before IS NOT NULL
+          AND datetime(apply_not_before) IS NULL
+          AND COALESCE(apply_error, '') LIKE '%claude_quota_exhausted%'
+        """
+    )
+    conn.commit()
+    return cur.rowcount
 
 
 def _is_permanent_failure(result: str) -> bool:
@@ -606,17 +1194,39 @@ def _is_permanent_failure(result: str) -> bool:
     )
 
 
+def _pause_worker_for_quota(worker_id: int, *, not_before: str) -> bool:
+    """Pause worker when Claude quota is exhausted. Returns True if stop requested."""
+    pause_msg = f"PAUSED: Claude quota — retry after {not_before}"
+    _sync_worker_line(
+        worker_id,
+        pause_msg,
+        status="paused_quota",
+        last_action=pause_msg,
+    )
+    add_event(f"[W{worker_id}] {pause_msg}")
+    pause_s = config.DEFAULTS.get("apply_quota_pause", 1800)
+    try:
+        target = datetime.fromisoformat(not_before.replace("Z", "+00:00"))
+        sleep_s = max(0, (target - datetime.now(timezone.utc)).total_seconds())
+        return _stop_event.wait(timeout=min(float(pause_s), float(sleep_s)))
+    except Exception:
+        return _stop_event.wait(timeout=pause_s)
+
+
 # ---------------------------------------------------------------------------
 # Worker loop
 # ---------------------------------------------------------------------------
 
 def worker_loop(worker_id: int = 0, limit: int = 1,
                 target_url: str | None = None,
-                min_score: int = 7, headless: bool = False,
+                min_score: int | None = None,
+                headless: bool = False,
                 model: str = "sonnet", dry_run: bool = False,
                 pace_seconds: float = 0.0,
                 keep_open_seconds: float = 0.0,
-                confirm_submit: bool = False) -> tuple[int, int]:
+                confirm_submit: bool = False,
+                ats_only: bool = False,
+                min_experience_years: int | None = None) -> tuple[int, int]:
     """Run jobs sequentially until limit is reached or queue is empty.
 
     Args:
@@ -639,6 +1249,7 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
     continuous = limit == 0
     jobs_done = 0
     empty_polls = 0
+    quota_retry_until: str | None = None
     port = BASE_CDP_PORT + worker_id
 
     while not _stop_event.is_set():
@@ -648,9 +1259,28 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
         update_state(worker_id, status="idle", job_title="", company="",
                      last_action="waiting for job", actions=0)
 
-        job = acquire_job(target_url=target_url, min_score=min_score,
-                          worker_id=worker_id)
+        job = acquire_job(
+            target_url=target_url,
+            min_score=min_score,
+            worker_id=worker_id,
+            ats_only=ats_only,
+            min_experience_years=min_experience_years,
+        )
         if not job:
+            if quota_retry_until and not continuous:
+                try:
+                    target = datetime.fromisoformat(quota_retry_until.replace("Z", "+00:00"))
+                    if target > datetime.now(timezone.utc):
+                        update_state(
+                            worker_id,
+                            status="paused_quota",
+                            last_action=f"waiting until {quota_retry_until}",
+                        )
+                        if _stop_event.wait(timeout=POLL_INTERVAL):
+                            break
+                        continue
+                except Exception:
+                    quota_retry_until = None
             if not continuous:
                 add_event(f"[W{worker_id}] Queue empty")
                 update_state(worker_id, status="done", last_action="queue empty")
@@ -671,6 +1301,7 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
         try:
             add_event(f"[W{worker_id}] Launching Chrome...")
             chrome_proc = launch_chrome(worker_id, port=port, headless=headless)
+            logger.info("[worker-%d] Running apply agent for %s", worker_id, job.get("title", "")[:80])
 
             result, duration_ms, session_log = run_job(
                 job,
@@ -681,6 +1312,48 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
                 pace_seconds=pace_seconds,
                 confirm_submit=confirm_submit,
             )
+
+            reason, quota_not_before = _parse_worker_result(result)
+            if reason in QUOTA_SESSION_FAILURES:
+                not_before = quota_not_before or _quota_backoff_not_before()
+                quota_retry_until = not_before
+                release_lock(job["url"])
+                _park_job_for_retry(
+                    job["url"],
+                    not_before=not_before,
+                    error=f"claude_quota_exhausted retry_after={not_before}",
+                )
+                if _pause_worker_for_quota(worker_id, not_before=not_before):
+                    break
+                continue
+
+            if result in ("failed:no_result_line", "failed:incomplete") and session_log:
+                from applypilot.apply.apply_log_parser import session_log_incomplete
+
+                if session_log_incomplete(session_log):
+                    add_event(f"[W{worker_id}] Retrying incomplete session once…")
+                    result, duration_ms, session_log = run_job(
+                        job,
+                        port=port,
+                        worker_id=worker_id,
+                        model=model,
+                        dry_run=dry_run,
+                        pace_seconds=pace_seconds,
+                        confirm_submit=confirm_submit,
+                    )
+                    reason, quota_not_before = _parse_worker_result(result)
+                    if reason in QUOTA_SESSION_FAILURES:
+                        not_before = quota_not_before or _quota_backoff_not_before()
+                        quota_retry_until = not_before
+                        release_lock(job["url"])
+                        _park_job_for_retry(
+                            job["url"],
+                            not_before=not_before,
+                            error=f"claude_quota_exhausted retry_after={not_before}",
+                        )
+                        if _pause_worker_for_quota(worker_id, not_before=not_before):
+                            break
+                        continue
 
             if result == "skipped":
                 release_lock(job["url"])
@@ -695,6 +1368,18 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
                 )
                 applied += 1
                 update_state(worker_id, jobs_applied=applied,
+                             jobs_done=applied + failed)
+            elif result.startswith("submitted_unverified"):
+                reasons = result.split(":", 1)[-1] if ":" in result else "unverified"
+                mark_result(
+                    job["url"],
+                    "submitted_unverified",
+                    error=reasons,
+                    duration_ms=duration_ms,
+                    log_path=session_log,
+                )
+                failed += 1
+                update_state(worker_id, jobs_failed=failed,
                              jobs_done=applied + failed)
             else:
                 reason = result.split(":", 1)[-1] if ":" in result else result
@@ -748,11 +1433,13 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
 # ---------------------------------------------------------------------------
 
 def main(limit: int = 1, target_url: str | None = None,
-         min_score: int = 7, headless: bool = False, model: str = "sonnet",
+         min_score: int | None = None, headless: bool = False, model: str = "sonnet",
          dry_run: bool = False, continuous: bool = False,
          poll_interval: int = 60, workers: int = 1,
          pace_seconds: float = 0.0, keep_open_seconds: float = 0.0,
-         confirm_submit: bool = False, plain: bool = False) -> None:
+         confirm_submit: bool = False, plain: bool = False,
+         ats_only: bool = False,
+         min_experience_years: int | None = None) -> None:
     """Launch the apply pipeline.
 
     Args:
@@ -782,6 +1469,23 @@ def main(limit: int = 1, target_url: str | None = None,
     if stale:
         logger.info("Released %d stale in_progress lock(s)", stale)
         console.print(f"[dim]Released {stale} stale lock(s) from a previous run[/dim]")
+    orphans = release_orphan_in_progress_locks()
+    if orphans:
+        logger.info("Released %d orphan in_progress lock(s)", orphans)
+        console.print(f"[dim]Cleared {orphans} in_progress lock(s) from an interrupted run[/dim]")
+    repaired = repair_invalid_quota_retry_windows()
+    if repaired:
+        logger.info("Repaired %d invalid Claude quota retry window(s)", repaired)
+        console.print(f"[dim]Repaired {repaired} Claude quota retry window(s)[/dim]")
+
+    if not continuous and not target_url:
+        acquirable = count_acquirable_jobs(
+            min_score=min_score, ats_only=ats_only
+        )
+        if acquirable == 0:
+            console.print("[red bold]No jobs available to apply.[/red bold]")
+            console.print(format_apply_queue_hint(min_score=min_score, ats_only=ats_only))
+            sys.exit(1)
 
     if continuous:
         effective_limit = 0
@@ -836,6 +1540,8 @@ def main(limit: int = 1, target_url: str | None = None,
                 pace_seconds=pace_seconds,
                 keep_open_seconds=keep_open_seconds,
                 confirm_submit=confirm_submit,
+                ats_only=ats_only,
+                min_experience_years=min_experience_years,
             )
 
         if effective_limit:
@@ -861,6 +1567,8 @@ def main(limit: int = 1, target_url: str | None = None,
                     pace_seconds=pace_seconds,
                     keep_open_seconds=keep_open_seconds,
                     confirm_submit=confirm_submit,
+                    ats_only=ats_only,
+                    min_experience_years=min_experience_years,
                 ): i
                 for i in range(workers)
             }

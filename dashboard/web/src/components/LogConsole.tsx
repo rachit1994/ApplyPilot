@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { RunEvent } from "../api";
 import { effectiveLogLevel, isLogError } from "../utils/logLevel";
+import { LogLine } from "./LogLine";
 import { VirtualScroll } from "./VirtualScroll";
 
 type Props = {
@@ -8,42 +9,51 @@ type Props = {
   errors: RunEvent[];
 };
 
-type LevelFilter = "all" | "info" | "warning" | "error";
+type CategoryFilter = "all" | "errors" | "apply" | "discover";
 
-function levelClass(event: RunEvent): string {
-  const level = effectiveLogLevel(event);
-  if (level === "error") return "text-red-300";
-  if (level === "warning" || level === "info") return "text-amber-300";
-  if (event.event_type?.startsWith("stage_")) return "text-sky-300";
-  return "text-zinc-300";
-}
-
-function matchesFilter(e: RunEvent, filter: LevelFilter): boolean {
-  const level = effectiveLogLevel(e);
+function matchesCategory(event: RunEvent, filter: CategoryFilter): boolean {
   if (filter === "all") return true;
-  if (filter === "error") return level === "error";
-  if (filter === "warning") return level === "warning";
-  return level === "info";
-}
-
-function formatLine(e: RunEvent): string {
-  const parts: string[] = [];
-  if (e.created_at) parts.push(e.created_at.slice(11, 19));
-  if (e.stage) parts.push(`[${e.stage}]`);
-  if (e.event_type !== "log") parts.push(`${e.event_type}:`);
-  if (e.message) parts.push(e.message);
-  return parts.join(" ");
+  if (filter === "errors") return effectiveLogLevel(event) === "error";
+  const stage = (event.stage ?? "").toLowerCase();
+  const message = (event.message ?? "").toLowerCase();
+  if (filter === "apply") {
+    return (
+      stage === "apply" ||
+      stage === "verify" ||
+      stage === "refer" ||
+      message.includes("apply") ||
+      message.includes("greenhouse") ||
+      message.includes("lever") ||
+      message.includes("workday")
+    );
+  }
+  if (filter === "discover") {
+    return (
+      stage === "discover" ||
+      message.includes("discover") ||
+      message.includes("jobspy") ||
+      message.includes("workatastartup") ||
+      message.includes("smart extract")
+    );
+  }
+  return true;
 }
 
 const LOG_SCROLL_TAIL_PX = 80;
 const LOG_BODY_CLASS =
-  "scroll-thin max-h-80 overflow-y-auto p-3 font-mono text-[11px] leading-relaxed";
-const LOG_LINE_ESTIMATE_PX = 20;
+  "scroll-thin min-h-0 flex-1 overflow-y-auto py-1 font-mono text-[14px] leading-[1.6]";
+const LOG_LINE_ESTIMATE_PX = 26;
+
+const FILTER_CHIPS: { id: CategoryFilter; label: string }[] = [
+  { id: "all", label: "All" },
+  { id: "errors", label: "Errors" },
+  { id: "apply", label: "Apply" },
+  { id: "discover", label: "Discover" },
+];
 
 export function LogConsole({ events, errors: stageErrors }: Props) {
-  const [levelFilter, setLevelFilter] = useState<LevelFilter>("all");
+  const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("all");
   const [errorsOpen, setErrorsOpen] = useState(true);
-  const [copied, setCopied] = useState(false);
   const [stickToBottom, setStickToBottom] = useState(true);
   const logsScrollRef = useRef<HTMLDivElement>(null);
 
@@ -58,8 +68,8 @@ export function LogConsole({ events, errors: stageErrors }: Props) {
   );
 
   const filtered = useMemo(
-    () => logEvents.filter((e) => matchesFilter(e, levelFilter)),
-    [logEvents, levelFilter],
+    () => logEvents.filter((e) => matchesCategory(e, categoryFilter)),
+    [logEvents, categoryFilter],
   );
 
   const combinedErrors = useMemo(
@@ -80,82 +90,67 @@ export function LogConsole({ events, errors: stageErrors }: Props) {
     setStickToBottom(distanceFromBottom <= LOG_SCROLL_TAIL_PX);
   };
 
-  const copyLogs = async () => {
-    const text = filtered.map(formatLine).join("\n");
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 2000);
-    } catch {
-      /* clipboard unavailable */
-    }
-  };
-
-  const filters: { id: LevelFilter; label: string }[] = [
-    { id: "all", label: "All" },
-    { id: "info", label: "Info" },
-    { id: "warning", label: "Warn" },
-    { id: "error", label: "Error" },
-  ];
+  const eventCountLabel =
+    filtered.length === logEvents.length
+      ? `${logEvents.length} events`
+      : `${filtered.length} of ${logEvents.length} events`;
 
   return (
-    <section className="panel flex flex-col overflow-hidden">
-      <header className="panel-header shrink-0">
-        <h2 className="panel-title">Live logs</h2>
-        <div className="flex items-center gap-2">
-          <span className="text-[10px] text-zinc-600">{filtered.length} lines</span>
-          <button
-            type="button"
-            onClick={copyLogs}
-            disabled={filtered.length === 0}
-            className="rounded-md border border-zinc-700 px-2 py-1 text-[10px] text-zinc-400 hover:bg-zinc-800 disabled:opacity-40"
-          >
-            {copied ? "Copied" : "Copy"}
-          </button>
-        </div>
-      </header>
+    <section className="panel flex h-[72vh] min-h-[72vh] flex-col overflow-hidden">
+      <div className="sticky top-0 z-10 shrink-0 border-b border-[var(--hairline)] bg-[var(--panel)]">
+        <header className="panel-header border-b-0 py-2.5">
+          <h2 className="panel-title">Live logs</h2>
+          <span className="font-mono text-[11px] tabular-nums text-ink-4">
+            {eventCountLabel}
+          </span>
+        </header>
 
-      {combinedErrors.length > 0 && (
-        <div className="shrink-0 border-b border-red-900/40">
-          <button
-            type="button"
-            onClick={() => setErrorsOpen((o) => !o)}
-            className="flex w-full items-center justify-between px-4 py-2 text-left text-xs font-medium text-red-300 hover:bg-red-950/20"
-          >
-            <span>
-              {combinedErrors.length} error
-              {combinedErrors.length === 1 ? "" : "s"}
-            </span>
-            <span className="text-red-500/80">{errorsOpen ? "▼" : "▶"}</span>
-          </button>
-          {errorsOpen && (
-            <VirtualScroll
-              items={combinedErrors}
-              getItemKey={(e, i) => e.id ?? `err-${i}`}
-              estimateSize={LOG_LINE_ESTIMATE_PX}
-              className="scroll-thin max-h-32 overflow-y-auto border-t border-red-900/30 bg-red-950/20 px-4 py-2 font-mono text-[11px] leading-relaxed text-red-200"
+        {combinedErrors.length > 0 && (
+          <div className="border-t border-red-900/30">
+            <button
+              type="button"
+              onClick={() => setErrorsOpen((open) => !open)}
+              className="flex w-full items-center justify-between px-3.5 py-1.5 text-left text-[11px] font-medium text-red-300 hover:bg-red-950/20"
             >
-              {(e) => <div className="mb-1">{formatLine(e)}</div>}
-            </VirtualScroll>
-          )}
-        </div>
-      )}
+              <span>
+                {combinedErrors.length} error
+                {combinedErrors.length === 1 ? "" : "s"}
+              </span>
+              <span className="text-red-500/70">{errorsOpen ? "▼" : "▶"}</span>
+            </button>
+            {errorsOpen && (
+              <VirtualScroll
+                items={combinedErrors}
+                getItemKey={(e, i) => e.id ?? `err-${i}`}
+                estimateSize={LOG_LINE_ESTIMATE_PX}
+                className="scroll-thin max-h-28 overflow-y-auto border-t border-red-900/25 bg-red-950/15 py-1"
+              >
+                {(e, i) => <LogLine event={e} even={i % 2 === 1} />}
+              </VirtualScroll>
+            )}
+          </div>
+        )}
 
-      <div className="flex shrink-0 gap-1 border-b border-zinc-800/80 px-3 py-2">
-        {filters.map((f) => (
-          <button
-            key={f.id}
-            type="button"
-            onClick={() => setLevelFilter(f.id)}
-            className={`rounded-md px-2 py-0.5 text-[10px] font-medium ${
-              levelFilter === f.id
-                ? "bg-zinc-700 text-zinc-100"
-                : "text-zinc-500 hover:text-zinc-300"
-            }`}
-          >
-            {f.label}
-          </button>
-        ))}
+        <div
+          className="flex flex-wrap gap-1 border-t border-[var(--hairline)] px-3 py-2"
+          role="toolbar"
+          aria-label="Log filters"
+        >
+          {FILTER_CHIPS.map((chip) => (
+            <button
+              key={chip.id}
+              type="button"
+              onClick={() => setCategoryFilter(chip.id)}
+              className={`rounded-[var(--rad-chip)] border px-2.5 py-0.5 text-[11px] font-medium transition ${
+                categoryFilter === chip.id
+                  ? "border-panel-border-strong bg-panel-muted text-ink"
+                  : "border-transparent text-ink-4 hover:border-panel-border hover:text-ink-2"
+              }`}
+            >
+              {chip.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       <VirtualScroll
@@ -166,20 +161,15 @@ export function LogConsole({ events, errors: stageErrors }: Props) {
         className={LOG_BODY_CLASS}
         onScroll={syncStickToBottom}
         stickToBottom={stickToBottom}
-        empty={<p className="text-zinc-500">Start a run to stream logs here.</p>}
+        empty={
+          <p className="px-3.5 py-6 text-[14px] leading-[1.6] text-ink-4">
+            {logEvents.length === 0
+              ? "Start a run to stream logs here."
+              : "No log lines match this filter."}
+          </p>
+        }
       >
-        {(e) => (
-          <div className={levelClass(e)}>
-            {e.created_at && (
-              <span className="text-zinc-600">{e.created_at.slice(11, 19)} </span>
-            )}
-            {e.stage && <span className="text-zinc-500">[{e.stage}] </span>}
-            {e.event_type !== "log" && (
-              <span className="text-zinc-500">{e.event_type}: </span>
-            )}
-            {e.message}
-          </div>
-        )}
+        {(e, i) => <LogLine event={e} even={i % 2 === 1} />}
       </VirtualScroll>
     </section>
   );

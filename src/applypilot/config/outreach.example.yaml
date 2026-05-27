@@ -8,11 +8,17 @@ weekly_connect_target: 12
 max_connects_per_run: 5
 max_messages_per_run: 10
 poll_connected_every_minutes: 60
+# Deprecated: use require_applied_before_send instead (inverted semantics).
 skip_if_applied: false
+require_applied_before_send: true
 
-# Gemini drafts + per-job tailored resume (text + PDF) before messaging
-require_gemini_for_draft: true
-ensure_tailored_resume: true
+# Template placeholders: {recruiter_name} or [Name], {job_title} or [Job Title]
+# Optional: {company}, {sender_name}
+referral_message_template: |
+  Hi {recruiter_name}, I'm a Senior Engineering Leader (React/Node/Python/AWS) targeting the {job_title} role. I bring 10+ years of experience scaling distributed architectures and production RAG/multi-agent AI systems for 50M+ users. I'd love to connect and see if my background aligns with your team's needs!
+
+require_gemini_for_draft: false
+ensure_tailored_resume: false
 tailor_validation_mode: normal
 resume_excerpt_chars: 2500
 referral_message_max_words: 130
