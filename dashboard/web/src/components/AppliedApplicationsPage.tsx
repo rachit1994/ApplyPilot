@@ -1,30 +1,41 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { fetchApplications, fetchStats, type Application } from "../api";
+import { fetchApplications, fetchStats } from "../api";
+import { useApplyRun } from "../hooks/useApplyRun";
 import { ApplicationDetailPanel } from "./ApplicationDetailPanel";
+import { PageCanvas } from "./layout/PageCanvas";
+import { VirtualScroll } from "./VirtualScroll";
 import {
   apiStatusForFilter,
   applicationSummaryLine,
   applyStatusFilterFromUrl,
   formatWhen,
   needsHumanIntervention,
-  statusChipClass,
   statusLabel,
   type ApplyStatusFilter,
 } from "../utils/applicationAudit";
+import { statusbarClass } from "../utils/statusbar";
+
+const APP_ROW_PX = 52;
 
 type Props = {
   initialFilter?: string | null;
   onFilterChange?: (filter: ApplyStatusFilter) => void;
+  showApplyControls?: boolean;
 };
 
-export function AppliedApplicationsPage({ initialFilter, onFilterChange }: Props) {
+export function AppliedApplicationsPage({
+  initialFilter,
+  onFilterChange,
+  showApplyControls = false,
+}: Props) {
+  const applyRun = useApplyRun();
   const [statusFilter, setStatusFilter] = useState<ApplyStatusFilter>(() =>
     applyStatusFilterFromUrl(initialFilter ?? null),
   );
   const [search, setSearch] = useState("");
   const [selectedUrl, setSelectedUrl] = useState<string | null>(null);
-  const [hasSnapshotOnly, setHasSnapshotOnly] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   const { data: stats } = useQuery({
     queryKey: ["stats"],
@@ -48,174 +59,287 @@ export function AppliedApplicationsPage({ initialFilter, onFilterChange }: Props
     if (statusFilter === "needs_action") {
       list = list.filter(needsHumanIntervention);
     }
-    if (hasSnapshotOnly) {
-      list = list.filter(
-        (a) =>
-          (a.form_filled?.field_count ?? a.form_filled?.fields?.length ?? 0) > 0 ||
-          Boolean(a.apply_log_path),
-      );
-    }
     return list;
-  }, [data?.applications, hasSnapshotOnly, statusFilter]);
+  }, [data?.applications, statusFilter]);
+
+  const manualRows = useMemo(
+    () => applications.filter(needsHumanIntervention),
+    [applications],
+  );
+
+  const appliedRows = useMemo(
+    () => applications.filter((a) => !needsHumanIntervention(a)),
+    [applications],
+  );
 
   const selected = useMemo(
-    () => applications.find((a) => a.url === selectedUrl) ?? applications[0] ?? null,
+    () => applications.find((a) => a.url === selectedUrl) ?? null,
     [applications, selectedUrl],
   );
 
   const pipeline = stats?.pipeline ?? {};
+  const readyCount = stats?.ready_to_apply ?? pipeline.pending_apply ?? 0;
+  const appliedCount = (pipeline.applied as number | undefined) ?? stats?.applied ?? 0;
+  const failedCount = (pipeline.apply_errors as number | undefined) ?? 0;
+  const submittedUnverifiedCount = (pipeline.submitted_unverified as number | undefined) ?? 0;
+  const manualCount = (stats?.extra?.apply_manual as number | undefined) ?? 0;
+  const allAttemptsCount = appliedCount + failedCount + submittedUnverifiedCount + manualCount;
+  const needsActionCount = submittedUnverifiedCount + manualCount;
 
   useEffect(() => {
     setStatusFilter(applyStatusFilterFromUrl(initialFilter ?? null));
   }, [initialFilter]);
+
+  useEffect(() => {
+    if (applications.length === 0) {
+      setSelectedUrl(null);
+      return;
+    }
+    if (!selectedUrl || !applications.some((a) => a.url === selectedUrl)) {
+      setSelectedUrl(applications[0]?.url ?? null);
+    }
+  }, [applications, selectedUrl]);
 
   const handleStatusChange = (next: ApplyStatusFilter) => {
     setStatusFilter(next);
     onFilterChange?.(next);
   };
 
+  const filterChips: { key: ApplyStatusFilter; label: string; count?: number }[] = [
+    { key: "all", label: "All", count: allAttemptsCount },
+    { key: "applied", label: "Applied", count: appliedCount },
+    { key: "failed", label: "Failed", count: failedCount },
+    { key: "submitted_unverified", label: "Unverified", count: submittedUnverifiedCount },
+    { key: "needs_action", label: "Needs help", count: needsActionCount },
+  ];
+
   return (
-    <div className="flex h-[min(72vh,calc(100vh-8rem))] min-h-[420px] flex-col gap-4">
-      <header className="shrink-0 space-y-3">
+    <PageCanvas>
+      <div className="apps__hd">
         <div>
-          <h2 className="font-display text-xl text-ink">Applications</h2>
-          <p className="mt-1 text-sm text-ink-3">
-            Every apply attempt — fields filled, failure reasons, and submit proof.
-          </p>
+          <div className="section-title" style={{ marginBottom: 4 }}>
+            Queue
+          </div>
+          <div
+            style={{
+              fontFamily: "var(--display)",
+              fontSize: 15,
+              fontWeight: 600,
+              color: "var(--ink)",
+              letterSpacing: "-0.015em",
+            }}
+          >
+            {readyCount} jobs ready to apply · {manualRows.length} need your help
+          </div>
         </div>
-        <div className="flex flex-wrap gap-3 text-xs text-ink-3">
-          <StatPill label="Applied" value={stats?.applied} />
-          <StatPill label="Needs verification" value={pipeline.submitted_unverified} warn />
-          <StatPill label="Failed" value={pipeline.apply_errors} bad />
-          <StatPill label="Manual" value={stats?.extra?.apply_manual} />
+        <div style={{ display: "flex", gap: 8 }}>
+          {showApplyControls ? (
+            <>
+              <button
+                type="button"
+                className="btn"
+                disabled={!applyRun.isRunning}
+                onClick={() => void applyRun.handleStop()}
+              >
+                Pause queue
+              </button>
+              <button
+                type="button"
+                className="btn btn--accent btn--lg"
+                disabled={applyRun.isRunning || applyRun.starting}
+                onClick={() => void applyRun.handleStart()}
+              >
+                {applyRun.starting ? "Starting…" : "Apply queue now"}
+              </button>
+            </>
+          ) : (
+            <button type="button" className="btn btn--ghost" onClick={() => handleStatusChange("needs_action")}>
+              Review manual
+            </button>
+          )}
         </div>
-        <div className="flex flex-wrap items-end gap-3">
-          <label className="text-xs text-ink-3">
-            Status
-            <select
-              value={statusFilter}
-              onChange={(e) => handleStatusChange(e.target.value as ApplyStatusFilter)}
-              className="mt-1 block rounded border border-panel-border bg-canvas px-2 py-1.5 text-sm text-ink"
+      </div>
+
+      <div className="apps__filterbar">
+        {filterChips.map((chip) => {
+          const on = statusFilter === chip.key;
+          return (
+            <button
+              key={chip.key}
+              type="button"
+              className={on ? "chip chip--on" : "chip"}
+              onClick={() => handleStatusChange(chip.key)}
             >
-              <option value="all">All outcomes</option>
-              <option value="needs_action">Needs action</option>
-              <option value="applied">Applied</option>
-              <option value="submitted_unverified">Needs verification</option>
-              <option value="failed">Failed</option>
-              <option value="manual">Manual</option>
-            </select>
-          </label>
-          <label className="min-w-[12rem] flex-1 text-xs text-ink-3">
-            Search title
-            <input
-              type="search"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Company or role…"
-              className="mt-1 w-full rounded border border-panel-border bg-canvas px-2 py-1.5 text-sm text-ink"
-            />
-          </label>
-          <label className="flex items-center gap-2 pb-1.5 text-xs text-ink-3">
-            <input
-              type="checkbox"
-              checked={hasSnapshotOnly}
-              onChange={(e) => setHasSnapshotOnly(e.target.checked)}
-            />
-            Has apply log only
-          </label>
+              {chip.label}
+              {chip.count != null ? <span className="chip__count">{chip.count}</span> : null}
+            </button>
+          );
+        })}
+        <label className="control" style={{ marginLeft: "auto", minWidth: 200 }}>
+          <span className="control__label">Search</span>
+          <input
+            className="control__input"
+            type="search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Company or role…"
+          />
+        </label>
+      </div>
+
+      <div className="apps">
+        <div className="apps__list">
+          {manualRows.length > 0 && statusFilter !== "applied" ? (
+            <div className="errors-band">
+              <div className="errors-band__hd">
+                <span className="errors-band__title">Need your apply</span>
+                <span className="errors-band__count">{manualRows.length}</span>
+              </div>
+              {manualRows.map((app) => (
+                <AppRow
+                  key={app.url}
+                  app={app}
+                  manual
+                  selected={selectedUrl === app.url}
+                  onSelect={() => setSelectedUrl(app.url)}
+                />
+              ))}
+            </div>
+          ) : null}
+
+          <div className="panel apps__panel">
+            <div className="panel__head panel__head--inset">
+              <div>
+                <div className="panel__title">
+                  {statusFilter === "failed"
+                    ? "Failed"
+                    : statusFilter === "submitted_unverified"
+                      ? "Unverified"
+                      : statusFilter === "needs_action"
+                        ? "Needs help"
+                        : statusFilter === "applied"
+                          ? "Applied"
+                          : "All attempts"}
+                </div>
+                <div className="panel__sub">
+                  {(statusFilter === "all"
+                    ? allAttemptsCount
+                    : statusFilter === "applied"
+                      ? appliedCount
+                      : statusFilter === "failed"
+                        ? failedCount
+                        : statusFilter === "submitted_unverified"
+                          ? submittedUnverifiedCount
+                          : needsActionCount) || "—"}{" "}
+                  {statusFilter === "applied" ? "submissions" : "attempts"} · audit ledger
+                </div>
+              </div>
+            </div>
+            {isLoading ? (
+              <p className="panel__sub" style={{ padding: 16 }}>
+                Loading…
+              </p>
+            ) : error ? (
+              <p className="panel__sub" style={{ padding: 16 }}>
+                {error instanceof Error ? error.message : "Error"}
+              </p>
+            ) : appliedRows.length === 0 ? (
+              <p className="panel__sub" style={{ padding: 16 }}>
+                No applications match these filters.
+              </p>
+            ) : (
+              <div className="apps__scroll">
+                <VirtualScroll
+                  scrollRef={scrollRef}
+                  className="panel__body panel__body--tight"
+                  items={appliedRows}
+                  getItemKey={(app) => app.url}
+                  estimateSize={APP_ROW_PX}
+                  overscan={12}
+                >
+                  {(app) => (
+                    <AppRow
+                      app={app}
+                      selected={selectedUrl === app.url}
+                      onSelect={() => setSelectedUrl(app.url)}
+                    />
+                  )}
+                </VirtualScroll>
+              </div>
+            )}
+          </div>
         </div>
-      </header>
 
-      {isLoading ? <p className="text-sm text-ink-3">Loading applications…</p> : null}
-      {error ? (
-        <p className="text-sm text-bad">{error instanceof Error ? error.message : "Error"}</p>
-      ) : null}
-
-      {!isLoading && applications.length === 0 ? (
-        <p className="rounded-card border border-panel-border bg-panel p-6 text-sm text-ink-3">
-          No applications match these filters. Run apply from the Apply page or check failed
-          attempts.
-        </p>
-      ) : null}
-
-      {applications.length > 0 ? (
-        <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[minmax(240px,320px)_1fr]">
-          <ul className="scroll-thin min-h-0 space-y-1 overflow-y-auto rounded-card border border-panel-border bg-panel p-2">
-            {applications.map((app) => (
-              <ApplicationListItem
-                key={app.url}
-                app={app}
-                selected={selected?.url === app.url}
-                onSelect={() => setSelectedUrl(app.url)}
-              />
-            ))}
-          </ul>
-          <ApplicationDetailPanel app={selected} />
+        <div className="apps__detail">
+          {selected ? (
+            <div className="panel apps__detailPanel">
+              <ApplicationDetailPanel app={selected} />
+            </div>
+          ) : (
+            <div className="panel apps__detailPanel">
+              <div className="panel__head panel__head--inset">
+                <div>
+                  <div className="panel__title">Details</div>
+                  <div className="panel__sub">Select an application to see its audit ledger.</div>
+                </div>
+              </div>
+              <div className="panel__body">
+                <p className="panel__sub">No selection.</p>
+              </div>
+            </div>
+          )}
         </div>
-      ) : null}
-    </div>
+      </div>
+    </PageCanvas>
   );
 }
 
-function ApplicationListItem({
+function AppRow({
   app,
+  manual = false,
   selected,
   onSelect,
 }: {
-  app: Application;
+  app: import("../api").Application;
+  manual?: boolean;
   selected: boolean;
   onSelect: () => void;
 }) {
   const status = app.apply_status ?? "unknown";
-  const summary = applicationSummaryLine(app);
+  const label = manual ? "Manual" : statusLabel(status);
+  const reason = applicationSummaryLine(app) || app.apply_error || "";
 
   return (
-    <li>
-      <button
-        type="button"
-        onClick={onSelect}
-        className={`w-full rounded-lg px-3 py-2.5 text-left transition-colors ${
-          selected ? "bg-accent/10 ring-1 ring-accent/40" : "hover:bg-panel-elevated"
-        }`}
-      >
-        <div className="flex items-start gap-2">
-          <span
-            className={`mt-0.5 shrink-0 rounded-chip px-1.5 py-0.5 text-[9px] font-medium uppercase ${statusChipClass(status)}`}
-          >
-            {statusLabel(status)}
-          </span>
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-medium text-ink">{app.title ?? "Untitled"}</p>
-            <p className="mt-0.5 text-[10px] text-ink-4">
-              {app.site ?? "—"}
-              {app.fit_score != null ? ` · ${app.fit_score}` : ""}
-              {app.applied_at ? ` · ${formatWhen(app.applied_at)}` : ""}
-            </p>
-            {summary ? (
-              <p className="mt-1 line-clamp-2 text-[10px] text-warn">{summary}</p>
-            ) : null}
-          </div>
+    <div className={selected ? "app-row app-row--selected" : "app-row"}>
+      <span className={statusbarClass(label)}>{label}</span>
+      <button type="button" className="app-row__main" onClick={onSelect} style={{ textAlign: "left" }}>
+        <div className="app-row__title">{app.title ?? "Untitled"}</div>
+        <div className="app-row__company">
+          {app.site ?? "—"}
+          {app.applied_at ? ` · ${formatWhen(app.applied_at)}` : ""}
         </div>
       </button>
-    </li>
-  );
-}
-
-function StatPill({
-  label,
-  value,
-  warn,
-  bad,
-}: {
-  label: string;
-  value?: number | string;
-  warn?: boolean;
-  bad?: boolean;
-}) {
-  const tone = bad ? "text-bad" : warn ? "text-warn" : "text-ink";
-  return (
-    <span>
-      {label}: <strong className={tone}>{value ?? "—"}</strong>
-    </span>
+      {manual ? (
+        <>
+          <div className="app-row__reason">{reason || "Needs review"}</div>
+          {app.url ? (
+            <a className="btn btn--sm btn--accent" href={app.url} target="_blank" rel="noreferrer">
+              Apply now
+            </a>
+          ) : (
+            <button type="button" className="btn btn--sm btn--accent">
+              Apply now
+            </button>
+          )}
+        </>
+      ) : (
+        <div className="app-row__date">{app.applied_at ? formatWhen(app.applied_at) : "—"}</div>
+      )}
+      <button type="button" className="chev" onClick={onSelect} aria-label="Open details">
+        <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.6" aria-hidden>
+          <path d="m5 3 4 4-4 4" />
+        </svg>
+      </button>
+    </div>
   );
 }

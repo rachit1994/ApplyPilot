@@ -9,7 +9,9 @@ import threading
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from applypilot.config import DB_PATH
+import logging
+
+from applypilot.config import DB_PATH, RUN_LOG_DIR, ensure_dirs
 from applypilot.database import get_connection
 
 _RUN_ID_ENV = "APPLYPILOT_RUN_ID"
@@ -17,6 +19,64 @@ _MAX_EVENTS_PER_RUN = 10_000
 
 _subscribers: dict[str, list[Callable[[dict[str, Any]], None]]] = {}
 _sub_lock = threading.Lock()
+
+_run_loggers: dict[str, logging.Logger] = {}
+_run_logger_lock = threading.Lock()
+
+
+def _run_log_path(run_id: str) -> str:
+    ensure_dirs()
+    return str(RUN_LOG_DIR / f"{run_id}.log")
+
+
+def _get_run_logger(run_id: str) -> logging.Logger:
+    with _run_logger_lock:
+        existing = _run_loggers.get(run_id)
+        if existing:
+            return existing
+
+        logger = logging.getLogger(f"applypilot.run.{run_id}")
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
+
+        path = _run_log_path(run_id)
+        handler = logging.FileHandler(path, encoding="utf-8")
+        handler.setLevel(logging.INFO)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        logger.addHandler(handler)
+
+        _run_loggers[run_id] = logger
+        return logger
+
+
+def _append_run_log(event: dict[str, Any]) -> None:
+    """Append a UI-visible devlog line to the per-run log file."""
+    rid = str(event.get("run_id") or "").strip()
+    if not rid:
+        return
+
+    # Match the UI developer log sources (HomePage.tsx).
+    if event.get("event_type") not in (
+        "log",
+        "stage_error",
+        "run_started",
+        "run_finished",
+        "stage_start",
+        "stage_end",
+    ):
+        return
+
+    created_at = str(event.get("created_at") or "")
+    level = str(event.get("level") or "info").upper()
+    stage = str(event.get("stage") or "-")
+    message = str(event.get("message") or "").rstrip("\n")
+    line = f"[{created_at}] {level:<7} {stage:<10} {message}".rstrip()
+
+    try:
+        _get_run_logger(rid).info(line)
+    except Exception:
+        # Logging must never break the dashboard event pipeline.
+        pass
 
 
 def get_active_run_id() -> str | None:
@@ -141,7 +201,20 @@ def emit_run_event(
         )
     conn.commit()
 
+    _append_run_log(event)
     _notify_subscribers(event)
+    if event_type in ("log", "stage_error", "run_started", "run_finished", "stage_start", "stage_end"):
+        try:
+            from applypilot.server.activity import emit_dashboard_activity
+
+            emit_dashboard_activity(
+                message,
+                level=level,
+                stage=stage,
+                run_id=rid,
+            )
+        except Exception:
+            pass
     return event
 
 

@@ -198,8 +198,11 @@ def collect_page_intelligence(url: str, headless: bool = True) -> dict:
         page = browser.new_page(user_agent=UA)
         page.on("response", on_response)
 
-        page.goto(url, timeout=60000)
-        page.wait_for_load_state("networkidle")
+        page.goto(url, timeout=60000, wait_until="domcontentloaded")
+        try:
+            page.wait_for_load_state("networkidle", timeout=10_000)
+        except Exception:
+            pass
 
         intel["page_title"] = page.title()
 
@@ -945,14 +948,21 @@ def _run_one_site(name: str, url: str) -> dict:
     _captcha_signals = ["captcha", "are you a human", "verify you", "unusual requests",
                         "access denied", "please verify", "bot detection"]
     _is_captcha = any(s in full_html.lower() for s in _captcha_signals) if full_html else False
-    if len(cleaned_check) < 5000 and full_html and not _is_captcha:
-        log.info("Cleaned HTML only %s chars -- retrying headful...", f"{len(cleaned_check):,}")
+    if len(cleaned_check) < 5000 and full_html:
+        if _is_captcha:
+            log.warning(
+                "CAPTCHA/rate-limit signals detected; attempting headful retry once (may still fail)"
+            )
+        else:
+            log.info("Cleaned HTML only %s chars -- retrying headful...", f"{len(cleaned_check):,}")
         intel = collect_page_intelligence(url, headless=False)
         collect_time = time.time() - t0
-        log.info("Headful done in %.1fs | JSON-LD: %d | API: %d",
-                 collect_time, len(intel["json_ld"]), len(intel["api_responses"]))
-    elif _is_captcha:
-        log.warning("CAPTCHA/rate-limit detected -- skipping headful retry")
+        log.info(
+            "Headful done in %.1fs | JSON-LD: %d | API: %d",
+            collect_time,
+            len(intel["json_ld"]),
+            len(intel["api_responses"]),
+        )
 
     # Step 1.5: Judge filters API responses
     if intel["api_responses"]:

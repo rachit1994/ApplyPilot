@@ -1,4 +1,4 @@
-import type { Job } from "./api";
+import type { Job, Stats } from "./api";
 import { jobPipelineStage } from "./utils/jobPipeline";
 
 /** Run pipeline stages (CLI / API), not dashboard pages. */
@@ -13,7 +13,14 @@ export const PIPELINE_STAGE_IDS = [
 
 export type PipelineStageId = (typeof PIPELINE_STAGE_IDS)[number];
 
-export type DashboardPage = "home" | "jobs" | "apply" | "applications";
+export type DashboardPage =
+  | "home"
+  | "jobs"
+  | "apply"
+  | "applications"
+  | "outreach"
+  | "pipeline"
+  | "settings";
 
 export const STAGE_LABELS: Record<PipelineStageId, string> = {
   discover: "Discover",
@@ -42,7 +49,10 @@ export function isDashboardPage(value: string): value is DashboardPage {
     value === "home" ||
     value === "jobs" ||
     value === "apply" ||
-    value === "applications"
+    value === "applications" ||
+    value === "outreach" ||
+    value === "pipeline" ||
+    value === "settings"
   );
 }
 
@@ -72,24 +82,67 @@ export function filterEventsForStage<T extends { stage?: string | null; event_ty
   });
 }
 
+export function pageGreeting(): string {
+  const hour = new Date().getHours();
+  if (hour < 12) return "Good morning, Rachit.";
+  if (hour < 17) return "Good afternoon, Rachit.";
+  return "Good evening, Rachit.";
+}
+
 export function pageTitle(page: DashboardPage): string {
   if (page === "apply") return "Apply";
   if (page === "applications") return "Applications";
   if (page === "jobs") return "Jobs";
-  return "Home";
+  if (page === "outreach") return "Outreach";
+  if (page === "pipeline") return "Pipeline";
+  if (page === "settings") return "Settings";
+  return "Today";
 }
 
 export function pageSubtitle(page: DashboardPage): string {
   if (page === "apply") {
-    return "Run visible auto-apply with live workers and logs.";
+    return "Visible Chrome apply with live workers and logs.";
   }
   if (page === "applications") {
-    return "Audit what was filled, why apply failed, and submit proof.";
+    return "Submitted applications, failures, and what was filled on each form.";
   }
   if (page === "home") {
-    return "Mission control — summary, run controls, and deep links into Jobs.";
+    return "ApplyPilot worked overnight. Here's what's new.";
   }
-  return "Paginated job explorer with stage filters and resume/cover paths.";
+  if (page === "outreach") {
+    return "LinkedIn drafts and recruiter replies in the Other tab.";
+  }
+  if (page === "pipeline") {
+    return "What the agent's doing right now and how well";
+  }
+  if (page === "settings") {
+    return "Tune the agent · sources, queries, limits, profile";
+  }
+  return "Triage new roles, scores, and application status.";
+}
+
+/** finalized.html header subtitles with live counts when stats are available. */
+export function pageSubtitleWithStats(page: DashboardPage, stats: Stats | undefined): string {
+  const p = stats?.pipeline;
+  if (page === "jobs") {
+    const newPicks = (p?.scored ?? 0) + (p?.unscored ?? 0);
+    return `${newPicks} new picks · plus everything else · filter by status`;
+  }
+  if (page === "applications") {
+    const applied = p?.applied ?? 0;
+    const help = p?.submitted_unverified ?? 0;
+    const queued = p?.ready_to_apply ?? 0;
+    return `${applied} applied · ${help} need your help · ${queued} queued`;
+  }
+  if (page === "outreach") {
+    const drafts =
+      stats?.extra?.inbox_queue ??
+      stats?.extra?.outreach_queue ??
+      stats?.extra?.referral_pending_connect ??
+      0;
+    return `${drafts} drafts ready · LinkedIn DMs sent via your account`;
+  }
+  return pageSubtitle(page);
 }
 
 /** Deep-link slug for Jobs page ?stage= when clicking a pipeline summary card. */

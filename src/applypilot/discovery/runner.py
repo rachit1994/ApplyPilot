@@ -9,11 +9,13 @@ from typing import Any
 from applypilot.database import get_connection, record_discover_source_stats
 from applypilot.discovery.career_targets import load_career_targets, partition_career_targets
 from applypilot.discovery.discover_config import load_discover_config
+from applypilot.discovery.site_priority import filter_priority_site_dicts
 from applypilot.discovery.smartextract import (
     load_sites,
     partition_sites_by_mode,
     run_smart_extract,
 )
+from applypilot.apply.eligibility import priority_boards_only_enabled
 
 log = logging.getLogger(__name__)
 
@@ -110,6 +112,11 @@ def run_discover(*, workers: int = 1) -> dict[str, Any]:
     cfg = load_discover_config()
     sources = cfg["sources"]
     agent_cfg = cfg["agent_discover"]
+    if priority_boards_only_enabled():
+        sources = {key: False for key in sources}
+        sources["smartextract"] = True
+        agent_cfg = {**agent_cfg, "enabled": False}
+        log.info("Discover sources limited to smartextract (LinkedIn + Wellfound only)")
     stats: dict[str, Any] = {}
 
     if sources.get("jobspy"):
@@ -175,7 +182,11 @@ def run_discover(*, workers: int = 1) -> dict[str, Any]:
             use_chrome_session=bool(waas_cfg.get("use_chrome_session", False)),
         )
 
-    yaml_agent, yaml_smart = partition_sites_by_mode(load_sites())
+    yaml_sites = load_sites()
+    if priority_boards_only_enabled():
+        yaml_sites = filter_priority_site_dicts(yaml_sites)
+        log.info("Discover limited to priority boards: LinkedIn, Wellfound")
+    yaml_agent, yaml_smart = partition_sites_by_mode(yaml_sites)
     extra_smart_sites: list[dict] = list(yaml_smart)
     agent_sites: list[dict] = list(yaml_agent)
 

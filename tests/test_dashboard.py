@@ -81,14 +81,75 @@ def test_api_stats_and_stages(temp_db):
     assert "pipeline" in stats
     assert isinstance(stats["by_site"], list)
     assert len(stats["by_site"]) <= 5
-    assert stats["priority_boards"] == ["Naukri", "Wellfound"]
-    assert "Naukri" in stats["apply_queue_order"]
+    assert stats["priority_boards"] == ["LinkedIn", "Wellfound"]
+    assert "LinkedIn" in stats["apply_queue_order"]
     assert "scored" in stats["pipeline"]
 
     r2 = client.get("/api/meta/stages")
     assert r2.status_code == 200
     assert "discover" in r2.json()["order"]
 
+
+def test_api_overview_smoke(temp_db):
+    from applypilot.database import get_connection, init_db
+    from applypilot.server.app import create_app
+
+    init_db()
+    conn = get_connection()
+    conn.execute(
+        """
+        INSERT INTO jobs (url, title, site, location, salary, fit_score, full_description, discovered_at)
+        VALUES
+          ('https://a.example/j1', 'Engineer', 'Acme', 'Remote', '$100k', 8, 'desc', '2026-05-18T10:00:00+00:00'),
+          ('https://a.example/j2', 'Engineer 2', 'Beta', 'NYC', '$120k', 6, 'desc', '2026-05-18T11:00:00+00:00')
+        """
+    )
+    conn.commit()
+
+    client = TestClient(create_app())
+    r = client.get("/api/overview")
+    assert r.status_code == 200
+    body = r.json()
+    assert "runband" in body
+    assert "kpis" in body
+    assert "funnel" in body
+    assert "score_distribution" in body
+    assert isinstance(body["top_opportunities"], list)
+
+
+def test_api_activity_and_workers_smoke(temp_db):
+    from applypilot.database import get_connection, init_db
+    from applypilot.orchestration.events import emit_run_event, init_run_schema
+    from applypilot.server.activity import emit_dashboard_activity
+    from applypilot.server.app import create_app
+
+    init_db()
+    conn = get_connection()
+    init_run_schema(conn)
+    conn.execute(
+        """
+        INSERT INTO runs (id, run_type, status, started_at)
+        VALUES ('run-activity', 'pipeline', 'running', '2026-05-18T00:00:00+00:00')
+        """
+    )
+    conn.commit()
+
+    emit_dashboard_activity("hello", stage="discover", run_id="run-activity")
+    emit_run_event(
+        "worker_heartbeat",
+        run_id="run-activity",
+        payload={"worker_id": 1, "status": "BUSY", "detail": "working"},
+    )
+
+    client = TestClient(create_app())
+    r1 = client.get("/api/activity", params={"limit": 5})
+    assert r1.status_code == 200
+    assert len(r1.json()["events"]) >= 1
+
+    r2 = client.get("/api/workers", params={"run_id": "run-activity"})
+    assert r2.status_code == 200
+    assert r2.json()["run_id"] == "run-activity"
+    assert isinstance(r2.json()["workers"], list)
 
 def test_api_source_stats_rollup(temp_db):
     from applypilot.database import get_connection, init_db, record_discover_source_stats

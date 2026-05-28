@@ -1,201 +1,542 @@
-import { useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { fetchActiveRun, fetchStats, type Stats } from "../api";
-import {
-  PIPELINE_CARD_JOBS_STAGE,
-  PIPELINE_STAGE_IDS,
-  STAGE_DESCRIPTIONS,
-  STAGE_LABELS,
-  type PipelineStageId,
-} from "../dashboardNav";
-import { stagePendingLabel } from "../utils/stageCounts";
-import { HomeRunBar } from "./HomeRunBar";
-import { RunBanner } from "./RunBanner";
-import { StatsRow } from "./StatsRow";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { RunEvent } from "../api";
+import { effectiveLogLevel } from "../utils/logLevel";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { fetchApplications, fetchOverview, fetchStats, stopRun } from "../api";
+import { useHomeRuns } from "../hooks/useHomeRuns";
+import { needsHumanIntervention } from "../utils/applicationAudit";
+import { parseScoreGe8Subtitle } from "../utils/jobTriage";
+import { PageCanvas } from "./layout/PageCanvas";
 
 type Props = {
   onOpenJobs: (params?: Record<string, string>) => void;
   onOpenApplications?: (params?: Record<string, string>) => void;
+  onOpenOutreach?: () => void;
 };
 
-export function HomePage({ onOpenJobs, onOpenApplications }: Props) {
-  const { data: stats, isLoading } = useQuery({
-    queryKey: ["stats"],
-    queryFn: fetchStats,
-  });
+function displayCount(value: number): string {
+  return String(value);
+}
 
-  const { data: activeRun } = useQuery({
-    queryKey: ["runs", "active"],
-    queryFn: fetchActiveRun,
+type DevlogFilter = "all" | "errors" | "discover" | "score" | "apply" | "outreach";
+
+type DevlogRow = {
+  id: string | number;
+  ts: string;
+  stage: string;
+  message: string;
+  level: string;
+};
+
+function runEventToDevlogRow(event: RunEvent): DevlogRow | null {
+  if (
+    event.event_type !== "log" &&
+    event.event_type !== "stage_error" &&
+    event.event_type !== "run_started" &&
+    event.event_type !== "run_finished" &&
+    event.event_type !== "stage_start" &&
+    event.event_type !== "stage_end"
+  ) {
+    return null;
+  }
+  const message = event.message?.trim();
+  if (!message) return null;
+  return {
+    id: event.id ?? `${event.created_at ?? ""}-${event.event_type}-${message.slice(0, 40)}`,
+    ts: event.created_at ?? "",
+    stage: event.stage ?? event.event_type ?? "—",
+    message,
+    level: effectiveLogLevel(event),
+  };
+}
+
+function matchesDevlogFilter(row: DevlogRow, filter: DevlogFilter): boolean {
+  if (filter === "all") return true;
+  if (filter === "errors") return row.level === "error";
+  const stage = row.stage.toLowerCase();
+  const message = row.message.toLowerCase();
+  if (filter === "discover") {
+    return stage === "discover" || message.includes("discover") || message.includes("naukri");
+  }
+  if (filter === "score") {
+    return stage === "score" || stage === "enrich" || message.includes("score");
+  }
+  if (filter === "apply") {
+    return stage === "apply" || stage === "pdf" || stage === "tailor" || message.includes("apply");
+  }
+  if (filter === "outreach") {
+    return stage === "refer" || stage === "cover" || message.includes("refer") || message.includes("outreach");
+  }
+  return true;
+}
+
+export function HomePage({ onOpenJobs, onOpenApplications, onOpenOutreach }: Props) {
+  const queryClient = useQueryClient();
+  const runControl = useHomeRuns();
+  const [devlogOpen, setDevlogOpen] = useState(false);
+  const [devlogFilter, setDevlogFilter] = useState<DevlogFilter>("all");
+  const devlogListRef = useRef<HTMLDivElement>(null);
+  const devlogStickRef = useRef(true);
+
+  const { data: overview } = useQuery({
+    queryKey: ["overview"],
+    queryFn: fetchOverview,
     refetchInterval: 5000,
   });
 
+  const { data: stats } = useQuery({
+    queryKey: ["stats"],
+    queryFn: fetchStats,
+    refetchInterval: 10_000,
+  });
+
+  const { data: manualApps } = useQuery({
+    queryKey: ["applications", "manual-preview"],
+    queryFn: () =>
+      fetchApplications({
+        limit: 5,
+        include_failed: true,
+        status: undefined,
+      }),
+  });
+
   const pipeline = stats?.pipeline ?? {};
-  const unverified = pipeline.submitted_unverified ?? 0;
-  const extra = stats?.extra ?? {};
+  const unverified = overview?.kpis.needs_verify ?? pipeline.submitted_unverified ?? 0;
+  const discoveredHint = overview?.kpis.pipeline_total_subtitle ?? "";
+  const discoveredToday = discoveredHint.startsWith("+")
+    ? Number(discoveredHint.replace(/[^\d]/g, "")) || 0
+    : 0;
+  const scoreGe8 = parseScoreGe8Subtitle(overview?.kpis.ready_to_apply_subtitle);
+  const newJobsCount =
+    discoveredToday ||
+    overview?.kpis.pipeline_total ||
+    (pipeline.scored ?? 0) + (pipeline.unscored ?? 0) ||
+    stats?.scored ||
+    0;
+  const outreachReady =
+    stats?.extra?.inbox_queue ??
+    stats?.extra?.outreach_queue ??
+    stats?.extra?.referral_pending_connect ??
+    0;
+  const manualTotal = Math.max(
+    unverified,
+    manualApps?.applications?.filter(needsHumanIntervention).length ?? 0,
+    unverified > 0 ? unverified : 0,
+  );
+  const dmsSent = stats?.extra?.referral_message_sent ?? 0;
 
-  const hero = useMemo(
-    () => [
-      {
-        label: "Applied",
-        value: stats?.applied ?? "—",
-        onClick: () => onOpenJobs({ stage: "applied" }),
-      },
-      {
-        label: "Needs verification",
-        value: unverified,
-        warn: unverified > 0,
-        onClick: () =>
-          onOpenApplications
-            ? onOpenApplications({ filter: "unverified" })
-            : onOpenJobs({ stage: "needs_check" }),
-      },
-      {
-        label: "Ready to apply",
-        value: stats?.ready_to_apply ?? pipeline.pending_apply ?? "—",
-        onClick: () => onOpenJobs({ stage: "ready" }),
-      },
-      {
-        label: "Total jobs",
-        value: stats?.total ?? "—",
-        onClick: () => onOpenJobs({}),
-      },
-      {
-        label: "Spend today",
-        value: formatSpend(extra.llm_cost_today ?? extra.cost_today ?? extra.spend_today),
-      },
-    ],
-    [stats, unverified, pipeline.pending_apply, extra, onOpenJobs, onOpenApplications],
+  const manualRows = useMemo(() => {
+    return (manualApps?.applications ?? []).filter(needsHumanIntervention).slice(0, 3);
+  }, [manualApps?.applications]);
+
+  const steps = overview?.runband.steps ?? [];
+  const activeIndex = steps.findIndex((s) => s.state === "active");
+  const activeStep = activeIndex >= 0 ? steps[activeIndex] : undefined;
+  const progressPct =
+    activeStep?.percent ??
+    (activeStep?.total && activeStep.done != null
+      ? Math.round((activeStep.done / activeStep.total) * 100)
+      : null);
+
+  const handleStop = useCallback(async () => {
+    if (runControl.activeRun?.id) {
+      await runControl.handleStop();
+      return;
+    }
+    const id = overview?.runband.run_id;
+    if (!id) return;
+    await stopRun(id);
+    await queryClient.invalidateQueries({ queryKey: ["overview"] });
+  }, [overview?.runband.run_id, queryClient, runControl]);
+
+  const activity = overview?.activity ?? [];
+  const caps = overview?.caps;
+
+  const devlogSource = useMemo(() => {
+    const fromRun: DevlogRow[] = [];
+    for (const event of runControl.events) {
+      const row = runEventToDevlogRow(event);
+      if (row) fromRun.push(row);
+    }
+    if (fromRun.length > 0) {
+      return fromRun.slice(-500);
+    }
+    return activity.map((ev) => ({
+      id: ev.id,
+      ts: ev.ts,
+      stage: ev.stage ?? "—",
+      message: ev.message ?? "—",
+      level: ev.level ?? "info",
+    }));
+  }, [runControl.events, activity]);
+
+  const devlogRows = useMemo(
+    () => devlogSource.filter((row) => matchesDevlogFilter(row, devlogFilter)),
+    [devlogSource, devlogFilter],
   );
 
+  const activityCounts = useMemo(() => {
+    let ok = 0;
+    let warn = 0;
+    let err = 0;
+    for (const ev of devlogSource) {
+      if (ev.level === "error") err += 1;
+      else if (ev.level === "warn") warn += 1;
+      else ok += 1;
+    }
+    return { ok, warn, err };
+  }, [devlogSource]);
+
+  const isRunning = runControl.isRunning || overview?.runband.status === "running";
+
+  useEffect(() => {
+    if (isRunning) setDevlogOpen(true);
+  }, [isRunning]);
+
+  useEffect(() => {
+    const el = devlogListRef.current;
+    if (!el || !devlogStickRef.current) return;
+    el.scrollTop = el.scrollHeight;
+  }, [devlogRows.length, devlogOpen]);
+
+  const onDevlogScroll = useCallback(() => {
+    const el = devlogListRef.current;
+    if (!el) return;
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    devlogStickRef.current = distance <= 80;
+  }, []);
+  const nextActionCount = manualRows.length || manualTotal || unverified;
+  const manualViewAll = manualTotal || unverified || manualRows.length;
+  const scoreSub =
+    scoreGe8 != null
+      ? `${scoreGe8} are score 8 or higher`
+      : newJobsCount > 0
+        ? "Run discover to refresh"
+        : "0 are score 8 or higher";
+
   return (
-    <div className="space-y-6 pb-8">
-      <RunBanner run={activeRun ?? null} />
+    <PageCanvas>
+      <div className="today">
+        <div className="today__hero">
+          <button type="button" className="summary summary--primary" onClick={() => onOpenJobs({})}>
+            <div className="summary__icon">
+              <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <rect x="2" y="5" width="14" height="10" rx="1.5" />
+                <path d="M6 5V3.5a1 1 0 011-1h4a1 1 0 011 1V6" />
+              </svg>
+            </div>
+            <div className="summary__count">{displayCount(newJobsCount)}</div>
+            <div className="summary__label">New jobs match you</div>
+            <div className="summary__sub">{scoreSub}</div>
+            <div className="summary__cta">
+              Triage now
+              <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeLinecap="round" aria-hidden>
+                <path d="m5 3 4 4-4 4" />
+              </svg>
+            </div>
+          </button>
 
-      {unverified > 0 ? (
-        <button
-          type="button"
-          onClick={() =>
-            onOpenApplications
-              ? onOpenApplications({ filter: "unverified" })
-              : onOpenJobs({ stage: "needs_check" })
-          }
-          className="w-full rounded-card border border-warn/50 bg-warn/10 px-4 py-3 text-left text-sm hover:bg-warn/15"
-        >
-          <strong className="text-warn">{unverified}</strong> ghost apply
-          {unverified === 1 ? "" : "ies"} — submitted but not verified.{" "}
-          {onOpenApplications ? "Review in Applications." : "View in Jobs."}
-        </button>
-      ) : null}
+          <button
+            type="button"
+            className="summary summary--warn"
+            onClick={() =>
+              onOpenApplications
+                ? onOpenApplications({ filter: "needs_action" })
+                : onOpenJobs({ stage: "needs_check" })
+            }
+          >
+            <div className="summary__icon">
+              <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <path d="M9 2 2 15h14L9 2z" />
+                <path d="M9 7v3M9 12.5v.5" />
+              </svg>
+            </div>
+            <div className="summary__count">{displayCount(manualTotal)}</div>
+            <div className="summary__label">Need your apply</div>
+            <div className="summary__sub">Auto-apply hit a wall — your move</div>
+            <div className="summary__cta" style={{ color: "var(--warn)" }}>
+              Review
+              <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeLinecap="round" aria-hidden>
+                <path d="m5 3 4 4-4 4" />
+              </svg>
+            </div>
+          </button>
 
-      {activeRun?.status === "failed" && activeRun.error_message ? (
-        <div className="rounded-card border border-bad/40 bg-bad/10 px-4 py-3 text-sm text-bad">
-          Last run failed: {activeRun.error_message}
+          <button
+            type="button"
+            className="summary"
+            onClick={() => (onOpenOutreach ? onOpenOutreach() : onOpenJobs({}))}
+          >
+            <div className="summary__icon">
+              <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <path d="m16 2-7 7" />
+                <path d="M16 2 10 16l-1-7-7-1L16 2z" />
+              </svg>
+            </div>
+            <div className="summary__count">{displayCount(outreachReady)}</div>
+            <div className="summary__label">Outreach ready to send</div>
+            <div className="summary__sub">LinkedIn drafts for hiring managers</div>
+            <div className="summary__cta">
+              Send
+              <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeLinecap="round" aria-hidden>
+                <path d="m5 3 4 4-4 4" />
+              </svg>
+            </div>
+          </button>
         </div>
-      ) : null}
 
-      <section>
-        <h3 className="text-[11px] font-medium uppercase tracking-wide text-ink-4">Health</h3>
-        <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-          {hero.map((item) => (
+        {nextActionCount > 0 ? (
+          <div className="next-action">
+            <div className="next-action__icon">
+              <svg viewBox="0 0 22 22" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <circle cx="11" cy="11" r="8" />
+                <path d="m8 11 2 2 4-4" />
+              </svg>
+            </div>
+            <div className="next-action__body">
+              <div className="next-action__title">
+                Apply to {nextActionCount} jobs the agent couldn&apos;t reach
+              </div>
+              <div className="next-action__sub">
+                Workday SSO, CAPTCHA, and one form with unknown fields. Should take five minutes.
+              </div>
+            </div>
             <button
-              key={item.label}
               type="button"
-              onClick={item.onClick}
-              disabled={!item.onClick}
-              className={`rounded-card border bg-panel p-4 text-left transition-colors ${
-                item.onClick ? "hover:border-accent/40 hover:bg-panel-elevated" : ""
-              } ${item.warn ? "border-warn/40" : "border-panel-border"}`}
-            >
-              <p className="text-[10px] font-medium uppercase tracking-wide text-ink-4">
-                {item.label}
-              </p>
-              <p
-                className={`mt-1 font-mono text-2xl font-semibold tabular-nums ${
-                  item.warn ? "text-warn" : "text-accent"
-                }`}
-              >
-                {item.value}
-              </p>
-            </button>
-          ))}
-        </div>
-      </section>
-
-      <StatsRow stats={stats} isLoading={isLoading} />
-
-      <HomeRunBar />
-
-      <section>
-        <h3 className="text-[11px] font-medium uppercase tracking-wide text-ink-4">
-          Pipeline summary
-        </h3>
-        <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {PIPELINE_STAGE_IDS.map((stage) => (
-            <StageCard
-              key={stage}
-              stage={stage}
-              stats={stats}
-              active={activeRun?.current_stage === stage && activeRun?.status === "running"}
-              onOpen={() =>
-                onOpenJobs({ stage: PIPELINE_CARD_JOBS_STAGE[stage] })
+              className="btn btn--accent btn--lg"
+              onClick={() =>
+                onOpenApplications
+                  ? onOpenApplications({ filter: "needs_action" })
+                  : onOpenJobs({ stage: "needs_check" })
               }
-            />
-          ))}
-        </div>
-      </section>
-
-      <section className="rounded-card border border-panel-border bg-panel p-4">
-        <h3 className="font-display text-sm text-ink">CLI equivalents</h3>
-        <ul className="mt-2 space-y-1.5 font-mono text-xs text-ink-3">
-          <li>applypilot run discover</li>
-          <li>applypilot run enrich score tailor cover pdf</li>
-          <li>applypilot apply --watch</li>
-          <li>applypilot inbox scan — LinkedIn Other tab (CLI)</li>
-        </ul>
-      </section>
-    </div>
-  );
-}
-
-function StageCard({
-  stage,
-  stats,
-  active,
-  onOpen,
-}: {
-  stage: PipelineStageId;
-  stats: Stats | undefined;
-  active: boolean;
-  onOpen: () => void;
-}) {
-  const pendingLabel = stagePendingLabel(stage, stats);
-
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className={`rounded-card border bg-panel p-4 text-left transition-colors hover:border-accent/40 hover:bg-panel-elevated ${
-        active ? "border-accent/50 ring-1 ring-accent/20" : "border-panel-border"
-      }`}
-    >
-      <div className="flex items-center justify-between gap-2">
-        <span className="font-display text-base text-ink">{STAGE_LABELS[stage]}</span>
-        {active ? (
-          <span className="rounded-chip bg-accent/15 px-2 py-0.5 text-[10px] font-medium text-accent">
-            running
-          </span>
+            >
+              Open list
+            </button>
+          </div>
         ) : null}
-      </div>
-      <p className="mt-2 font-mono text-xs text-accent">{pendingLabel}</p>
-      <p className="mt-2 text-xs leading-relaxed text-ink-3">{STAGE_DESCRIPTIONS[stage]}</p>
-      <p className="mt-3 text-xs font-medium text-accent">View in Jobs →</p>
-    </button>
-  );
-}
 
-function formatSpend(raw: unknown): string {
-  if (typeof raw === "number") return `$${raw.toFixed(2)}`;
-  if (typeof raw === "string" && raw) return raw.startsWith("$") ? raw : `$${raw}`;
-  return "—";
+        <div>
+          <div className="section-title">Right now</div>
+          <div className="run-card">
+            <div className="run-card__status">
+              <div className="run-card__pulse" aria-hidden="true" />
+              <div>
+                <div className="run-card__title">{overview?.runband.title ?? "Ready"}</div>
+                <div className="run-card__sub">{overview?.runband.subtitle ?? "No active run"}</div>
+              </div>
+            </div>
+            <div className="run-card__progress">
+              <div className="run-card__bar">
+                <div
+                  className="run-card__bar-fill"
+                  style={progressPct != null ? { width: `${progressPct}%`, animation: "none" } : undefined}
+                />
+              </div>
+              <div className="run-card__bar-label">
+                <span>
+                  {activeIndex >= 0 && steps.length > 0 ? (
+                    <>
+                      Stage <strong>{activeIndex + 1}</strong> of {steps.length} · {activeStep?.label ?? "—"}
+                    </>
+                  ) : (
+                    <>
+                      Stage <strong>{activeStep?.label ?? "—"}</strong>
+                    </>
+                  )}
+                </span>
+                <span>{progressPct != null ? `${progressPct}%` : "—"}</span>
+              </div>
+            </div>
+            {isRunning ? (
+              <button type="button" className="btn btn--ghost btn--sm" onClick={() => void handleStop()}>
+                Pause
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="btn btn--accent btn--sm"
+                disabled={runControl.starting}
+                onClick={() => void runControl.handleStartPipeline()}
+              >
+                {runControl.starting ? "Starting…" : "New run"}
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div>
+          <div className="section-row">
+            <div className="section-title" style={{ marginBottom: 0 }}>
+              Need your apply
+            </div>
+            {manualViewAll > 0 ? (
+              <button
+                type="button"
+                className="summary__cta"
+                style={{ marginTop: 0 }}
+                onClick={() =>
+                  onOpenApplications
+                    ? onOpenApplications({ filter: "needs_action" })
+                    : onOpenJobs({ stage: "needs_check" })
+                }
+              >
+                View all {manualViewAll}
+                <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeLinecap="round" aria-hidden>
+                  <path d="m5 3 4 4-4 4" />
+                </svg>
+              </button>
+            ) : null}
+          </div>
+          <div className="panel">
+            {manualRows.length > 0 ? (
+              manualRows.map((row) => (
+                <div key={row.url} className="manual-row">
+                  <span className="statusbar statusbar--warn">Manual</span>
+                  <div className="manual-row__main">
+                    <div className="manual-row__title">{row.title ?? "Untitled"}</div>
+                    <div className="manual-row__company">
+                      {row.site ?? "—"} · {row.apply_status ?? "needs action"}
+                    </div>
+                  </div>
+                  <div className="manual-row__reason">{row.apply_error ?? "Needs review"}</div>
+                  {row.url ? (
+                    <a className="btn btn--sm btn--accent" href={row.url} target="_blank" rel="noreferrer">
+                      Apply now
+                    </a>
+                  ) : (
+                    <button type="button" className="btn btn--sm btn--accent">
+                      Apply now
+                    </button>
+                  )}
+                </div>
+              ))
+            ) : (
+              <div className="manual-row">
+                <span className="statusbar statusbar--warn">Manual</span>
+                <div className="manual-row__main">
+                  <div className="manual-row__title">No manual queue right now</div>
+                  <div className="manual-row__company">Auto-apply is caught up on reachable forms</div>
+                </div>
+                <div className="manual-row__reason" />
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div>
+          <div className="section-title">Yesterday</div>
+          <div className="recap">
+            <div className="recap__item">
+              <div className="recap__num">{displayCount(caps?.apply_today ?? 0)}</div>
+              <div className="recap__label">Applied automatically</div>
+            </div>
+            <div className="recap__item">
+              <div className="recap__num">{unverified}</div>
+              <div className="recap__label">Manual fallback</div>
+            </div>
+            <div className="recap__item">
+              <div className="recap__num">{dmsSent}</div>
+              <div className="recap__label">DMs sent</div>
+            </div>
+            <div className="recap__item">
+              <div className="recap__num">${(caps?.spend_today_usd ?? 0).toFixed(2)}</div>
+              <div className="recap__label">Spent</div>
+            </div>
+          </div>
+        </div>
+
+        <div className={devlogOpen ? "devlog devlog--open" : "devlog"} id="devlog">
+          <button
+            type="button"
+            className="devlog__head"
+            onClick={() => setDevlogOpen((v) => !v)}
+            aria-expanded={devlogOpen}
+          >
+            <div className="devlog__title">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.6" aria-hidden>
+                <path d="m5 4 4 4-4 4" />
+              </svg>
+              Developer log
+            </div>
+            <div className="devlog__meta">
+              <span>
+                <span className="dot dot--ok" />
+                {activityCounts.ok} ok
+              </span>
+              <span>
+                <span className="dot dot--warn" />
+                {activityCounts.warn} warn
+              </span>
+              <span>
+                <span className="dot" style={{ background: "#ff8a8a" }} />
+                {activityCounts.err} err
+              </span>
+              <span>
+                {isRunning
+                  ? `live · ${devlogSource.length} lines`
+                  : devlogSource.length > 0
+                    ? `${devlogSource.length} lines`
+                    : "last 24h"}
+              </span>
+            </div>
+          </button>
+          {devlogOpen ? (
+            <div className="devlog__body">
+              <div className="devlog__bar">
+                {(
+                  [
+                    ["all", "All"],
+                    ["errors", "Errors"],
+                    ["discover", "Discover"],
+                    ["score", "Score"],
+                    ["apply", "Apply"],
+                    ["outreach", "Outreach"],
+                  ] as const
+                ).map(([id, label]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    className={devlogFilter === id ? "chip chip--on" : "chip"}
+                    onClick={() => setDevlogFilter(id)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <div className="devlog__list" ref={devlogListRef} onScroll={onDevlogScroll}>
+                {devlogRows.length === 0 ? (
+                  <div className="devlog__row">
+                    <span className="devlog__time">—</span>
+                    <span className="devlog__stage">—</span>
+                    <span className="devlog__msg">
+                      {isRunning
+                        ? "Waiting for log lines from the active run…"
+                        : "No recent activity yet. Start a run to stream logs here."}
+                    </span>
+                  </div>
+                ) : (
+                  devlogRows.map((ev) => (
+                    <div
+                      key={ev.id}
+                      className={
+                        ev.level === "error"
+                          ? "devlog__row devlog__row--err"
+                          : ev.level === "warn"
+                            ? "devlog__row devlog__row--warn"
+                            : "devlog__row"
+                      }
+                    >
+                      <span className="devlog__time">{ev.ts?.slice(11, 19) ?? "—"}</span>
+                      <span className="devlog__stage">{ev.stage}</span>
+                      <span className="devlog__msg">{ev.message}</span>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </PageCanvas>
+  );
 }

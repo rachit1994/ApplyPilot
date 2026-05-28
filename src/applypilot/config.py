@@ -21,6 +21,7 @@ TAILORED_DIR = APP_DIR / "tailored_resumes"
 COVER_LETTER_DIR = APP_DIR / "cover_letters"
 TEMPLATES_DIR = APP_DIR / "templates"
 LOG_DIR = APP_DIR / "logs"
+RUN_LOG_DIR = LOG_DIR / "runs"
 
 # Chrome worker isolation
 CHROME_WORKER_DIR = APP_DIR / "chrome-workers"
@@ -109,7 +110,15 @@ def load_tailor_a_grade_config(profile: dict) -> dict:
 
 def ensure_dirs():
     """Create all required directories."""
-    for d in [APP_DIR, TAILORED_DIR, COVER_LETTER_DIR, LOG_DIR, CHROME_WORKER_DIR, APPLY_WORKER_DIR]:
+    for d in [
+        APP_DIR,
+        TAILORED_DIR,
+        COVER_LETTER_DIR,
+        LOG_DIR,
+        RUN_LOG_DIR,
+        CHROME_WORKER_DIR,
+        APPLY_WORKER_DIR,
+    ]:
         d.mkdir(parents=True, exist_ok=True)
     templates_dir()
 
@@ -235,7 +244,11 @@ DEFAULTS = {
 
 def load_env():
     """Load environment variables from ~/.applypilot/.env if it exists."""
-    from dotenv import load_dotenv
+    try:
+        from dotenv import load_dotenv
+    except ModuleNotFoundError:
+        # Optional dependency (tests and minimal installs should still work).
+        return
     if ENV_PATH.exists():
         load_dotenv(ENV_PATH)
     # Also try CWD .env as fallback

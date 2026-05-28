@@ -11,9 +11,11 @@ from fastapi.staticfiles import StaticFiles
 
 from applypilot.config import APP_DIR, load_env, ensure_dirs
 from applypilot.database import init_db
+from applypilot.server import activity as activity_module
 from applypilot.server import events as events_routes
 from applypilot.server import jobs as jobs_module
 from applypilot.server import runs as runs_routes
+from applypilot.server import workers as workers_module
 from applypilot.server import applications as applications_module
 from applypilot.server import referrals as referrals_module
 from applypilot.server import inbox as inbox_module
@@ -26,6 +28,7 @@ from applypilot.server.schemas import (
     ApplyErrorSummaryRow,
     JobRow,
     JobsResponse,
+    OverviewResponse,
     ReferralActionRequest,
     ReferralActionResponse,
     ReferralActionResult,
@@ -36,6 +39,7 @@ from applypilot.server.schemas import (
     StatsResponse,
 )
 from applypilot.orchestration.run_controller import reconcile_orphaned_runs
+from applypilot.server.overview import build_overview
 from applypilot.server.stats import fetch_source_stats, fetch_stats
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -65,7 +69,8 @@ def create_app() -> FastAPI:
             "http://127.0.0.1:5173",
             "http://localhost:5173",
             "http://127.0.0.1:9477",
-            "http://localhost:9477",
+            "http://127.0.0.1:5174",
+            "http://localhost:5174",
         ],
         allow_credentials=True,
         allow_methods=["*"],
@@ -76,6 +81,12 @@ def create_app() -> FastAPI:
     api.include_router(runs_routes.router)
     api.include_router(events_routes.router)
     api.include_router(inbox_module.router)
+    api.include_router(activity_module.router)
+    api.include_router(workers_module.router)
+
+    @api.get("/overview", response_model=OverviewResponse)
+    def api_overview() -> OverviewResponse:
+        return OverviewResponse.model_validate(build_overview())
 
     @api.get("/stats", response_model=StatsResponse)
     def api_stats() -> StatsResponse:

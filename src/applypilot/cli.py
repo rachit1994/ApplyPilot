@@ -219,6 +219,10 @@ def apply(
         False, "--ats-only",
         help="Only auto-apply jobs with ATS application URLs (or Work at a Startup).",
     ),
+    priority_boards_only: bool = typer.Option(
+        False, "--priority-boards-only",
+        help="Only discover/apply LinkedIn and Wellfound (same as APPLYPILOT_PRIORITY_BOARDS_ONLY=1).",
+    ),
     check_yc_login: bool = typer.Option(
         False, "--check-yc-login",
         help="Verify YC login credentials for Work at a Startup, then exit.",
@@ -227,9 +231,17 @@ def apply(
         False, "--triage",
         help="Classify tailored queue (mark LinkedIn/gigs manual) without Chrome.",
     ),
+    include_untailored: bool = typer.Option(
+        False,
+        "--include-untailored",
+        help="Also attempt jobs without tailored resumes (uses base resume.pdf).",
+    ),
 ) -> None:
     """Launch auto-apply to submit job applications."""
     _bootstrap()
+
+    if priority_boards_only:
+        os.environ["APPLYPILOT_PRIORITY_BOARDS_ONLY"] = "1"
 
     from applypilot.config import check_tier, PROFILE_PATH as _profile_path
     from applypilot.database import get_connection
@@ -315,9 +327,19 @@ def apply(
         from applypilot.apply.launcher import count_acquirable_jobs, format_apply_queue_hint
 
         effective_min = min_score if min_score > 0 else 0
-        acquirable = count_acquirable_jobs(min_score=effective_min, ats_only=ats_only)
+        acquirable = count_acquirable_jobs(
+            min_score=effective_min,
+            ats_only=ats_only,
+            priority_boards_only=priority_boards_only,
+            include_untailored=include_untailored,
+        )
         if acquirable == 0:
-            hint = format_apply_queue_hint(min_score=effective_min, ats_only=ats_only)
+            hint = format_apply_queue_hint(
+                min_score=effective_min,
+                ats_only=ats_only,
+                priority_boards_only=priority_boards_only,
+                include_untailored=include_untailored,
+            )
             console.print("[red]No jobs available to apply right now.[/red]")
             console.print(hint)
             run_id = os.environ.get("APPLYPILOT_RUN_ID", "").strip()
@@ -393,6 +415,8 @@ def apply(
         console.print(f"  Target:   {url}")
     if ats_only:
         console.print("  ATS only: on (skip non-ATS apply URLs)")
+    if priority_boards_only:
+        console.print("  Boards:   LinkedIn + Wellfound only")
     console.print()
 
     apply_main(
@@ -409,7 +433,9 @@ def apply(
         confirm_submit=effective_confirm,
         plain=plain or not sys.stdout.isatty(),
         ats_only=ats_only,
+        priority_boards_only=priority_boards_only,
         min_experience_years=min_experience_years,
+        include_untailored=include_untailored,
     )
 
     if not continuous and not dry_run:

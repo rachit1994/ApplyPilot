@@ -19,6 +19,7 @@ import { NowPanel } from "./pipeline/NowPanel";
 import { DiscoverSourcePanel } from "./pipeline/DiscoverSourcePanel";
 import { StageControlBar } from "./StageControlBar";
 import { PhaseStepper } from "./PhaseStepper";
+import { useApplyRun } from "../hooks/useApplyRun";
 
 type Props = {
   stage: PipelineStageId;
@@ -27,6 +28,7 @@ type Props = {
 
 export function StagePipelinePage({ stage, onJobSelect }: Props) {
   const run = useStageRun(stage);
+  const applyRun = useApplyRun();
   const [showPlan, setShowPlan] = useState(false);
   const [minScoreFilter, setMinScoreFilter] = useState(0);
   const [jobSearch, setJobSearch] = useState("");
@@ -134,6 +136,33 @@ export function StagePipelinePage({ stage, onJobSelect }: Props) {
       <RunBanner run={run.activeRun} />
 
       <TimelineRibbon events={run.events} />
+
+      <section className="rounded-card border border-panel-border bg-panel px-4 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="text-sm text-ink">
+            <span className="font-medium">Apply queue</span>
+            <span className="text-ink-4"> · start auto-apply from here</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              className="btn btn--accent"
+              disabled={applyRun.isRunning || applyRun.starting}
+              onClick={() => void applyRun.handleStart()}
+            >
+              {applyRun.starting ? "Starting…" : "Apply queue now"}
+            </button>
+            <button
+              type="button"
+              className="btn btn--ghost"
+              disabled={!applyRun.isRunning}
+              onClick={() => void applyRun.handleStop()}
+            >
+              Pause apply
+            </button>
+          </div>
+        </div>
+      </section>
 
       <StageControlBar
         stage={stage}

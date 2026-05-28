@@ -4,12 +4,28 @@ import {
   fetchActiveRun,
   fetchRun,
   fetchRunEventsHistory,
+  fetchRuns,
   startRun,
   stopRun,
   subscribeRunEvents,
   type Run,
   type RunEvent,
 } from "../api";
+import {
+  deriveApplyAgentState,
+  type WorkerHeartbeatInfo,
+} from "../utils/applyRunState";
+
+function isApplyRun(run: Run | null | undefined): run is Run {
+  return run?.run_type === "apply";
+}
+
+async function resolveApplyRun(): Promise<Run | null> {
+  const active = await fetchActiveRun();
+  if (isApplyRun(active)) return active;
+  const runs = await fetchRuns();
+  return runs.find((r) => r.run_type === "apply") ?? null;
+}
 
 export function useApplyRun() {
   const queryClient = useQueryClient();
@@ -26,28 +42,78 @@ export function useApplyRun() {
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const eventsRef = useRef(events);
+  const activeRunRef = useRef(activeRun);
 
   useEffect(() => {
     eventsRef.current = events;
   }, [events]);
 
   useEffect(() => {
-    fetchActiveRun()
-      .then((run) => {
-        if (!run || run.run_type !== "apply") return;
-        setActiveRun(run);
-        if (run.status !== "running") {
-          fetchRunEventsHistory(run.id).then(setEvents).catch(() => {});
-        }
+    activeRunRef.current = activeRun;
+  }, [activeRun]);
+
+  const loadRunEvents = useCallback((runId: string) => {
+    fetchRunEventsHistory(runId)
+      .then((history) => {
+        setEvents((prev) => {
+          if (prev.length === 0) return history;
+          const seen = new Set(prev.map((e) => e.id));
+          const merged = [...prev];
+          for (const e of history) {
+            if (e.id != null && seen.has(e.id)) continue;
+            merged.push(e);
+          }
+          merged.sort((a, b) => (a.id ?? 0) - (b.id ?? 0));
+          return merged.length > 2000 ? merged.slice(-1500) : merged;
+        });
       })
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    resolveApplyRun()
+      .then((run) => {
+        if (!run) return;
+        setActiveRun(run);
+        loadRunEvents(run.id);
+      })
+      .catch(() => {});
+  }, [loadRunEvents]);
 
   const refreshRun = useCallback((runId: string) => {
     fetchRun(runId)
       .then(setActiveRun)
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    const tick = () => {
+      fetchActiveRun()
+        .then((run) => {
+          if (isApplyRun(run)) {
+            setActiveRun((prev) => {
+              if (
+                prev?.id === run.id &&
+                prev.status === run.status &&
+                prev.error_message === run.error_message &&
+                prev.finished_at === run.finished_at
+              ) {
+                return prev;
+              }
+              return run;
+            });
+            return;
+          }
+          const prev = activeRunRef.current;
+          if (isApplyRun(prev) && prev.status === "running") {
+            refreshRun(prev.id);
+          }
+        })
+        .catch(() => {});
+    };
+    const id = window.setInterval(tick, 3000);
+    return () => window.clearInterval(id);
+  }, [refreshRun]);
 
   useEffect(() => {
     if (!activeRun?.id || activeRun.status !== "running") return;
@@ -128,6 +194,25 @@ export function useApplyRun() {
 
   const workerHeartbeats = events.filter((e) => e.event_type === "worker_heartbeat");
 
+  const workerSnapshots: WorkerHeartbeatInfo[] = useMemo(() => {
+    const latest = new Map<number, WorkerHeartbeatInfo>();
+    for (const e of workerHeartbeats) {
+      const payload = (e.payload ?? {}) as {
+        worker_id?: number;
+        status?: string;
+        detail?: string;
+      };
+      const id = Number(payload.worker_id ?? 0);
+      latest.set(id, {
+        workerId: id,
+        status: payload.status,
+        detail: payload.detail ?? e.message ?? "",
+        at: e.created_at,
+      });
+    }
+    return [...latest.values()].sort((a, b) => a.workerId - b.workerId);
+  }, [workerHeartbeats]);
+
   const errors = useMemo(
     () =>
       events.filter(
@@ -139,11 +224,18 @@ export function useApplyRun() {
     [events],
   );
 
+  const agentState = useMemo(
+    () => deriveApplyAgentState(activeRun, workerSnapshots, starting),
+    [activeRun, workerSnapshots, starting],
+  );
+
   return {
     activeRun,
     events,
     errors,
     workerHeartbeats,
+    workerSnapshots,
+    agentState,
     isRunning,
     starting,
     error,

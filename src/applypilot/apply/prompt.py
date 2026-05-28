@@ -846,10 +846,28 @@ def build_prompt(job: dict, tailored_resume: str,
             "non-empty, fix FIRST. Only click Submit after VERIFY passes."
         )
 
+    job_url = str(job.get("application_url") or job["url"])
+    linkedin_company_site_rule = ""
+    if "linkedin.com/jobs" in job_url.lower():
+        linkedin_company_site_rule = """
+== LINKEDIN SPECIAL RULE ==
+If this is a LinkedIn job page:
+- DO NOT attempt LinkedIn Easy Apply.
+- FIRST: look for a button/link like "Apply on company website" / "Apply to company website".
+  - Click it.
+  - If it opens a new tab/window, switch to it.
+  - Capture the final external URL you land on (ATS/company site).
+  - Continue the application on that external site.
+- If there is NO "Apply on company website" option (only Easy Apply / no apply button):
+  emit RESULT_JSON:{"status":"failed","reason":"linkedin_no_company_website_apply"} and stop.
+
+If you used "Apply on company website", include "company_apply_url":"<external_url>" in your RESULT_JSON.
+"""
+
     prompt = f"""You are an autonomous job application agent. Your ONE mission: get this candidate an interview. You have all the information and tools. Think strategically. Act decisively. Submit the application.
 
 == JOB ==
-URL: {job.get('application_url') or job['url']}
+URL: {job_url}
 Title: {job['title']}
 Company: {job.get('site', 'Unknown')}
 Fit Score: {job.get('fit_score', 'N/A')}/10
@@ -873,6 +891,8 @@ Submit a complete, accurate application. Use the profile and resume as source da
 If something unexpected happens and these instructions don't cover it, figure it out yourself. You are autonomous. Navigate pages, read content, try buttons, explore the site. The goal is always the same: submit the application. Do whatever it takes to reach that goal.
 
 {hard_rules}
+
+{linkedin_company_site_rule}
 
 == NEVER DO THESE (immediate RESULT:FAILED if encountered) ==
 - NEVER grant camera, microphone, screen sharing, or location permissions. If a site requests them -> RESULT:FAILED:unsafe_permissions
@@ -905,9 +925,12 @@ If something unexpected happens and these instructions don't cover it, figure it
    After clicking Apply: browser_snapshot. Run CAPTCHA DETECT -- many sites trigger CAPTCHAs right after the Apply click. If found, solve before continuing.
 5. Login wall?
    5a. FIRST: check the URL. If you landed on {', '.join(blocked_sso)}, treat it as SSO/OAuth.
-       - Exception: Google SSO on accounts.google.com is ALLOWED **only if you are already logged in**.
-         Click "Continue", "Next", or "Continue as <name>" and proceed.
-         If you see an email/password entry screen, 2FA, passkey, or anything requiring credentials -> RESULT_JSON:{{"status":"pause_for_human","reason":"sso_login_needed"}}
+       - Exception: Google SSO (accounts.google.com) is ALLOWED **only if you are already logged in**.
+         If you see a "Continue with Google" / "Sign in with Google" button anywhere on the page, click it.
+         Then decide:
+           - If you see an account picker (e.g. "Choose an account", list of existing accounts) -> pick the matching {personal['email']} if present, otherwise pick the first account, then click Continue/Next.
+           - If you are already logged in and see "Continue" / "Next" / "Continue as <name>" -> click through.
+           - If you see ANY credential gate (email/password entry, "Use another account", passkey, 2FA, phone prompt, recovery, captchas that block login) -> STOP and output RESULT_JSON:{{"status":"pause_for_human","reason":"sso_login_needed"}}
        - Any other SSO (Microsoft/Okta/Auth0/etc.) -> RESULT_JSON:{{"status":"failed","reason":"sso_required"}}
    5b. Check for popups. Run browser_tabs action "list". If a new tab/window appeared (login popup), switch to it.
        Apply the same rules as 5a for that tab.
@@ -937,7 +960,8 @@ Your very last line MUST be ONE of:
 
   RESULT_JSON:{{"status":"applied",        "submit_click_ref":"...", "submit_button_text":"...",
                "pre_submit_url":"...",    "post_submit_url":"...",  "post_submit_snapshot":{{...}},
-               "confirmation_copy":"...", "screenshot_path":"...", "verification_code_used":"..." }}
+               "confirmation_copy":"...", "screenshot_path":"...", "verification_code_used":"...",
+               "company_apply_url":"..." }}
   RESULT_JSON:{{"status":"dry_run",        "would_click_ref":"...",  "would_click_text":"..."}}
   RESULT_JSON:{{"status":"failed",         "reason":"<short>"}}
   RESULT_JSON:{{"status":"captcha"}}        | "login_issue" | "expired" | "pause_for_human"

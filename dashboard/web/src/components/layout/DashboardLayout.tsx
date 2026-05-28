@@ -1,66 +1,57 @@
 import type { ReactNode } from "react";
 import type { Application, Job, Run } from "../../api";
-import { pageSubtitle, pageTitle, type DashboardPage } from "../../dashboardNav";
+import type { DashboardPage } from "../../dashboardNav";
 import { NavRail } from "./NavRail";
-import { HeaderStrip, type HeaderMetrics } from "./HeaderStrip";
+import { HeaderStrip } from "./HeaderStrip";
 import { RightDrawer } from "./RightDrawer";
 
 type Props = {
   page: DashboardPage;
   onPageChange: (page: DashboardPage) => void;
-  headerMetrics: HeaderMetrics;
+  headerSubtitle?: string;
   selectedJob: Job | null;
   selectedApplication: Application | null;
   onCloseDrawer: () => void;
   activeRun: Run | null;
-  onStopRun: () => void;
-  stopping?: boolean;
+  navBadges?: { jobs?: number; apps?: number; outreach?: number };
+  onStopRun?: () => void;
   children: ReactNode;
 };
+
+const INLINE_DETAIL_PAGES: DashboardPage[] = ["jobs", "applications", "outreach"];
 
 export function DashboardLayout({
   page,
   onPageChange,
-  headerMetrics,
+  headerSubtitle,
   selectedJob,
   selectedApplication,
   onCloseDrawer,
   activeRun,
+  navBadges,
   onStopRun,
-  stopping,
   children,
 }: Props) {
-  const runLabel =
-    activeRun?.status === "running"
-      ? `${activeRun.run_type}${activeRun.current_stage ? ` · ${activeRun.current_stage}` : ""}`
-      : null;
+  const useDrawer = !INLINE_DETAIL_PAGES.includes(page);
 
   return (
-    <div className="flex h-screen overflow-hidden bg-canvas text-ink">
-      <NavRail activePage={page} onNavigate={onPageChange} />
+    <div className="app">
+      <NavRail activePage={page} onNavigate={onPageChange} badges={navBadges} />
 
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="workspace">
         <HeaderStrip
-          metrics={headerMetrics}
-          subtitle={pageSubtitle(page)}
-          title={pageTitle(page)}
-          activeRunId={activeRun?.status === "running" ? activeRun.id : null}
-          activeRunLabel={runLabel}
+          page={page}
+          subtitle={headerSubtitle}
+          activeRun={activeRun}
           onStopRun={onStopRun}
-          stopping={stopping}
         />
 
-        <div className="flex min-h-0 flex-1">
-          <main className="scroll-thin min-h-0 min-w-0 flex-1 overflow-y-auto p-5">
-            {children}
-          </main>
-          <RightDrawer
-            job={selectedJob}
-            application={selectedApplication}
-            onClose={onCloseDrawer}
-          />
-        </div>
+        <main className="workspace__main">{children}</main>
       </div>
+
+      {useDrawer ? (
+        <RightDrawer job={selectedJob} application={selectedApplication} onClose={onCloseDrawer} />
+      ) : null}
     </div>
   );
 }

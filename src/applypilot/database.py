@@ -143,6 +143,7 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
     """)
     ensure_source_stats_table(conn)
     ensure_llm_usage_table(conn)
+    ensure_dashboard_activity_table(conn)
     conn.commit()
 
     # Run migrations for any columns added after initial schema
@@ -197,6 +198,30 @@ def ensure_llm_usage_table(conn: sqlite3.Connection | None = None) -> None:
             metadata_json TEXT
         )
         """
+    )
+
+
+def ensure_dashboard_activity_table(conn: sqlite3.Connection | None = None) -> None:
+    """Persist dashboard-wide activity rows for /api/activity and SSE."""
+    if conn is None:
+        conn = get_connection()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS dashboard_activity_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL,
+            level TEXT NOT NULL DEFAULT 'info',
+            stage TEXT,
+            message TEXT NOT NULL,
+            run_id TEXT,
+            job_url TEXT,
+            meta_json TEXT
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_dashboard_activity_id "
+        "ON dashboard_activity_events(id)"
     )
 
 

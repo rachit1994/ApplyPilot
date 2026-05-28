@@ -11,6 +11,7 @@ from applypilot.apply.experience import is_too_junior_role
 from applypilot.apply.salary import salary_meets_regional_minimum
 from applypilot.apply.apply_url_extract import coerce_application_url
 from applypilot.config import DEFAULTS, is_contractor_marketplace, is_manual_ats, load_search_config
+from applypilot.discovery.site_priority import job_is_priority_board
 
 # Known ATS hosts — auto-apply priority queue
 ATS_URL_MARKERS: tuple[str, ...] = (
@@ -103,6 +104,13 @@ def _queue_mode() -> str:
     return str(DEFAULTS.get("apply_queue_mode", "all_tailored"))
 
 
+def priority_boards_only_enabled() -> bool:
+    import os
+
+    raw = os.environ.get("APPLYPILOT_PRIORITY_BOARDS_ONLY", "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 def classify_apply_target(
     job: dict,
     *,
@@ -129,7 +137,18 @@ def classify_apply_target(
     apply_url = (raw_app or raw_url or "").strip()
     if apply_url and not raw_app:
         job = {**job, "application_url": apply_url}
+    url_blob = (job.get("url") or "") + (job.get("application_url") or "")
     title = job.get("title")
+
+    if priority_boards_only_enabled() and not job_is_priority_board(job):
+        return EligibilityResult(ApplyDecision.SKIP_PERMANENT, "non_priority_board")
+
+    # LinkedIn is marked manual in config/sites.yaml, but some LinkedIn job pages
+    # expose an "Apply on company website" button that leads to an external ATS.
+    # Let those flow through the apply agent, which can click out to the company
+    # site and then apply there.
+    if "linkedin.com/jobs" in url_blob.lower():
+        return EligibilityResult(ApplyDecision.ELIGIBLE, "linkedin_company_website_flow")
 
     if is_manual_ats(apply_url):
         return EligibilityResult(ApplyDecision.MANUAL, "manual ATS")
@@ -179,9 +198,10 @@ def ats_priority_sql_case() -> str:
     """SQL CASE expression: lower sort key = higher priority."""
     parts = ["CASE"]
     parts.append(
-        "WHEN LOWER(COALESCE(site, '')) = 'naukri' "
-        "OR LOWER(COALESCE(url, '')) LIKE '%naukri.com%' "
-        "OR LOWER(COALESCE(application_url, '')) LIKE '%naukri.com%' THEN 0"
+        "WHEN LOWER(COALESCE(site, '')) = 'linkedin' "
+        "OR LOWER(COALESCE(site, '')) = 'linkedin.com' "
+        "OR LOWER(COALESCE(url, '')) LIKE '%linkedin.com%' "
+        "OR LOWER(COALESCE(application_url, '')) LIKE '%linkedin.com%' THEN 0"
     )
     parts.append(
         "WHEN LOWER(COALESCE(site, '')) = 'wellfound' "
@@ -199,6 +219,23 @@ def ats_priority_sql_case() -> str:
     )
     parts.append("ELSE 4 END")
     return " ".join(parts)
+
+
+def priority_boards_only_where_clause() -> str:
+    """Extra WHERE fragment: LinkedIn and Wellfound jobs only."""
+    return (
+        "AND ("
+        "LOWER(COALESCE(site, '')) = 'linkedin' "
+        "OR LOWER(COALESCE(site, '')) = 'linkedin.com' "
+        "OR LOWER(COALESCE(url, '')) LIKE '%linkedin.com%' "
+        "OR LOWER(COALESCE(application_url, '')) LIKE '%linkedin.com%' "
+        "OR LOWER(COALESCE(site, '')) = 'wellfound' "
+        "OR LOWER(COALESCE(url, '')) LIKE '%wellfound.com%' "
+        "OR LOWER(COALESCE(application_url, '')) LIKE '%wellfound.com%' "
+        "OR LOWER(COALESCE(url, '')) LIKE '%angel.co%' "
+        "OR LOWER(COALESCE(application_url, '')) LIKE '%angel.co%'"
+        ")"
+    )
 
 
 def ats_only_where_clause() -> str:

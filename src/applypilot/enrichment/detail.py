@@ -17,7 +17,7 @@ import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse, parse_qs, unquote
 
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
@@ -126,6 +126,7 @@ def resolve_all_urls(conn: sqlite3.Connection) -> dict:
             app_resolved += 1
 
     backfilled = backfill_application_urls_from_descriptions(conn)
+    linkedin_backfilled = backfill_linkedin_company_website_apply_urls(conn, limit=200)
     conn.commit()
     return {
         "resolved": resolved,
@@ -133,6 +134,7 @@ def resolve_all_urls(conn: sqlite3.Connection) -> dict:
         "already_absolute": already_absolute,
         "app_resolved": app_resolved,
         "app_backfilled": backfilled,
+        "linkedin_company_apply_backfilled": linkedin_backfilled,
     }
 
 
@@ -159,6 +161,60 @@ def backfill_application_urls_from_descriptions(conn: sqlite3.Connection) -> int
             (extracted, url),
         )
         updated += 1
+    return updated
+
+
+def backfill_linkedin_company_website_apply_urls(
+    conn: sqlite3.Connection,
+    *,
+    limit: int = 200,
+) -> int:
+    """For LinkedIn jobs, store 'Apply to company website' URL when present.
+
+    This enables the apply worker to apply on the external ATS instead of skipping
+    as manual LinkedIn.
+    """
+    rows = conn.execute(
+        """
+        SELECT url, application_url, site
+        FROM jobs
+        WHERE LOWER(COALESCE(url, '')) LIKE '%linkedin.com/jobs/view%'
+          AND (application_url IS NULL OR application_url = '' OR LOWER(application_url) LIKE '%linkedin.com%')
+        LIMIT ?
+        """,
+        (int(limit),),
+    ).fetchall()
+    if not rows:
+        return 0
+
+    updated = 0
+    t0 = time.time()
+    max_seconds = 45.0
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(user_agent=UA)
+        page = context.new_page()
+        for url, _app, _site in rows:
+            if (time.time() - t0) > max_seconds:
+                break
+            try:
+                page.goto(str(url), timeout=15000, wait_until="domcontentloaded")
+                try:
+                    page.wait_for_load_state("networkidle", timeout=2500)
+                except Exception:
+                    pass
+                company_apply = extract_linkedin_company_website_apply_url(page)
+                if not company_apply:
+                    continue
+                conn.execute(
+                    "UPDATE jobs SET application_url = ? WHERE url = ?",
+                    (company_apply, url),
+                )
+                updated += 1
+            except Exception:
+                continue
+        conn.commit()
+        browser.close()
     return updated
 
 
@@ -360,6 +416,10 @@ DESCRIPTION_SELECTORS = [
 
 def extract_apply_url_deterministic(page) -> str | None:
     """Try known CSS patterns for apply buttons/links."""
+    company_apply = extract_linkedin_company_website_apply_url(page)
+    if company_apply:
+        return company_apply
+
     for sel in APPLY_SELECTORS:
         try:
             el = page.query_selector(sel)
@@ -387,6 +447,67 @@ def extract_apply_url_deterministic(page) -> str | None:
     except Exception:
         pass
 
+    return None
+
+
+def _decode_linkedin_redirect(url: str) -> str | None:
+    """Decode LinkedIn redirect URLs to the underlying target when present."""
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return None
+    if "linkedin.com" not in (parsed.netloc or ""):
+        return None
+    qs = parse_qs(parsed.query or "")
+    raw = None
+    for key in ("url", "redirect", "target"):
+        if key in qs and qs[key]:
+            raw = qs[key][0]
+            break
+    if not raw:
+        return None
+    decoded = unquote(raw).strip()
+    if decoded.startswith("http://") or decoded.startswith("https://"):
+        return decoded
+    return None
+
+
+def extract_linkedin_company_website_apply_url(page) -> str | None:
+    """Prefer 'Apply to company website' over LinkedIn Easy Apply when present."""
+    try:
+        current = str(page.url or "")
+    except Exception:
+        current = ""
+    if "linkedin.com/jobs" not in current and "linkedin.com" not in current:
+        return None
+
+    # LinkedIn usually renders one or two primary apply buttons; prefer any that mention company website.
+    candidates = []
+    for sel in [
+        "a[href]",
+        "button",
+    ]:
+        try:
+            for el in page.query_selector_all(sel):
+                text = (el.inner_text() or "").strip().lower()
+                if not text:
+                    continue
+                if "apply" not in text:
+                    continue
+                if "company website" not in text and "company site" not in text:
+                    continue
+                href = el.get_attribute("href")
+                if not href and sel == "button":
+                    href = el.evaluate("el => el.closest('a')?.href || el.parentElement?.querySelector('a')?.href || null")
+                if href:
+                    candidates.append(href)
+        except Exception:
+            continue
+
+    for href in candidates:
+        if href.startswith(("http://", "https://")):
+            decoded = _decode_linkedin_redirect(href)
+            return decoded or href
     return None
 
 

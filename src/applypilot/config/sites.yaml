@@ -71,13 +71,13 @@ base_urls:
   "Greylock Portfolio Jobs": "https://greylock.com"
   "Index Ventures Startup Jobs": "https://www.indexventures.com"
   "First Round Talent": "https://firstround.com"
-  "Naukri": "https://www.naukri.com"
+  "LinkedIn": "https://www.linkedin.com"
   "Wellfound": "https://wellfound.com"
 
 sites:
   # ── Priority boards (discover + apply first) ───────────────────────────
-  - name: "Naukri"
-    url: "https://www.naukri.com/jobs?keywords={query_encoded}&location={location_encoded}"
+  - name: "LinkedIn"
+    url: "https://www.linkedin.com/jobs/search/?keywords={query_encoded}&location={location_encoded}"
     type: search
 
   - name: "Wellfound"

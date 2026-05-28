@@ -210,3 +210,167 @@ class ReferralActionResponse(BaseModel):
     action: str
     results: list[ReferralActionResult]
     summary: dict[str, Any] = Field(default_factory=dict)
+
+
+# --- Home overview (GET /api/overview) ---------------------------------
+
+
+class OverviewRunBandStep(BaseModel):
+    """One pipeline stepper segment for the Mission Control run band."""
+
+    id: str
+    label: str
+    done: int | None = None
+    pending: int | None = None
+    total: int | None = None
+    percent: int | None = None
+    detail: str | None = None
+    count_text: str | None = None
+    state: str = "pending"  # done | active | pending
+
+
+class OverviewRunBandMetrics(BaseModel):
+    throughput_per_min: float | None = None
+    score_pass_rate_percent: float | None = None
+    run_cost_usd: float | None = None
+    error_count: int = 0
+    eta_to_apply_text: str | None = None
+    score_pass_rate_delta_text: str | None = None
+    throughput_delta_text: str | None = None
+    run_cost_delta_text: str | None = None
+    error_rate_text: str | None = None
+
+
+class OverviewRunBand(BaseModel):
+    status: str
+    title: str
+    subtitle: str
+    run_id: str | None = None
+    run_type: str | None = None
+    current_stage: str | None = None
+    dry_run: bool = False
+    steps: list[OverviewRunBandStep] = Field(default_factory=list)
+    metrics: OverviewRunBandMetrics = Field(default_factory=OverviewRunBandMetrics)
+
+
+class OverviewKpis(BaseModel):
+    applied_30d: int = 0
+    applied_30d_delta_text: str | None = None
+    needs_verify: int = 0
+    ready_to_apply: int = 0
+    ready_to_apply_subtitle: str | None = None
+    ready_to_apply_delta_text: str | None = None
+    pipeline_total: int = 0
+    pipeline_total_subtitle: str | None = None
+    spend_today_usd: float = 0.0
+    spend_cap_usd: float = 50.0
+    spend_today_subtitle: str | None = None
+    spend_today_delta_text: str | None = None
+    callback_rate_14d: float | None = None
+    callback_rate_14d_delta_text: str | None = None
+
+
+class OverviewFunnelRow(BaseModel):
+    id: str
+    label: str
+    count: int = 0
+    rate_percent: float | None = None
+
+
+class OverviewScoreDistribution(BaseModel):
+    buckets: list[ScoreDistributionItem] = Field(default_factory=list)
+    mean: float | None = None
+    stdev: float | None = None
+    total_scored: int = 0
+    apply_eligible_count: int = 0
+
+
+class OverviewOpportunityRow(BaseModel):
+    url: str
+    title: str | None = None
+    site: str | None = None
+    location: str | None = None
+    salary: str | None = None
+    fit_score: int | None = None
+    apply_status: str | None = None
+    activity_at: str | None = None
+
+
+class OverviewSourceRow(BaseModel):
+    source: str
+    discovered: int = 0
+    passed_filter: int = 0
+    scored_ge7: int = 0
+    tailored: int = 0
+    efficiency: float = 0.0
+
+
+class DashboardActivityItem(BaseModel):
+    id: int
+    ts: str
+    level: str
+    stage: str | None = None
+    message: str
+    run_id: str | None = None
+    job_url: str | None = None
+    meta: dict[str, Any] = Field(default_factory=dict)
+
+
+class DashboardActivityListResponse(BaseModel):
+    events: list[DashboardActivityItem] = Field(default_factory=list)
+
+
+class OverviewCaps(BaseModel):
+    spend_today_usd: float = 0.0
+    spend_cap_usd: float = 50.0
+    apply_today: int = 0
+    apply_cap: int = 60
+    tailor_today: int = 0
+    tailor_cap: int = 80
+    llm_provider_hint: str | None = None
+    llm_spend_subtitle: str | None = None
+    apply_subtitle: str | None = None
+    tailor_subtitle: str | None = None
+
+
+class OverviewWorkerSnapshot(BaseModel):
+    worker_id: int
+    status: str | None = None
+    detail: str | None = None
+    progress_percent: int | None = None
+    updated_at: str | None = None
+
+
+class OverviewFooter(BaseModel):
+    app_version: str
+    generated_at: str
+    build_ms: float = 0.0
+    right_text: str | None = None
+
+
+class OverviewResponse(BaseModel):
+    runband: OverviewRunBand
+    kpis: OverviewKpis
+    funnel_subtitle: str | None = None
+    funnel_meta: str | None = None
+    funnel: list[OverviewFunnelRow] = Field(default_factory=list)
+    score_distribution: OverviewScoreDistribution = Field(
+        default_factory=OverviewScoreDistribution
+    )
+    score_distribution_subtitle: str | None = None
+    score_distribution_meta: str | None = None
+    top_opportunities: list[OverviewOpportunityRow] = Field(default_factory=list)
+    top_opportunities_subtitle: str | None = None
+    top_opportunities_chip_counts: dict[str, int] = Field(default_factory=dict)
+    sources: list[OverviewSourceRow] = Field(default_factory=list)
+    activity: list[DashboardActivityItem] = Field(default_factory=list)
+    activity_subtitle: str | None = None
+    caps: OverviewCaps = Field(default_factory=OverviewCaps)
+    workers: list[OverviewWorkerSnapshot] = Field(default_factory=list)
+    workers_subtitle: str | None = None
+    footer: OverviewFooter
+
+
+class WorkersResponse(BaseModel):
+    workers: list[OverviewWorkerSnapshot] = Field(default_factory=list)
+    run_id: str | None = None

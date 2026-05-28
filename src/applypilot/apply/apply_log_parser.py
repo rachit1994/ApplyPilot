@@ -301,6 +301,40 @@ def extract_result_status(log_text: str) -> str | None:
     return None
 
 
+_URL_LINE = re.compile(r"https?://\S+", flags=re.IGNORECASE)
+
+
+def extract_first_external_apply_url_from_log(log_text: str) -> str | None:
+    """Heuristic: for LinkedIn-origin jobs, capture the first non-LinkedIn URL visited.
+
+    This is used to persist the company ATS link even when the agent forgets to
+    include company_apply_url in RESULT_JSON (common when it hits an auth wall).
+    """
+    header_re = re.compile(r"^\[\d{4}-\d{2}-\d{2} .*] .* @ (.+)$")
+    in_linkedin = False
+    last_external: str | None = None
+
+    for raw in log_text.splitlines():
+        line = raw.strip()
+        header = header_re.match(line)
+        if header:
+            in_linkedin = header.group(1).strip().lower() == "linkedin"
+            continue
+        if not in_linkedin:
+            continue
+        if "browser_navigate" not in line:
+            continue
+        match = _URL_LINE.search(line)
+        if not match:
+            continue
+        url = match.group(0)
+        if "linkedin.com" in url.lower():
+            continue
+        last_external = url
+
+    return last_external
+
+
 def _verification_summary(
     log_text: str,
     *,

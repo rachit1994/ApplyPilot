@@ -11,6 +11,12 @@
 - Jobs table on the dashboard should default to newest-first with dates visible on each row.
 - Want a dedicated dashboard Applications view for jobs actually submitted via apply, including what was filled on the form and any apply errors.
 - When expanding discover, prioritize adding many programmatic sources first; use AI browser discover (reuse apply Chrome + Claude stack) only for sites explicitly marked `mode: agent` in `sites.yaml`.
+- For UI redesign, overhaul, or frontend refactoring tasks:
+  - Do not use highly fragmented parallel background agents that edit overlapping files. Have a single integrator or execute page-level changes sequentially to avoid drift and merge conflicts.
+  - First execute a complete, exact CSS parity pass (e.g., matching the style classes in `index.css` to the reference file like `finalized.html`) before implementing page layouts.
+  - Ensure visual acceptance and high-fidelity parity with the reference design specs by verifying the results visually in a browser (e.g., running `applypilot serve` and reviewing pages/routes/logs/details).
+  - Never trade off performance or regress existing behavior (such as virtualization on large lists/tables like Jobs, RunPlanModal run controls, active/real KPIs, auto-scrolling) for aesthetic updates.
+  - Keep database, API/backend logic, and test files out of scope for a UI-only brief unless they are strictly required to resolve compiler errors or support type definitions.
 
 ## Database safety (non-negotiable)
 

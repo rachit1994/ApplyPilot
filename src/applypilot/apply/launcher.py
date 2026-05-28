@@ -34,6 +34,8 @@ from applypilot.apply.eligibility import (
     ats_only_where_clause,
     ats_priority_sql_case,
     classify_apply_target,
+    priority_boards_only_enabled,
+    priority_boards_only_where_clause,
 )
 from applypilot.apply.chrome import (
     launch_chrome, cleanup_worker, kill_all_chrome,
@@ -140,6 +142,8 @@ def _acquirable_jobs_where(
     *,
     min_score: int | None = None,
     ats_only: bool = False,
+    priority_boards_only: bool = False,
+    include_untailored: bool = False,
 ) -> tuple[str, list]:
     """SQL WHERE fragment matching acquire_job queue selection (before eligibility loop)."""
     blocked_sites, blocked_patterns = _load_blocked()
@@ -161,8 +165,13 @@ def _acquirable_jobs_where(
         url_clauses = " ".join("AND url NOT LIKE ?" for _ in blocked_patterns)
         params.extend(blocked_patterns)
     ats_clause = ats_only_where_clause() if ats_only else ""
+    boards_clause = ""
+    if priority_boards_only or priority_boards_only_enabled():
+        boards_clause = priority_boards_only_where_clause()
+    tailored_clause = "" if include_untailored else "AND tailored_resume_path IS NOT NULL"
     where = f"""
-        WHERE tailored_resume_path IS NOT NULL
+        WHERE 1=1
+          {tailored_clause}
           AND applied_at IS NULL
           AND (apply_status IS NULL OR apply_status = 'failed')
           AND (
@@ -174,6 +183,7 @@ def _acquirable_jobs_where(
           {site_clause}
           {url_clauses}
           {ats_clause}
+          {boards_clause}
     """
     return where, params
 
@@ -182,9 +192,16 @@ def count_acquirable_jobs(
     *,
     min_score: int | None = None,
     ats_only: bool = False,
+    priority_boards_only: bool = False,
+    include_untailored: bool = False,
 ) -> int:
     """Count jobs matching acquire_job SQL filters (eligibility may skip more at runtime)."""
-    where, params = _acquirable_jobs_where(min_score=min_score, ats_only=ats_only)
+    where, params = _acquirable_jobs_where(
+        min_score=min_score,
+        ats_only=ats_only,
+        priority_boards_only=priority_boards_only,
+        include_untailored=include_untailored,
+    )
     conn = get_connection()
     return int(conn.execute(f"SELECT COUNT(*) FROM jobs {where}", params).fetchone()[0])
 
@@ -227,10 +244,17 @@ def format_apply_queue_hint(
     *,
     min_score: int | None = None,
     ats_only: bool = False,
+    priority_boards_only: bool = False,
+    include_untailored: bool = False,
 ) -> str:
     """Human-readable hint when apply cannot start."""
     snap = apply_queue_snapshot()
-    acquirable = count_acquirable_jobs(min_score=min_score, ats_only=ats_only)
+    acquirable = count_acquirable_jobs(
+        min_score=min_score,
+        ats_only=ats_only,
+        priority_boards_only=priority_boards_only,
+        include_untailored=include_untailored,
+    )
     lines = [
         f"Acquirable now (score/min filters): {acquirable}",
         f"Tailored, not applied: {snap['tailored_pending']}",
@@ -270,7 +294,9 @@ def acquire_job(
     min_score: int | None = None,
     worker_id: int = 0,
     ats_only: bool = False,
+    priority_boards_only: bool = False,
     min_experience_years: int | None = None,
+    include_untailored: bool = False,
 ) -> dict | None:
     """Atomically acquire the next job to apply to.
 
@@ -295,23 +321,27 @@ def acquire_job(
         while True:
             if target_url:
                 like = f"%{target_url.split('?')[0].rstrip('/')}%"
+                tailored_clause = "" if include_untailored else "AND tailored_resume_path IS NOT NULL"
                 row = conn.execute("""
                     SELECT url, title, site, application_url, tailored_resume_path,
                            fit_score, location, full_description, cover_letter_path, salary,
                            strategy
                     FROM jobs
                     WHERE (url = ? OR application_url = ? OR application_url LIKE ? OR url LIKE ?)
-                      AND tailored_resume_path IS NOT NULL
+                      {tailored_clause}
                       AND applied_at IS NULL
                       AND (
                         apply_status IS NULL
                         OR apply_status NOT IN ('in_progress', 'applied', 'submitted_unverified')
                       )
                     LIMIT 1
-                """, (target_url, target_url, like, like)).fetchone()
+                """.format(tailored_clause=tailored_clause), (target_url, target_url, like, like)).fetchone()
             else:
                 where, params = _acquirable_jobs_where(
-                    min_score=min_score, ats_only=ats_only
+                    min_score=min_score,
+                    ats_only=ats_only,
+                    priority_boards_only=priority_boards_only,
+                    include_untailored=include_untailored,
                 )
                 priority = ats_priority_sql_case()
                 row = conn.execute(f"""
@@ -342,7 +372,9 @@ def acquire_job(
                 conn.execute("BEGIN IMMEDIATE")
                 continue
 
-            resume_path = job_row.get("tailored_resume_path")
+            resume_path = job_row.get("tailored_resume_path") or (
+                str(config.RESUME_PDF_PATH) if include_untailored else None
+            )
             try:
                 prompt_mod.ensure_resume_pdf(resume_path)
             except (ValueError, OSError) as exc:
@@ -379,12 +411,17 @@ def mark_result(url: str, status: str, error: str | None = None,
     """Update a job's apply status in the database."""
     import json
 
-    from applypilot.apply.apply_log_parser import form_filled_from_log_text
+    from applypilot.apply.apply_log_parser import (
+        form_filled_from_log_text,
+        extract_result_json,
+        extract_first_external_apply_url_from_log,
+    )
 
     conn = get_connection()
     now = datetime.now(timezone.utc).isoformat()
     log_value = str(log_path) if log_path else None
     form_json: str | None = None
+    company_apply_url: str | None = None
     if log_path:
         path = Path(log_path)
         if path.is_file():
@@ -393,9 +430,21 @@ def mark_result(url: str, status: str, error: str | None = None,
             except OSError:
                 log_text = ""
             if log_text:
+                result_json = extract_result_json(log_text) or {}
+                raw_company = str(result_json.get("company_apply_url") or "").strip()
+                if raw_company.startswith(("http://", "https://")):
+                    company_apply_url = raw_company
+                if not company_apply_url:
+                    company_apply_url = extract_first_external_apply_url_from_log(log_text)
                 record = form_filled_from_log_text(log_text)
                 if record:
                     form_json = json.dumps(record, ensure_ascii=False)
+
+    if company_apply_url:
+        conn.execute(
+            "UPDATE jobs SET application_url = COALESCE(?, application_url) WHERE url = ?",
+            (company_apply_url, url),
+        )
 
     if status == "applied":
         conn.execute("""
@@ -480,7 +529,12 @@ def gen_prompt(target_url: str, min_score: int = 7,
     Returns:
         Path to the generated prompt file, or None if no job found.
     """
-    job = acquire_job(target_url=target_url, min_score=min_score, worker_id=worker_id)
+    job = acquire_job(
+        target_url=target_url,
+        min_score=min_score,
+        worker_id=worker_id,
+        include_untailored=include_untailored,
+    )
     if not job:
         return None
 
@@ -1023,6 +1077,27 @@ def run_job(job: dict, port: int, worker_id: int = 0,
         job_log.write_text(output, encoding="utf-8")
 
         if stats:
+            try:
+                from applypilot.database import record_llm_usage
+
+                record_llm_usage(
+                    provider="anthropic",
+                    model=model,
+                    operation="apply",
+                    input_tokens=int(stats.get("input_tokens") or 0),
+                    output_tokens=int(stats.get("output_tokens") or 0),
+                    cache_read_tokens=int(stats.get("cache_read") or 0),
+                    cache_create_tokens=int(stats.get("cache_create") or 0),
+                    estimated=False,
+                    cost_usd=float(stats.get("cost_usd") or 0.0),
+                    metadata={
+                        "worker_id": worker_id,
+                        "job_url": job.get("url"),
+                        "site": job.get("site"),
+                    },
+                )
+            except Exception:
+                logger.debug("Failed to record apply cost telemetry", exc_info=True)
             cost = stats.get("cost_usd", 0)
             ws = get_state(worker_id)
             prev_cost = ws.total_cost if ws else 0.0
@@ -1226,6 +1301,7 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
                 keep_open_seconds: float = 0.0,
                 confirm_submit: bool = False,
                 ats_only: bool = False,
+                priority_boards_only: bool = False,
                 min_experience_years: int | None = None) -> tuple[int, int]:
     """Run jobs sequentially until limit is reached or queue is empty.
 
@@ -1264,7 +1340,9 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
             min_score=min_score,
             worker_id=worker_id,
             ats_only=ats_only,
+            priority_boards_only=priority_boards_only,
             min_experience_years=min_experience_years,
+            include_untailored=include_untailored,
         )
         if not job:
             if quota_retry_until and not continuous:
@@ -1439,7 +1517,9 @@ def main(limit: int = 1, target_url: str | None = None,
          pace_seconds: float = 0.0, keep_open_seconds: float = 0.0,
          confirm_submit: bool = False, plain: bool = False,
          ats_only: bool = False,
-         min_experience_years: int | None = None) -> None:
+         priority_boards_only: bool = False,
+         min_experience_years: int | None = None,
+         include_untailored: bool = False) -> None:
     """Launch the apply pipeline.
 
     Args:
@@ -1480,11 +1560,21 @@ def main(limit: int = 1, target_url: str | None = None,
 
     if not continuous and not target_url:
         acquirable = count_acquirable_jobs(
-            min_score=min_score, ats_only=ats_only
+            min_score=min_score,
+            ats_only=ats_only,
+            priority_boards_only=priority_boards_only,
+            include_untailored=include_untailored,
         )
         if acquirable == 0:
             console.print("[red bold]No jobs available to apply.[/red bold]")
-            console.print(format_apply_queue_hint(min_score=min_score, ats_only=ats_only))
+            console.print(
+                format_apply_queue_hint(
+                    min_score=min_score,
+                    ats_only=ats_only,
+                    priority_boards_only=priority_boards_only,
+                    include_untailored=include_untailored,
+                )
+            )
             sys.exit(1)
 
     if continuous:
@@ -1541,6 +1631,7 @@ def main(limit: int = 1, target_url: str | None = None,
                 keep_open_seconds=keep_open_seconds,
                 confirm_submit=confirm_submit,
                 ats_only=ats_only,
+                priority_boards_only=priority_boards_only,
                 min_experience_years=min_experience_years,
             )
 
@@ -1568,6 +1659,7 @@ def main(limit: int = 1, target_url: str | None = None,
                     keep_open_seconds=keep_open_seconds,
                     confirm_submit=confirm_submit,
                     ats_only=ats_only,
+                    priority_boards_only=priority_boards_only,
                     min_experience_years=min_experience_years,
                 ): i
                 for i in range(workers)

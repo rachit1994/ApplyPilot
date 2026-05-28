@@ -34,6 +34,7 @@ export function useHomeRuns() {
   const [applyDryRun, setApplyDryRun] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  const [pipelineStartRequested, setPipelineStartRequested] = useState(false);
   const eventsRef = useRef(events);
 
   useEffect(() => {
@@ -52,13 +53,47 @@ export function useHomeRuns() {
       .then((run) => {
         if (!run) return;
         setActiveRun(run);
-        if (run.status !== "running") {
-          fetchRunEventsHistory(run.id)
-            .then(setEvents)
-            .catch(() => {});
-        }
+        fetchRunEventsHistory(run.id)
+          .then((history) => {
+            setEvents((prev) => {
+              if (prev.length === 0) return history;
+              const seen = new Set(prev.map((e) => e.id));
+              const merged = [...prev];
+              for (const e of history) {
+                if (e.id != null && seen.has(e.id)) continue;
+                merged.push(e);
+              }
+              merged.sort((a, b) => (a.id ?? 0) - (b.id ?? 0));
+              return merged.length > 2000 ? merged.slice(-1500) : merged;
+            });
+          })
+          .catch(() => {});
       })
       .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const tick = () => {
+      fetchActiveRun()
+        .then((run) => {
+          setActiveRun((prev) => {
+            if (!run) {
+              return prev?.status === "running" ? null : prev;
+            }
+            if (
+              prev?.id === run.id &&
+              prev.status === run.status &&
+              prev.current_stage === run.current_stage
+            ) {
+              return prev;
+            }
+            return run;
+          });
+        })
+        .catch(() => {});
+    };
+    const id = window.setInterval(tick, 3000);
+    return () => window.clearInterval(id);
   }, []);
 
   const refreshRun = useCallback((runId: string) => {
@@ -86,6 +121,9 @@ export function useHomeRuns() {
           queryClient.invalidateQueries({ queryKey: ["stats"] });
           queryClient.invalidateQueries({ queryKey: ["jobs"] });
         }
+        if (event.event_type === "log" || event.event_type === "stage_error") {
+          queryClient.invalidateQueries({ queryKey: ["overview"] });
+        }
         if (event.event_type === "run_finished") {
           refreshRun(activeRun.id);
           queryClient.invalidateQueries({ queryKey: ["runs", "active"] });
@@ -98,6 +136,13 @@ export function useHomeRuns() {
 
   const isRunning = activeRun?.status === "running";
   const runKind = activeRun?.run_type ?? null;
+
+  useEffect(() => {
+    if (!pipelineStartRequested) return;
+    if (activeRun?.run_type === "pipeline" && activeRun.status === "running") {
+      setPipelineStartRequested(false);
+    }
+  }, [activeRun?.run_type, activeRun?.status, pipelineStartRequested]);
 
   const toggleStage = useCallback((stage: PipelineStageId) => {
     setSelectedStages((prev) => {
@@ -114,6 +159,7 @@ export function useHomeRuns() {
       return;
     }
     setError(null);
+    setPipelineStartRequested(true);
     setStarting(true);
     setEvents([]);
     try {
@@ -127,8 +173,12 @@ export function useHomeRuns() {
       });
       setActiveRun(run);
       queryClient.invalidateQueries({ queryKey: ["runs"] });
+      queryClient.invalidateQueries({ queryKey: ["runs", "active"] });
+      queryClient.invalidateQueries({ queryKey: ["overview"] });
+      queryClient.invalidateQueries({ queryKey: ["stats"] });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Pipeline start failed");
+      setPipelineStartRequested(false);
     } finally {
       setStarting(false);
     }
@@ -183,10 +233,14 @@ export function useHomeRuns() {
       const run = await stopRun(activeRun.id);
       setActiveRun(run);
       refreshRun(run.id);
+      queryClient.invalidateQueries({ queryKey: ["runs"] });
+      queryClient.invalidateQueries({ queryKey: ["runs", "active"] });
+      queryClient.invalidateQueries({ queryKey: ["overview"] });
+      queryClient.invalidateQueries({ queryKey: ["stats"] });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Stop failed");
     }
-  }, [activeRun?.id, refreshRun]);
+  }, [activeRun?.id, queryClient, refreshRun]);
 
   const pipelineCli = useMemo(() => {
     const parts = ["applypilot", "run", ...selectedStages];
@@ -217,6 +271,7 @@ export function useHomeRuns() {
     runKind,
     error,
     starting,
+    pipelineStartRequested,
     stageOrder,
     selectedStages,
     toggleStage,

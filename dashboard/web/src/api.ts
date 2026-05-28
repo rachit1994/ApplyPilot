@@ -183,6 +183,152 @@ export type SourceStats = {
   efficiency: number;
 };
 
+export type OverviewRunBandStep = {
+  id: string;
+  label: string;
+  done: number | null;
+  pending: number | null;
+  total: number | null;
+  percent: number | null;
+  detail: string | null;
+  count_text?: string | null;
+  state: "done" | "active" | "pending";
+};
+
+export type OverviewRunBand = {
+  status: string;
+  title: string;
+  subtitle: string;
+  run_id: string | null;
+  run_type: string | null;
+  current_stage: string | null;
+  dry_run: boolean;
+  steps: OverviewRunBandStep[];
+  metrics: {
+    throughput_per_min: number | null;
+    score_pass_rate_percent?: number | null;
+    run_cost_usd: number | null;
+    error_count: number;
+    eta_to_apply_text?: string | null;
+    score_pass_rate_delta_text?: string | null;
+    throughput_delta_text?: string | null;
+    run_cost_delta_text?: string | null;
+    error_rate_text?: string | null;
+  };
+};
+
+export type OverviewKpis = {
+  applied_30d: number;
+  applied_30d_delta_text?: string | null;
+  needs_verify: number;
+  ready_to_apply: number;
+  ready_to_apply_subtitle?: string | null;
+  ready_to_apply_delta_text?: string | null;
+  pipeline_total: number;
+  pipeline_total_subtitle?: string | null;
+  spend_today_usd: number;
+  spend_cap_usd: number;
+  spend_today_subtitle?: string | null;
+  spend_today_delta_text?: string | null;
+  callback_rate_14d: number | null;
+  callback_rate_14d_delta_text?: string | null;
+};
+
+export type OverviewFunnelRow = {
+  id: string;
+  label: string;
+  count: number;
+  rate_percent: number | null;
+};
+
+export type OverviewScoreDistribution = {
+  buckets: { score: number; count: number }[];
+  mean: number | null;
+  stdev: number | null;
+  total_scored: number;
+  apply_eligible_count: number;
+};
+
+export type OverviewOpportunity = {
+  url: string;
+  title: string | null;
+  site: string | null;
+  location: string | null;
+  salary: string | null;
+  fit_score: number | null;
+  apply_status: string | null;
+  activity_at: string | null;
+};
+
+export type OverviewSourceRow = {
+  source: string;
+  discovered: number;
+  passed_filter: number;
+  scored_ge7: number;
+  tailored: number;
+  efficiency: number;
+};
+
+export type DashboardActivityItem = {
+  id: number;
+  ts: string;
+  level: string;
+  stage: string | null;
+  message: string;
+  run_id: string | null;
+  job_url: string | null;
+  meta: Record<string, unknown>;
+};
+
+export type OverviewCaps = {
+  spend_today_usd: number;
+  spend_cap_usd: number;
+  apply_today: number;
+  apply_cap: number;
+  tailor_today: number;
+  tailor_cap: number;
+  llm_provider_hint?: string | null;
+  llm_spend_subtitle?: string | null;
+  apply_subtitle?: string | null;
+  tailor_subtitle?: string | null;
+};
+
+export type WorkerSnapshot = {
+  worker_id: number;
+  status: string | null;
+  detail: string | null;
+  progress_percent: number | null;
+  updated_at: string | null;
+};
+
+export type OverviewFooter = {
+  app_version: string;
+  generated_at: string;
+  build_ms: number;
+  right_text?: string | null;
+};
+
+export type OverviewResponse = {
+  runband: OverviewRunBand;
+  kpis: OverviewKpis;
+  funnel_subtitle?: string | null;
+  funnel_meta?: string | null;
+  funnel: OverviewFunnelRow[];
+  score_distribution: OverviewScoreDistribution;
+  score_distribution_subtitle?: string | null;
+  score_distribution_meta?: string | null;
+  top_opportunities: OverviewOpportunity[];
+  top_opportunities_subtitle?: string | null;
+  top_opportunities_chip_counts?: Record<string, number>;
+  sources: OverviewSourceRow[];
+  activity: DashboardActivityItem[];
+  activity_subtitle?: string | null;
+  caps: OverviewCaps;
+  workers: WorkerSnapshot[];
+  workers_subtitle?: string | null;
+  footer: OverviewFooter;
+};
+
 export type HealthResponse = {
   status: string;
   app_dir?: string;
@@ -217,6 +363,12 @@ export async function fetchStats(): Promise<Stats> {
   if (!res.ok) throw new Error("Failed to load stats");
   const data = await res.json();
   return data.stats;
+}
+
+export async function fetchOverview(): Promise<OverviewResponse> {
+  const res = await fetch(`${API}/overview`);
+  if (!res.ok) throw new Error("Failed to load overview");
+  return res.json();
 }
 
 export async function fetchSourceStats(days = 7): Promise<SourceStats[]> {
