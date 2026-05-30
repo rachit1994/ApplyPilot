@@ -374,3 +374,92 @@ class OverviewResponse(BaseModel):
 class WorkersResponse(BaseModel):
     workers: list[OverviewWorkerSnapshot] = Field(default_factory=list)
     run_id: str | None = None
+
+
+# --- LLM / Claude usage (GET /api/llm-usage) ---------------------------
+
+
+class LlmUsageBreakdownRow(BaseModel):
+    key: str
+    calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_create_tokens: int = 0
+    cost_usd: float = 0.0
+
+
+class LlmUsageDailyRow(BaseModel):
+    day: str
+    calls: int = 0
+    cost_usd: float = 0.0
+    input_tokens: int = 0
+    cache_read_tokens: int = 0
+
+
+class LlmUsageEventRow(BaseModel):
+    id: int
+    provider: str
+    model: str
+    operation: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_create_tokens: int = 0
+    estimated: bool = False
+    cost_usd: float = 0.0
+    created_at: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class LlmUsageMonthlyLedgerRow(BaseModel):
+    provider: str
+    model: str
+    operation: str
+    calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_create_tokens: int = 0
+    estimated_calls: int = 0
+    cost_usd: float = 0.0
+
+
+class LlmUsageSummary(BaseModel):
+    claude_today_usd: float = 0.0
+    claude_month_usd: float = 0.0
+    all_providers_today_usd: float = 0.0
+    all_providers_month_usd: float = 0.0
+    claude_calls_today: int = 0
+    cache_read_tokens_today: int = 0
+    cache_hit_rate_percent: float | None = None
+
+
+class LlmUsageApplyConfig(BaseModel):
+    primary_model: str = "haiku"
+    fallback_model: str = "sonnet"
+    prompt_slim: bool = True
+    session_reuse: bool = True
+    gmail_mcp: bool = False
+
+
+class LlmUsageQuotaStats(BaseModel):
+    quota_blocked_jobs: int = 0
+    quota_blocked_recent: int = 0
+
+
+class LlmUsageResponse(BaseModel):
+    month: str
+    generated_at: str
+    app_version: str
+    ledger_available: bool = False
+    summary: LlmUsageSummary = Field(default_factory=LlmUsageSummary)
+    apply_config: LlmUsageApplyConfig = Field(default_factory=LlmUsageApplyConfig)
+    by_model_month: list[LlmUsageBreakdownRow] = Field(default_factory=list)
+    by_operation_month: list[LlmUsageBreakdownRow] = Field(default_factory=list)
+    by_operation_today: list[LlmUsageBreakdownRow] = Field(default_factory=list)
+    monthly_ledger: list[LlmUsageMonthlyLedgerRow] = Field(default_factory=list)
+    daily_claude: list[LlmUsageDailyRow] = Field(default_factory=list)
+    recent_events: list[LlmUsageEventRow] = Field(default_factory=list)
+    quota: LlmUsageQuotaStats = Field(default_factory=LlmUsageQuotaStats)
+    providers_month: list[LlmUsageBreakdownRow] = Field(default_factory=list)

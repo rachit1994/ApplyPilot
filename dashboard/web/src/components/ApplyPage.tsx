@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { fetchStats } from "../api";
 import { useApplyRun } from "../hooks/useApplyRun";
 import { summarizeWorkers, workerStatusLabel, workerStatusbarClass } from "../utils/applyRunState";
+import { ClaudeUsagePanel } from "./ClaudeUsagePanel";
 import { LogConsole } from "./LogConsole";
 
 type Props = {
@@ -131,6 +132,8 @@ export function ApplyPage({ unverifiedCount = 0, onOpenApplications }: Props) {
           <div className="kpi__value">{run.watch ? "watch" : run.headless ? "headless" : "visible"}</div>
         </div>
       </section>
+
+      <ClaudeUsagePanel compact className="apply-claude-usage" />
 
       <section className="panel apply-controls" aria-label="Run controls">
         <div className="panel__head">

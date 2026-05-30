@@ -768,3 +768,44 @@ def test_application_detail_backfills_form_filled_from_log(temp_db):
         "SELECT apply_form_filled FROM jobs WHERE url = ?", (job_url,)
     ).fetchone()
     assert row[0] is not None
+
+
+def test_api_llm_usage_anthropic_rollup(temp_db):
+    from datetime import datetime, timezone
+
+    from applypilot.database import init_db, record_llm_usage
+    from applypilot.server.app import create_app
+
+    init_db(temp_db)
+    now = datetime.now(timezone.utc).isoformat()
+    record_llm_usage(
+        provider="anthropic",
+        model="claude-haiku",
+        operation="apply",
+        input_tokens=1000,
+        output_tokens=200,
+        cache_read_tokens=500,
+        cost_usd=0.05,
+        created_at=now,
+        metadata={"prompt_slim": True},
+    )
+    record_llm_usage(
+        provider="openai",
+        model="gpt-4o-mini",
+        operation="score",
+        input_tokens=100,
+        output_tokens=50,
+        cost_usd=0.01,
+        created_at=now,
+    )
+
+    client = TestClient(create_app())
+    r = client.get("/api/llm-usage")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ledger_available"] is True
+    assert body["summary"]["claude_today_usd"] >= 0.05
+    assert any(row["key"] == "claude-haiku" for row in body["by_model_month"])
+    assert body["apply_config"]["primary_model"]
+    assert len(body["recent_events"]) >= 1
+    assert body["recent_events"][0]["provider"] == "anthropic"

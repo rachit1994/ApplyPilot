@@ -19,6 +19,7 @@ from applypilot.server import workers as workers_module
 from applypilot.server import applications as applications_module
 from applypilot.server import referrals as referrals_module
 from applypilot.server import inbox as inbox_module
+from applypilot.server import llm_usage_api
 from applypilot.server.schemas import (
     ApplicationDetailResponse,
     ApplicationRow,
@@ -28,6 +29,7 @@ from applypilot.server.schemas import (
     ApplyErrorSummaryRow,
     JobRow,
     JobsResponse,
+    LlmUsageResponse,
     OverviewResponse,
     ReferralActionRequest,
     ReferralActionResponse,
@@ -87,6 +89,11 @@ def create_app() -> FastAPI:
     @api.get("/overview", response_model=OverviewResponse)
     def api_overview() -> OverviewResponse:
         return OverviewResponse.model_validate(build_overview())
+
+    @api.get("/llm-usage", response_model=LlmUsageResponse)
+    def api_llm_usage(month: str | None = None) -> LlmUsageResponse:
+        payload = llm_usage_api.build_llm_usage_detail(month=month)
+        return LlmUsageResponse.model_validate(payload)
 
     @api.get("/stats", response_model=StatsResponse)
     def api_stats() -> StatsResponse:

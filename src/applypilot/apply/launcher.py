@@ -28,7 +28,7 @@ from rich.live import Live
 from applypilot import config
 from applypilot.config import load_profile
 from applypilot.database import get_connection
-from applypilot.apply import chrome, dashboard, prompt as prompt_mod
+from applypilot.apply import apply_settings, chrome, dashboard, prompt as prompt_mod
 from applypilot.apply.eligibility import (
     ApplyDecision,
     ats_only_where_clause,
@@ -89,26 +89,73 @@ def _resolve_npx_command() -> str:
     return "npx"
 
 
-def _make_mcp_config(cdp_port: int) -> dict:
+def _make_mcp_config(cdp_port: int, *, include_gmail: bool | None = None) -> dict:
     """Build MCP config dict for a specific CDP port."""
     npx = _resolve_npx_command()
-    return {
-        "mcpServers": {
-            "playwright": {
-                "command": npx,
-                "args": [
-                    "-y",
-                    "@playwright/mcp@latest",
-                    f"--cdp-endpoint=http://localhost:{cdp_port}",
-                    f"--viewport-size={config.DEFAULTS['viewport']}",
-                ],
-            },
-            "gmail": {
-                "command": npx,
-                "args": ["-y", "@gongrzhe/server-gmail-autoauth-mcp"],
-            },
-        }
+    if include_gmail is None:
+        include_gmail = apply_settings.gmail_mcp_enabled()
+    servers: dict = {
+        "playwright": {
+            "command": npx,
+            "args": [
+                "-y",
+                "@playwright/mcp@latest",
+                f"--cdp-endpoint=http://localhost:{cdp_port}",
+                f"--viewport-size={config.DEFAULTS['viewport']}",
+            ],
+        },
     }
+    if include_gmail:
+        servers["gmail"] = {
+            "command": npx,
+            "args": ["-y", "@gongrzhe/server-gmail-autoauth-mcp"],
+        }
+    return {"mcpServers": servers}
+
+
+_GMAIL_DISALLOWED_TOOLS = (
+    "mcp__gmail__draft_email,mcp__gmail__modify_email,"
+    "mcp__gmail__delete_email,mcp__gmail__download_attachment,"
+    "mcp__gmail__batch_modify_emails,mcp__gmail__batch_delete_emails,"
+    "mcp__gmail__create_label,mcp__gmail__update_label,"
+    "mcp__gmail__delete_label,mcp__gmail__get_or_create_label,"
+    "mcp__gmail__list_email_labels,mcp__gmail__create_filter,"
+    "mcp__gmail__list_filters,mcp__gmail__get_filter,"
+    "mcp__gmail__delete_filter"
+)
+
+
+def build_claude_apply_command(
+    *,
+    model: str,
+    mcp_config_path: Path,
+    worker_id: int,
+) -> list[str]:
+    """Assemble Claude CLI argv for one apply job (testable)."""
+    cmd = [
+        "claude",
+        "--model",
+        model,
+        "-p",
+        "--mcp-config",
+        str(mcp_config_path),
+        "--permission-mode",
+        "bypassPermissions",
+        "--disallowedTools",
+        _GMAIL_DISALLOWED_TOOLS,
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "-",
+    ]
+    if apply_settings.session_reuse_enabled():
+        session_id = apply_settings.load_session_id(worker_id)
+        if session_id:
+            cmd.extend(["--resume", session_id])
+        # First run: omit --session-id; persist id from stream-json when Claude creates it.
+    else:
+        cmd.append("--no-session-persistence")
+    return cmd
 
 
 # ---------------------------------------------------------------------------
@@ -522,8 +569,13 @@ def release_orphan_in_progress_locks() -> int:
 # Utility modes (--gen, --mark-applied, --mark-failed, --reset-failed)
 # ---------------------------------------------------------------------------
 
-def gen_prompt(target_url: str, min_score: int = 7,
-               model: str = "sonnet", worker_id: int = 0) -> Path | None:
+def gen_prompt(
+    target_url: str,
+    min_score: int = 7,
+    model: str = "haiku",
+    worker_id: int = 0,
+    include_untailored: bool = False,
+) -> Path | None:
     """Generate a prompt file and print the Claude CLI command for manual debugging.
 
     Returns:
@@ -771,6 +823,12 @@ def _resolve_apply_result(
             return f"failed:{reason}"
         return f"failed:{status}"
 
+    from applypilot.apply.playbook_results import resolve_playbook_result
+
+    playbook_status = resolve_playbook_result(output)
+    if playbook_status is not None:
+        return playbook_status
+
     if "RESULT:APPLIED" in output:
         logger.warning(
             "[W%s] Legacy RESULT:APPLIED without RESULT_JSON for %s — downgrading to submitted_unverified",
@@ -812,6 +870,9 @@ FAST_FAIL_TEXT_PATTERNS: dict[str, tuple[str, ...]] = {
         "not authenticated",
         "invalid api key",
     ),
+    "claude_stale_session": (
+        "no conversation found with session",
+    ),
 }
 
 
@@ -841,10 +902,15 @@ def _sync_worker_line(worker_id: int, detail: str, **state) -> None:
         logger.info("[worker-%d] %s", worker_id, detail)
 
 
-def run_job(job: dict, port: int, worker_id: int = 0,
-            model: str = "sonnet", dry_run: bool = False,
-            pace_seconds: float = 0.0,
-            confirm_submit: bool = False) -> tuple[str, int, Path | None]:
+def run_job(
+    job: dict,
+    port: int,
+    worker_id: int = 0,
+    model: str = "haiku",
+    dry_run: bool = False,
+    pace_seconds: float = 0.0,
+    confirm_submit: bool = False,
+) -> tuple[str, int, Path | None]:
     """Spawn a Claude Code session for one job application.
 
     Returns:
@@ -862,14 +928,22 @@ def run_job(job: dict, port: int, worker_id: int = 0,
     worker_dir = reset_worker_dir(worker_id)
 
     try:
-        agent_prompt = prompt_mod.build_prompt(
-            job=job,
-            tailored_resume=resume_text,
-            dry_run=dry_run,
-            pace_seconds=pace_seconds,
-            confirm_submit=confirm_submit,
-            upload_dir=worker_dir,
-        )
+        if apply_settings.apply_prompt_mode() == "playbook":
+            from applypilot.apply import worker_playbook
+
+            agent_prompt = worker_playbook.build_worker_apply_prompt(
+                job,
+                upload_dir=worker_dir,
+            )
+        else:
+            agent_prompt = prompt_mod.build_prompt(
+                job=job,
+                tailored_resume=resume_text,
+                dry_run=dry_run,
+                pace_seconds=pace_seconds,
+                confirm_submit=confirm_submit,
+                upload_dir=worker_dir,
+            )
     except ValueError as exc:
         msg = str(exc)
         if "resume" in msg.lower() or "tailored" in msg.lower():
@@ -877,31 +951,18 @@ def run_job(job: dict, port: int, worker_id: int = 0,
             return "failed:resume_pdf_missing", 0, None
         raise
 
-    # Write per-worker MCP config
+    include_gmail = apply_settings.job_likely_needs_gmail(job)
     mcp_config_path = config.APP_DIR / f".mcp-apply-{worker_id}.json"
-    mcp_config_path.write_text(json.dumps(_make_mcp_config(port)), encoding="utf-8")
+    mcp_config_path.write_text(
+        json.dumps(_make_mcp_config(port, include_gmail=include_gmail)),
+        encoding="utf-8",
+    )
 
-    # Build claude command
-    cmd = [
-        "claude",
-        "--model", model,
-        "-p",
-        "--mcp-config", str(mcp_config_path),
-        "--permission-mode", "bypassPermissions",
-        "--no-session-persistence",
-        "--disallowedTools", (
-            "mcp__gmail__draft_email,mcp__gmail__modify_email,"
-            "mcp__gmail__delete_email,mcp__gmail__download_attachment,"
-            "mcp__gmail__batch_modify_emails,mcp__gmail__batch_delete_emails,"
-            "mcp__gmail__create_label,mcp__gmail__update_label,"
-            "mcp__gmail__delete_label,mcp__gmail__get_or_create_label,"
-            "mcp__gmail__list_email_labels,mcp__gmail__create_filter,"
-            "mcp__gmail__list_filters,mcp__gmail__get_filter,"
-            "mcp__gmail__delete_filter"
-        ),
-        "--output-format", "stream-json",
-        "--verbose", "-",
-    ]
+    cmd = build_claude_apply_command(
+        model=model,
+        mcp_config_path=mcp_config_path,
+        worker_id=worker_id,
+    )
 
     env = os.environ.copy()
     env.pop("CLAUDECODE", None)
@@ -973,12 +1034,26 @@ def run_job(job: dict, port: int, worker_id: int = 0,
         def _abort_quota(text_hint: str) -> tuple[str, int, None]:
             not_before = _parse_quota_reset_not_before(text_hint) or _quota_backoff_not_before()
             add_event(f"[W{worker_id}] FAST_FAIL: claude_quota_exhausted until {not_before}")
+            apply_settings.clear_session_id(worker_id)
             nonlocal proc
             if proc is not None and proc.poll() is None:
                 _kill_process_tree(proc.pid)
             proc = None
             return (
                 f"failed:claude_quota_exhausted:{not_before}",
+                int((time.time() - start) * 1000),
+                None,
+            )
+
+        def _abort_stale_session() -> tuple[str, int, None]:
+            add_event(f"[W{worker_id}] FAST_FAIL: claude_stale_session (clearing persisted id)")
+            apply_settings.clear_session_id(worker_id)
+            nonlocal proc
+            if proc is not None and proc.poll() is None:
+                _kill_process_tree(proc.pid)
+            proc = None
+            return (
+                "failed:claude_stale_session",
                 int((time.time() - start) * 1000),
                 None,
             )
@@ -1004,6 +1079,8 @@ def run_job(job: dict, port: int, worker_id: int = 0,
                     continue
                 try:
                     msg = json.loads(line)
+                    if sid := apply_settings.parse_session_id_from_message(msg):
+                        apply_settings.save_session_id(worker_id, sid)
                     msg_type = msg.get("type")
                     if msg_type == "assistant":
                         for block in msg.get("message", {}).get("content", []):
@@ -1015,6 +1092,8 @@ def run_job(job: dict, port: int, worker_id: int = 0,
                                 if fail_reason := _detect_fast_fail(text):
                                     if fail_reason == "claude_quota_exhausted":
                                         return _abort_quota(text)
+                                    if fail_reason == "claude_stale_session":
+                                        return _abort_stale_session()
                                     add_event(f"[W{worker_id}] FAST_FAIL: {fail_reason}")
                                     return _abort_apply(fail_reason)
                             elif bt == "tool_use":
@@ -1057,6 +1136,8 @@ def run_job(job: dict, port: int, worker_id: int = 0,
                     if fail_reason := _detect_fast_fail(line):
                         if fail_reason == "claude_quota_exhausted":
                             return _abort_quota(line)
+                        if fail_reason == "claude_stale_session":
+                            return _abort_stale_session()
                         add_event(f"[W{worker_id}] FAST_FAIL: {fail_reason}")
                         return _abort_apply(fail_reason)
 
@@ -1080,6 +1161,7 @@ def run_job(job: dict, port: int, worker_id: int = 0,
             try:
                 from applypilot.database import record_llm_usage
 
+                telemetry = apply_settings.apply_telemetry_flags()
                 record_llm_usage(
                     provider="anthropic",
                     model=model,
@@ -1091,9 +1173,12 @@ def run_job(job: dict, port: int, worker_id: int = 0,
                     estimated=False,
                     cost_usd=float(stats.get("cost_usd") or 0.0),
                     metadata={
+                        **telemetry,
                         "worker_id": worker_id,
                         "job_url": job.get("url"),
                         "site": job.get("site"),
+                        "model_used": model,
+                        "num_turns": int(stats.get("turns") or 0),
                     },
                 )
             except Exception:
@@ -1292,17 +1377,84 @@ def _pause_worker_for_quota(worker_id: int, *, not_before: str) -> bool:
 # Worker loop
 # ---------------------------------------------------------------------------
 
-def worker_loop(worker_id: int = 0, limit: int = 1,
-                target_url: str | None = None,
-                min_score: int | None = None,
-                headless: bool = False,
-                model: str = "sonnet", dry_run: bool = False,
-                pace_seconds: float = 0.0,
-                keep_open_seconds: float = 0.0,
-                confirm_submit: bool = False,
-                ats_only: bool = False,
-                priority_boards_only: bool = False,
-                min_experience_years: int | None = None) -> tuple[int, int]:
+def _run_job_with_optional_fallback(
+    job: dict,
+    *,
+    port: int,
+    worker_id: int,
+    primary_model: str,
+    dry_run: bool,
+    pace_seconds: float,
+    confirm_submit: bool,
+) -> tuple[str, int, Path | None]:
+    """Run apply once on primary model; escalate to fallback on retriable failure."""
+    fallback_model = apply_settings.apply_fallback_model()
+    result, duration_ms, session_log = run_job(
+        job,
+        port=port,
+        worker_id=worker_id,
+        model=primary_model,
+        dry_run=dry_run,
+        pace_seconds=pace_seconds,
+        confirm_submit=confirm_submit,
+    )
+
+    if result == "failed:claude_stale_session":
+        apply_settings.clear_session_id(worker_id)
+        add_event(
+            f"[W{worker_id}] Retrying after stale Claude session cleared "
+            f"(primary {primary_model})"
+        )
+        result, duration_ms, session_log = run_job(
+            job,
+            port=port,
+            worker_id=worker_id,
+            model=primary_model,
+            dry_run=dry_run,
+            pace_seconds=pace_seconds,
+            confirm_submit=confirm_submit,
+        )
+
+    if apply_settings.should_escalate_to_fallback(
+        result,
+        primary=primary_model,
+        fallback=fallback_model,
+        is_permanent_failure=_is_permanent_failure,
+    ):
+        add_event(
+            f"[W{worker_id}] Retrying on {fallback_model} "
+            f"(primary {primary_model} -> {result[:40]})"
+        )
+        fb_result, fb_duration, fb_log = run_job(
+            job,
+            port=port,
+            worker_id=worker_id,
+            model=fallback_model,
+            dry_run=dry_run,
+            pace_seconds=pace_seconds,
+            confirm_submit=confirm_submit,
+        )
+        return fb_result, fb_duration, fb_log or session_log
+
+    return result, duration_ms, session_log
+
+
+def worker_loop(
+    worker_id: int = 0,
+    limit: int = 1,
+    target_url: str | None = None,
+    min_score: int | None = None,
+    headless: bool = False,
+    model: str = "haiku",
+    dry_run: bool = False,
+    pace_seconds: float = 0.0,
+    keep_open_seconds: float = 0.0,
+    confirm_submit: bool = False,
+    ats_only: bool = False,
+    priority_boards_only: bool = False,
+    min_experience_years: int | None = None,
+    include_untailored: bool = False,
+) -> tuple[int, int]:
     """Run jobs sequentially until limit is reached or queue is empty.
 
     Args:
@@ -1327,6 +1479,7 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
     empty_polls = 0
     quota_retry_until: str | None = None
     port = BASE_CDP_PORT + worker_id
+    primary_model = apply_settings.apply_model_default(model)
 
     while not _stop_event.is_set():
         if not continuous and jobs_done >= limit:
@@ -1381,11 +1534,11 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
             chrome_proc = launch_chrome(worker_id, port=port, headless=headless)
             logger.info("[worker-%d] Running apply agent for %s", worker_id, job.get("title", "")[:80])
 
-            result, duration_ms, session_log = run_job(
+            result, duration_ms, session_log = _run_job_with_optional_fallback(
                 job,
                 port=port,
                 worker_id=worker_id,
-                model=model,
+                primary_model=primary_model,
                 dry_run=dry_run,
                 pace_seconds=pace_seconds,
                 confirm_submit=confirm_submit,
@@ -1410,11 +1563,11 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
 
                 if session_log_incomplete(session_log):
                     add_event(f"[W{worker_id}] Retrying incomplete session once…")
-                    result, duration_ms, session_log = run_job(
+                    result, duration_ms, session_log = _run_job_with_optional_fallback(
                         job,
                         port=port,
                         worker_id=worker_id,
-                        model=model,
+                        primary_model=primary_model,
                         dry_run=dry_run,
                         pace_seconds=pace_seconds,
                         confirm_submit=confirm_submit,
@@ -1510,16 +1663,25 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
 # Main entry point (called from cli.py)
 # ---------------------------------------------------------------------------
 
-def main(limit: int = 1, target_url: str | None = None,
-         min_score: int | None = None, headless: bool = False, model: str = "sonnet",
-         dry_run: bool = False, continuous: bool = False,
-         poll_interval: int = 60, workers: int = 1,
-         pace_seconds: float = 0.0, keep_open_seconds: float = 0.0,
-         confirm_submit: bool = False, plain: bool = False,
-         ats_only: bool = False,
-         priority_boards_only: bool = False,
-         min_experience_years: int | None = None,
-         include_untailored: bool = False) -> None:
+def main(
+    limit: int = 1,
+    target_url: str | None = None,
+    min_score: int | None = None,
+    headless: bool = False,
+    model: str = "haiku",
+    dry_run: bool = False,
+    continuous: bool = False,
+    poll_interval: int = 60,
+    workers: int = 1,
+    pace_seconds: float = 0.0,
+    keep_open_seconds: float = 0.0,
+    confirm_submit: bool = False,
+    plain: bool = False,
+    ats_only: bool = False,
+    priority_boards_only: bool = False,
+    min_experience_years: int | None = None,
+    include_untailored: bool = False,
+) -> None:
     """Launch the apply pipeline.
 
     Args:
@@ -1589,7 +1751,15 @@ def main(limit: int = 1, target_url: str | None = None,
         init_worker(i)
 
     worker_label = f"{workers} worker{'s' if workers > 1 else ''}"
+    primary_model = apply_settings.apply_model_default(model)
+    flags = apply_settings.apply_telemetry_flags()
     console.print(f"Launching apply pipeline ({mode_label}, {worker_label}, poll every {POLL_INTERVAL}s)...")
+    console.print(
+        f"[dim]Apply model: {primary_model} "
+        f"(fallback {flags['apply_fallback_model']}) | "
+        f"prompt_slim={flags['prompt_slim']} session_reuse={flags['session_reuse']} "
+        f"gmail_mcp={flags['gmail_mcp']}[/dim]"
+    )
     console.print("[dim]Ctrl+C = skip current job(s) | Ctrl+C x2 = stop[/dim]")
 
     # Double Ctrl+C handler
@@ -1633,6 +1803,7 @@ def main(limit: int = 1, target_url: str | None = None,
                 ats_only=ats_only,
                 priority_boards_only=priority_boards_only,
                 min_experience_years=min_experience_years,
+                include_untailored=include_untailored,
             )
 
         if effective_limit:
@@ -1661,6 +1832,7 @@ def main(limit: int = 1, target_url: str | None = None,
                     ats_only=ats_only,
                     priority_boards_only=priority_boards_only,
                     min_experience_years=min_experience_years,
+                    include_untailored=include_untailored,
                 ): i
                 for i in range(workers)
             }

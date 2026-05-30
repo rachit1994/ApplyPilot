@@ -181,7 +181,12 @@ def apply(
         5, "--min-experience-years",
         help="Skip roles clearly below this experience level (intern/entry).",
     ),
-    model: str = typer.Option("sonnet", "--model", "-m", help="Claude model name."),
+    model: str = typer.Option(
+        "haiku",
+        "--model",
+        "-m",
+        help="Claude model for apply (default haiku; sonnet retries on retriable failures).",
+    ),
     continuous: bool = typer.Option(False, "--continuous", "-c", help="Run forever, polling for new jobs."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview actions without submitting."),
     headless: bool = typer.Option(False, "--headless", help="Run browsers in headless mode."),
@@ -235,6 +240,11 @@ def apply(
         False,
         "--include-untailored",
         help="Also attempt jobs without tailored resumes (uses base resume.pdf).",
+    ),
+    prompt_mode: Optional[str] = typer.Option(
+        None,
+        "--prompt-mode",
+        help="Apply stdin prompt: legacy (default) or playbook (worker-apply-playbook.md).",
     ),
 ) -> None:
     """Launch auto-apply to submit job applications."""
@@ -310,6 +320,11 @@ def apply(
         return
 
     # --- Full apply mode ---
+
+    from applypilot.apply import apply_settings
+
+    if prompt_mode:
+        apply_settings.set_apply_prompt_mode_override(prompt_mode)
 
     # Check 1: Tier 3 required (Claude Code CLI + Chrome)
     check_tier(3, "auto-apply")

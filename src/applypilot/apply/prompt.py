@@ -13,6 +13,8 @@ from datetime import datetime
 from pathlib import Path
 
 from applypilot import config
+from applypilot.apply import apply_settings
+from applypilot.apply import prompt_scripts
 from applypilot.apply.salary import get_min_annual_inr
 
 logger = logging.getLogger(__name__)
@@ -286,11 +288,13 @@ def _build_hard_rules(profile: dict) -> str:
 def _build_captcha_section() -> str:
     """Build the CAPTCHA detection and solving instructions.
 
-    Reads the CapSolver API key from environment. The CAPTCHA section
-    contains no personal data -- it's the same for every user.
+    Reads the CapSolver API key from environment. Browser helper scripts live in
+    prompt_scripts.py so slim mode can omit this entire section.
     """
     config.load_env()
     capsolver_key = os.environ.get("CAPSOLVER_API_KEY", "")
+    create_task_js = prompt_scripts.format_captcha_create_task(capsolver_key)
+    poll_js = prompt_scripts.format_captcha_poll(capsolver_key)
 
     return f"""== CAPTCHA ==
 You solve CAPTCHAs via the CapSolver REST API. No browser extension. You control the entire flow.
@@ -307,59 +311,7 @@ Do NOT skip the API call based on what the CAPTCHA looks like. CapSolver solves 
 Run this browser_evaluate after every navigation, Apply/Submit/Login click, or when a page feels stuck.
 IMPORTANT: Detection order matters. hCaptcha elements also have data-sitekey, so check hCaptcha BEFORE reCAPTCHA.
 
-browser_evaluate function: () => {{{{
-  const r = {{}};
-  const url = window.location.href;
-  // 1. hCaptcha (check FIRST -- hCaptcha uses data-sitekey too)
-  const hc = document.querySelector('.h-captcha, [data-hcaptcha-sitekey]');
-  if (hc) {{{{
-    r.type = 'hcaptcha'; r.sitekey = hc.dataset.sitekey || hc.dataset.hcaptchaSitekey;
-  }}}}
-  if (!r.type && document.querySelector('script[src*="hcaptcha.com"], iframe[src*="hcaptcha.com"]')) {{{{
-    const el = document.querySelector('[data-sitekey]');
-    if (el) {{{{ r.type = 'hcaptcha'; r.sitekey = el.dataset.sitekey; }}}}
-  }}}}
-  // 2. Cloudflare Turnstile
-  if (!r.type) {{{{
-    const cf = document.querySelector('.cf-turnstile, [data-turnstile-sitekey]');
-    if (cf) {{{{
-      r.type = 'turnstile'; r.sitekey = cf.dataset.sitekey || cf.dataset.turnstileSitekey;
-      if (cf.dataset.action) r.action = cf.dataset.action;
-      if (cf.dataset.cdata) r.cdata = cf.dataset.cdata;
-    }}}}
-  }}}}
-  if (!r.type && document.querySelector('script[src*="challenges.cloudflare.com"]')) {{{{
-    r.type = 'turnstile_script_only'; r.note = 'Wait 3s and re-detect.';
-  }}}}
-  // 3. reCAPTCHA v3 (invisible, loaded via render= param)
-  if (!r.type) {{{{
-    const s = document.querySelector('script[src*="recaptcha"][src*="render="]');
-    if (s) {{{{
-      const m = s.src.match(/render=([^&]+)/);
-      if (m && m[1] !== 'explicit') {{{{ r.type = 'recaptchav3'; r.sitekey = m[1]; }}}}
-    }}}}
-  }}}}
-  // 4. reCAPTCHA v2 (checkbox or invisible)
-  if (!r.type) {{{{
-    const rc = document.querySelector('.g-recaptcha');
-    if (rc) {{{{ r.type = 'recaptchav2'; r.sitekey = rc.dataset.sitekey; }}}}
-  }}}}
-  if (!r.type && document.querySelector('script[src*="recaptcha"]')) {{{{
-    const el = document.querySelector('[data-sitekey]');
-    if (el) {{{{ r.type = 'recaptchav2'; r.sitekey = el.dataset.sitekey; }}}}
-  }}}}
-  // 5. FunCaptcha (Arkose Labs)
-  if (!r.type) {{{{
-    const fc = document.querySelector('#FunCaptcha, [data-pkey], .funcaptcha');
-    if (fc) {{{{ r.type = 'funcaptcha'; r.sitekey = fc.dataset.pkey; }}}}
-  }}}}
-  if (!r.type && document.querySelector('script[src*="arkoselabs"], script[src*="funcaptcha"]')) {{{{
-    const el = document.querySelector('[data-pkey]');
-    if (el) {{{{ r.type = 'funcaptcha'; r.sitekey = el.dataset.pkey; }}}}
-  }}}}
-  if (r.type) {{{{ r.url = url; return r; }}}}
-  return null;
-}}}}
+browser_evaluate function: {prompt_scripts.CAPTCHA_DETECT_JS}
 
 Result actions:
 - null -> no CAPTCHA. Continue normally.
@@ -370,21 +322,7 @@ Result actions:
 Three steps: createTask -> poll -> inject. Do each as a separate browser_evaluate call.
 
 STEP 1 -- CREATE TASK (copy this exactly, fill in the 3 placeholders):
-browser_evaluate function: async () => {{{{
-  const r = await fetch('https://api.capsolver.com/createTask', {{{{
-    method: 'POST',
-    headers: {{{{'Content-Type': 'application/json'}}}},
-    body: JSON.stringify({{{{
-      clientKey: '{capsolver_key}',
-      task: {{{{
-        type: 'TASK_TYPE',
-        websiteURL: 'PAGE_URL',
-        websiteKey: 'SITE_KEY'
-      }}}}
-    }}}})
-  }}}});
-  return await r.json();
-}}}}
+browser_evaluate function: {create_task_js}
 
 TASK_TYPE values (use EXACTLY these strings):
   hcaptcha     -> HCaptchaTaskProxyLess
@@ -402,17 +340,7 @@ If errorId > 0 -> CAPTCHA SOLVE failed. Go to MANUAL FALLBACK.
 
 STEP 2 -- POLL (replace TASK_ID with the taskId from step 1):
 Loop: browser_wait_for time: 3, then run:
-browser_evaluate function: async () => {{{{
-  const r = await fetch('https://api.capsolver.com/getTaskResult', {{{{
-    method: 'POST',
-    headers: {{{{'Content-Type': 'application/json'}}}},
-    body: JSON.stringify({{{{
-      clientKey: '{capsolver_key}',
-      taskId: 'TASK_ID'
-    }}}})
-  }}}});
-  return await r.json();
-}}}}
+browser_evaluate function: {poll_js}
 
 - status "processing" -> wait 3s, poll again. Max 10 polls (30s).
 - status "ready" -> extract token:
@@ -424,53 +352,16 @@ browser_evaluate function: async () => {{{{
 STEP 3 -- INJECT TOKEN (replace THE_TOKEN with actual token string):
 
 For reCAPTCHA v2/v3:
-browser_evaluate function: () => {{{{
-  const token = 'THE_TOKEN';
-  document.querySelectorAll('[name="g-recaptcha-response"]').forEach(el => {{{{ el.value = token; el.style.display = 'block'; }}}});
-  if (window.___grecaptcha_cfg) {{{{
-    const clients = window.___grecaptcha_cfg.clients;
-    for (const key in clients) {{{{
-      const walk = (obj, d) => {{{{
-        if (d > 4 || !obj) return;
-        for (const k in obj) {{{{
-          if (typeof obj[k] === 'function' && k.length < 3) try {{{{ obj[k](token); }}}} catch(e) {{{{}}}}
-          else if (typeof obj[k] === 'object') walk(obj[k], d+1);
-        }}}}
-      }}}};
-      walk(clients[key], 0);
-    }}}}
-  }}}}
-  return 'injected';
-}}}}
+browser_evaluate function: {prompt_scripts.CAPTCHA_INJECT_RECAPTCHA_JS}
 
 For hCaptcha:
-browser_evaluate function: () => {{{{
-  const token = 'THE_TOKEN';
-  const ta = document.querySelector('[name="h-captcha-response"], textarea[name*="hcaptcha"]');
-  if (ta) ta.value = token;
-  document.querySelectorAll('iframe[data-hcaptcha-response]').forEach(f => f.setAttribute('data-hcaptcha-response', token));
-  const cb = document.querySelector('[data-hcaptcha-widget-id]');
-  if (cb && window.hcaptcha) try {{{{ window.hcaptcha.getResponse(cb.dataset.hcaptchaWidgetId); }}}} catch(e) {{{{}}}}
-  return 'injected';
-}}}}
+browser_evaluate function: {prompt_scripts.CAPTCHA_INJECT_HCAPTCHA_JS}
 
 For Turnstile:
-browser_evaluate function: () => {{{{
-  const token = 'THE_TOKEN';
-  const inp = document.querySelector('[name="cf-turnstile-response"], input[name*="turnstile"]');
-  if (inp) inp.value = token;
-  if (window.turnstile) try {{{{ const w = document.querySelector('.cf-turnstile'); if (w) window.turnstile.getResponse(w); }}}} catch(e) {{{{}}}}
-  return 'injected';
-}}}}
+browser_evaluate function: {prompt_scripts.CAPTCHA_INJECT_TURNSTILE_JS}
 
 For FunCaptcha:
-browser_evaluate function: () => {{{{
-  const token = 'THE_TOKEN';
-  const inp = document.querySelector('#FunCaptcha-Token, input[name="fc-token"]');
-  if (inp) inp.value = token;
-  if (window.ArkoseEnforcement) try {{{{ window.ArkoseEnforcement.setConfig({{{{data: {{{{blob: token}}}}}}}}) }}}} catch(e) {{{{}}}}
-  return 'injected';
-}}}}
+browser_evaluate function: {prompt_scripts.CAPTCHA_INJECT_FUNCAPTCHA_JS}
 
 After injecting: browser_wait_for time: 2, then snapshot.
 - Widget gone or green check -> success. Click Submit if needed.
@@ -538,7 +429,7 @@ def _build_pacing_section(pace_seconds: float, confirm_submit: bool) -> str:
     return "\n".join(lines)
 
 
-def _build_page_grounding_section(human_pace: bool) -> str:
+def _build_page_grounding_section(human_pace: bool, *, include_captcha: bool = True) -> str:
     lines = [
         "== PAGE GROUNDING (required) ==",
         "- Use browser_snapshot for element refs. Take a NEW snapshot whenever the page may have changed.",
@@ -551,8 +442,9 @@ def _build_page_grounding_section(human_pace: bool) -> str:
         "VERIFY → click Next → browser_wait_for time: 2 → snapshot the NEW page.",
         "- If an action does nothing (same URL, same errors): snapshot again, run VERIFY, try a different ref.",
         "- browser_take_screenshot is optional; use snapshot + VERIFY for decisions, not screenshots alone.",
-        "- After navigation, Apply/Submit/Login, or when stuck: run CAPTCHA DETECT.",
     ]
+    if include_captcha:
+        lines.append("- After navigation, Apply/Submit/Login, or when stuck: run CAPTCHA DETECT.")
     if human_pace:
         lines.append("- Human pace mode: also follow HUMAN PACE waits between actions.")
     return "\n".join(lines)
@@ -614,84 +506,59 @@ Known resume date ranges:
 
 
 def _build_form_verify_section() -> str:
-    return """== VERIFY PAGE STATE (run often) ==
+    return f"""== VERIFY PAGE STATE (run often) ==
 After each fill batch, upload, or before Next/Submit, run this browser_evaluate to read what is actually on the page:
 
-browser_evaluate function: () => ({
-  const visible = (el) => {
-    if (!el || el.disabled) return false;
-    const s = window.getComputedStyle(el);
-    if (s.display === 'none' || s.visibility === 'hidden') return false;
-    if (el.getBoundingClientRect().width === 0) return false;
-    return true;
-  };
-  const fields = [];
-  document.querySelectorAll('input, select, textarea').forEach((el) => {
-    if (!visible(el) && el.type !== 'hidden') return;
-    const label = (
-      el.labels?.[0]?.innerText ||
-      el.getAttribute('aria-label') ||
-      el.getAttribute('placeholder') ||
-      el.name ||
-      el.id ||
-      el.type ||
-      'field'
-    ).trim().slice(0, 100);
-    let value = '';
-    if (el.type === 'checkbox' || el.type === 'radio') {
-      value = el.checked ? 'checked' : 'unchecked';
-    } else if (el.tagName === 'SELECT') {
-      value = el.options[el.selectedIndex]?.text?.trim() || el.value;
-    } else {
-      value = (el.value || '').slice(0, 120);
-    }
-    const empty = el.type !== 'checkbox' && el.type !== 'radio' && !String(el.value || '').trim();
-    fields.push({ label, tag: el.tagName.toLowerCase(), type: el.type || '', value, empty });
-  });
-  const errors = [...document.querySelectorAll('[role="alert"], [class*="error"], [class*="invalid"]')]
-    .map((e) => (e.innerText || '').trim())
-    .filter((t) => t.length > 2 && t.length < 200)
-    .slice(0, 8);
-  const buttons = [...document.querySelectorAll('button, [role="button"], input[type="submit"]')]
-    .filter(visible)
-    .map((b) => (b.innerText || b.value || '').trim())
-    .filter(Boolean)
-    .slice(0, 12);
-  const disabledButtons = [...document.querySelectorAll('button, [role="button"], input[type="submit"]')]
-    .filter((b) => b.disabled || b.getAttribute('aria-disabled') === 'true')
-    .map((b) => (b.innerText || b.value || b.getAttribute('aria-label') || '').trim())
-    .filter(Boolean)
-    .slice(0, 12);
-  const invalidFields = fields
-    .filter((f) => /invalid|error|required/i.test(`${f.label} ${f.value}`))
-    .slice(0, 12);
-  const dateWidgets = [...document.querySelectorAll('[aria-label*="Month"], [aria-label*="Year"], input[placeholder*="MM"], input[placeholder*="YYYY"], select[name*="month"], select[name*="year"]')]
-    .filter((el) => visible(el) || el.type === 'hidden')
-    .map((el) => ({
-      label: (el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.name || el.id || '').trim(),
-      value: (el.value || '').slice(0, 40)
-    }))
-    .slice(0, 20);
-  return {
-    url: location.href,
-    title: document.title.slice(0, 120),
-    bodyText: (document.body?.innerText || '').slice(0, 4000),
-    fieldCount: fields.length,
-    emptyRequired: fields.filter((f) => f.empty).length,
-    fields: fields.slice(0, 45),
-    invalidFields,
-    dateWidgets,
-    visibleErrors: errors,
-    visibleButtons: buttons,
-    disabledButtons,
-  };
-})
+browser_evaluate function: {prompt_scripts.FORM_VERIFY_JS}
 
 How to use the result:
 - If emptyRequired > 0, fill those fields before Next/Submit.
 - If visibleErrors is non-empty, fix those fields first.
 - If you expected a new page after Next but url/title are unchanged, snapshot and find the real Next/Apply control.
 - Do NOT click Submit until emptyRequired is 0 and visibleErrors is empty (unless dry run)."""
+
+
+def _build_form_verify_section_slim() -> str:
+    return """== VERIFY PAGE STATE (run often) ==
+After each fill batch, upload, or before Next/Submit:
+1. browser_snapshot and read visible fields, errors, and buttons from the snapshot.
+2. If required fields look empty or validation errors are visible, fix them before Next/Submit.
+3. If you expected a new page after Next but the URL/title did not change, snapshot again and find the real control.
+4. Do NOT click Submit until required fields are filled and validation errors are cleared (unless dry run)."""
+
+
+def _build_ats_form_repair_section_slim(resume_text: str) -> str:
+    rows = _extract_experience_ranges(resume_text)
+    examples = []
+    for row in rows[:6]:
+        to_value = "Present" if row["current"] == "yes" else f"{row['end_month']}/{row['end_year']}"
+        examples.append(
+            f"- {row['company']} / {row['title']}: "
+            f"from={row['start_month']}/{row['start_year']} to={to_value}"
+        )
+    example_text = "\n".join(examples) if examples else "- Use the resume dates exactly."
+    return f"""== ATS FORM REPAIR ==
+If dates or experience rows look wrong, fix them before Next/Submit.
+- Never leave Month as "MM"; use 01 for starts and 12 for past end months when only a year is known.
+- For current roles, mark present/current and leave end date blank when allowed.
+Known resume date ranges:
+{example_text}"""
+
+
+def _build_captcha_section_slim() -> str:
+    return """== CAPTCHA (only when visible) ==
+If browser_snapshot shows reCAPTCHA, hCaptcha, or Turnstile blocking progress:
+1. Try CapSolver via browser_evaluate (createTask/getTaskResult) if CAPSOLVER_API_KEY is set.
+2. Inject the token, snapshot again, and continue.
+3. If automation fails after one attempt, emit RESULT_JSON status "captcha"."""
+
+
+def _build_email_verification_section_slim(email: str) -> str:
+    return f"""== EMAIL VERIFICATION ==
+If the page asks for a code sent to {email}:
+1. Wait 20-30s, then use mcp__gmail__search_emails (newer_than:10m) and mcp__gmail__read_email.
+2. Type the code in the application tab and continue.
+3. If no code after several searches, emit RESULT_JSON status failed reason email_code_not_received."""
 
 
 def _is_workatastartup_job(job: dict) -> bool:
@@ -794,13 +661,39 @@ def build_prompt(job: dict, tailored_resume: str,
     salary_section = _build_salary_section(profile)
     screening_section = _build_screening_section(profile)
     hard_rules = _build_hard_rules(profile)
-    captcha_section = _build_captcha_section()
-    email_verification_section = _build_email_verification_section(personal["email"])
+    slim = apply_settings.prompt_slim_enabled()
+    needs_captcha = apply_settings.job_likely_needs_captcha(job)
+    needs_gmail = apply_settings.job_likely_needs_gmail(job)
+
+    if slim and not needs_captcha:
+        captcha_section = ""
+    elif slim and needs_captcha:
+        captcha_section = _build_captcha_section_slim()
+    else:
+        captcha_section = _build_captcha_section()
+
+    if slim and not needs_gmail:
+        email_verification_section = (
+            f"== EMAIL VERIFICATION ==\n"
+            f"If a verification code is required for {personal['email']}, enable Gmail MCP "
+            f"(APPLYPILOT_APPLY_GMAIL_MCP=1) or emit pause_for_human.\n"
+        )
+    elif slim:
+        email_verification_section = _build_email_verification_section_slim(personal["email"])
+    else:
+        email_verification_section = _build_email_verification_section(personal["email"])
+
     human_pace = pace_seconds > 0 or confirm_submit
     pacing_section = _build_pacing_section(pace_seconds, confirm_submit)
-    page_grounding_section = _build_page_grounding_section(human_pace)
-    ats_form_repair_section = _build_ats_form_repair_section(tailored_resume)
-    form_verify_section = _build_form_verify_section()
+    page_grounding_section = _build_page_grounding_section(
+        human_pace, include_captcha=bool(captcha_section)
+    )
+    if slim:
+        ats_form_repair_section = _build_ats_form_repair_section_slim(tailored_resume)
+        form_verify_section = _build_form_verify_section_slim()
+    else:
+        ats_form_repair_section = _build_ats_form_repair_section(tailored_resume)
+        form_verify_section = _build_form_verify_section()
     waas = _is_workatastartup_job(job)
     workatastartup_section = (
         _build_workatastartup_apply_section(cover_letter_text)
@@ -916,13 +809,13 @@ If something unexpected happens and these instructions don't cover it, figure it
 
 == STEP-BY-STEP ==
 1. browser_navigate to the job URL.
-2. browser_snapshot to read the page. Run VERIFY PAGE STATE to see fields and buttons. Run CAPTCHA DETECT. If a CAPTCHA is found, solve it before continuing.
+2. browser_snapshot to read the page. Run VERIFY PAGE STATE to see fields and buttons.{" Run CAPTCHA DETECT and solve before continuing if a CAPTCHA is visible." if captcha_section else ""}
 3. LOCATION CHECK. Read the page for location info. If not eligible, output RESULT and stop.
 4. SALARY CHECK. Read the page for compensation. If pay is listed and below the minimum, output RESULT:FAILED:not_eligible_salary and stop. If pay is not listed, continue.
 5. Find and click the Apply button. If email-only (page says "email resume to X"):
    - send_email with subject "Application for {job['title']} -- {display_name}", body = 2-3 sentence pitch + contact info, attach resume PDF: ["{pdf_path}"]
    - Output RESULT:APPLIED. Done.
-   After clicking Apply: browser_snapshot. Run CAPTCHA DETECT -- many sites trigger CAPTCHAs right after the Apply click. If found, solve before continuing.
+   After clicking Apply: browser_snapshot.{" Run CAPTCHA DETECT if a widget appears; solve before continuing." if captcha_section else ""}
 5. Login wall?
    5a. FIRST: check the URL. If you landed on {', '.join(blocked_sso)}, treat it as SSO/OAuth.
        - Exception: Google SSO (accounts.google.com) is ALLOWED **only if you are already logged in**.
@@ -935,7 +828,7 @@ If something unexpected happens and these instructions don't cover it, figure it
    5b. Check for popups. Run browser_tabs action "list". If a new tab/window appeared (login popup), switch to it.
        Apply the same rules as 5a for that tab.
    5c. Regular login form (employer's own site)? Try sign in: {personal['email']} / {personal.get('password', '')}
-   5d. After clicking Login/Sign-in: run CAPTCHA DETECT. Login pages frequently have invisible CAPTCHAs that silently block form submissions. If found, solve it then retry login.
+   5d. After clicking Login/Sign-in:{" run CAPTCHA DETECT if login appears blocked." if captcha_section else " snapshot and retry login if blocked."}
    5e. Sign in failed? Try sign up with same email and password.
    5f. Need email verification? Use the EMAIL VERIFICATION section below.
    5g. After login, run browser_tabs action "list" again. Switch back to the application tab if needed.
@@ -948,7 +841,7 @@ If something unexpected happens and these instructions don't cover it, figure it
    - Compare every other field to the APPLICANT PROFILE. Fix mismatches. Fill empty fields.
 9. Answer screening questions using the rules above. VERIFY after screening fields.
 10. {submit_instruction}
-11. After submit: browser_snapshot. If the page asks for an email/security/verification code, follow EMAIL VERIFICATION immediately. Run CAPTCHA DETECT -- submit buttons often trigger invisible CAPTCHAs. If found, solve it (the form will auto-submit once the token clears, or you may need to click Submit again). Then check for new tabs (browser_tabs action: "list"). Switch to newest, close old. Snapshot to confirm submission. Look for "thank you" or "application received".
+11. After submit: browser_snapshot. If the page asks for an email/security/verification code, follow EMAIL VERIFICATION immediately.{" Run CAPTCHA DETECT if submit seems blocked." if captcha_section else ""} Then check for new tabs (browser_tabs action: "list"). Switch to newest, close old. Snapshot to confirm submission. Look for "thank you" or "application received".
 12. Output your result.
 
 {email_verification_section}

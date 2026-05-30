@@ -239,6 +239,13 @@ DEFAULTS = {
     "apply_inactivity_timeout": 120,
     "apply_quota_pause": 1800,
     "viewport": "1280x900",
+    # Apply quota quick-wins (override via APPLYPILOT_APPLY_* env vars)
+    "apply_model_default": "haiku",
+    "apply_fallback_model": "sonnet",
+    "apply_prompt_slim_enabled": True,
+    "apply_session_reuse_enabled": True,
+    "apply_gmail_mcp_enabled": False,
+    "apply_prompt_mode": "legacy",
 }
 
 

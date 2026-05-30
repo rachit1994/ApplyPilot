@@ -514,8 +514,8 @@ def build_overview() -> dict[str, Any]:
         "apply_cap": apply_cap,
         "tailor_today": tailor_today,
         "tailor_cap": tailor_cap,
-        "llm_provider_hint": "Gemini",
-        "llm_spend_subtitle": "batch scoring",
+        "llm_provider_hint": "Claude Code + APIs",
+        "llm_spend_subtitle": "local ledger · see Claude usage panel",
         "apply_subtitle": "submissions queued today",
         "tailor_subtitle": "per-job rewrite",
     }

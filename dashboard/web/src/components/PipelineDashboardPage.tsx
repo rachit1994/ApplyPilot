@@ -3,6 +3,7 @@ import { fetchOverview } from "../api";
 import { PIPELINE_STAGE_IDS } from "../dashboardNav";
 import { useApplyRun } from "../hooks/useApplyRun";
 import { useHomeRuns } from "../hooks/useHomeRuns";
+import { ClaudeUsagePanel } from "./ClaudeUsagePanel";
 import { PageCanvas } from "./layout/PageCanvas";
 
 export function PipelineDashboardPage() {
@@ -213,6 +214,7 @@ export function PipelineDashboardPage() {
           </div>
         </div>
 
+        <ClaudeUsagePanel className="pipeline__claude-usage" />
       </div>
     </PageCanvas>
   );

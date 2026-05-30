@@ -371,6 +371,88 @@ export async function fetchOverview(): Promise<OverviewResponse> {
   return res.json();
 }
 
+export type LlmUsageBreakdownRow = {
+  key: string;
+  calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_create_tokens: number;
+  cost_usd: number;
+};
+
+export type LlmUsageDailyRow = {
+  day: string;
+  calls: number;
+  cost_usd: number;
+  input_tokens: number;
+  cache_read_tokens: number;
+};
+
+export type LlmUsageEventRow = {
+  id: number;
+  provider: string;
+  model: string;
+  operation: string;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_create_tokens: number;
+  estimated: boolean;
+  cost_usd: number;
+  created_at: string;
+  metadata: Record<string, unknown>;
+};
+
+export type LlmUsageResponse = {
+  month: string;
+  generated_at: string;
+  app_version: string;
+  ledger_available: boolean;
+  summary: {
+    claude_today_usd: number;
+    claude_month_usd: number;
+    all_providers_today_usd: number;
+    all_providers_month_usd: number;
+    claude_calls_today: number;
+    cache_read_tokens_today: number;
+    cache_hit_rate_percent: number | null;
+  };
+  apply_config: {
+    primary_model: string;
+    fallback_model: string;
+    prompt_slim: boolean;
+    session_reuse: boolean;
+    gmail_mcp: boolean;
+  };
+  by_model_month: LlmUsageBreakdownRow[];
+  by_operation_month: LlmUsageBreakdownRow[];
+  by_operation_today: LlmUsageBreakdownRow[];
+  monthly_ledger: Array<{
+    provider: string;
+    model: string;
+    operation: string;
+    calls: number;
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_tokens: number;
+    cache_create_tokens: number;
+    estimated_calls: number;
+    cost_usd: number;
+  }>;
+  daily_claude: LlmUsageDailyRow[];
+  recent_events: LlmUsageEventRow[];
+  quota: { quota_blocked_jobs: number; quota_blocked_recent: number };
+  providers_month: LlmUsageBreakdownRow[];
+};
+
+export async function fetchLlmUsage(month?: string): Promise<LlmUsageResponse> {
+  const q = month ? `?month=${encodeURIComponent(month)}` : "";
+  const res = await fetch(`${API}/llm-usage${q}`);
+  if (!res.ok) throw new Error("Failed to load LLM usage");
+  return res.json();
+}
+
 export async function fetchSourceStats(days = 7): Promise<SourceStats[]> {
   const res = await fetch(`${API}/source-stats?days=${encodeURIComponent(String(days))}`);
   if (!res.ok) throw new Error("Failed to load source stats");
