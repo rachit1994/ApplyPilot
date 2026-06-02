@@ -235,6 +235,16 @@ def _acquirable_jobs_where(
     return where, params
 
 
+def acquire_job_order_sql() -> str:
+    """ORDER BY for acquire_job: ATS priority, then score, deprioritize recent attempts."""
+    priority = ats_priority_sql_case()
+    return (
+        f"CASE WHEN last_attempted_at IS NOT NULL "
+        f"AND datetime(last_attempted_at) > datetime('now', '-60 minutes') "
+        f"THEN 1 ELSE 0 END, {priority}, fit_score DESC, url"
+    )
+
+
 def count_acquirable_jobs(
     *,
     min_score: int | None = None,
@@ -390,14 +400,13 @@ def acquire_job(
                     priority_boards_only=priority_boards_only,
                     include_untailored=include_untailored,
                 )
-                priority = ats_priority_sql_case()
                 row = conn.execute(f"""
                     SELECT url, title, site, application_url, tailored_resume_path,
                            fit_score, location, full_description, cover_letter_path, salary,
                            strategy
                     FROM jobs
                     {where}
-                    ORDER BY {priority}, fit_score DESC, url
+                    ORDER BY {acquire_job_order_sql()}
                     LIMIT 1
                 """, params).fetchone()
 
@@ -553,11 +562,14 @@ def release_stale_locks(max_age_minutes: int = 45) -> int:
 
 
 def release_orphan_in_progress_locks() -> int:
-    """Release all in_progress rows (local single-user apply; prior run interrupted)."""
+    """Mark interrupted in_progress jobs failed so they are not re-acquired at attempts=0."""
     conn = get_connection()
     cur = conn.execute(
         """
-        UPDATE jobs SET apply_status = NULL, agent_id = NULL
+        UPDATE jobs SET apply_status = 'failed',
+                       apply_error = COALESCE(apply_error, 'worker_interrupted'),
+                       apply_attempts = COALESCE(apply_attempts, 0) + 1,
+                       agent_id = NULL
         WHERE apply_status = 'in_progress'
         """
     )
