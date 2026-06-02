@@ -144,6 +144,8 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
     ensure_source_stats_table(conn)
     ensure_llm_usage_table(conn)
     ensure_dashboard_activity_table(conn)
+    ensure_qa_bank_table(conn)
+    ensure_apply_outcomes_table(conn)
     conn.commit()
 
     # Run migrations for any columns added after initial schema
@@ -223,6 +225,147 @@ def ensure_dashboard_activity_table(conn: sqlite3.Connection | None = None) -> N
         "CREATE INDEX IF NOT EXISTS idx_dashboard_activity_id "
         "ON dashboard_activity_events(id)"
     )
+
+
+def ensure_qa_bank_table(conn: sqlite3.Connection | None = None) -> None:
+    """Create the Resolver Tier-1 Q&A answer cache.
+
+    A normalized question key maps to a stored answer so the deterministic
+    apply Driver can fill standard screening fields without an LLM call.
+
+    Key design (see docs/maxed-apply-pipeline-jun-2026.md §5 and
+    docs/direct-apply-architecture.md §7): the question_key folds in the
+    section header and the input name/autocomplete attribute so that an
+    ambiguous label ("Email" under "Referrer" vs "Personal", "Name" =
+    full vs company vs referrer) cannot leak a wrong cached answer.
+
+        question_key = sha1(
+            norm(label) | norm(section_header) | norm(name_attr) | answer_type
+        )
+
+    answer_type semantics:
+      - text / select / bool / number -> answer is served verbatim from cache.
+      - template -> answer holds a Gemini prompt template; the Resolver
+        re-renders it at fill time with live {company, role, jd} context and
+        never serves cached prose (anti-boilerplate).
+    """
+    if conn is None:
+        conn = get_connection()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS qa_bank (
+            question_key   TEXT PRIMARY KEY,
+            question_text  TEXT,
+            answer         TEXT,
+            answer_type    TEXT,
+            section_header TEXT,
+            name_attr      TEXT,
+            scope          TEXT DEFAULT 'generic',
+            source         TEXT DEFAULT 'gemini',
+            hit_count      INTEGER DEFAULT 0,
+            created_at     TEXT,
+            updated_at     TEXT
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_qa_bank_hit_count "
+        "ON qa_bank(hit_count)"
+    )
+
+
+def ensure_apply_outcomes_table(conn: sqlite3.Connection | None = None) -> None:
+    """Create the per-apply observability/training-signal ledger.
+
+    One row per Driver apply attempt. Powers the success-metric dashboard
+    (applies/day, escalation rate, per-ATS-family throughput) today and the
+    v2 declarative learning loop (docs/direct-apply-architecture.md §10) later.
+
+        url            -- job URL (FK to jobs.url, not enforced)
+        ats_family     -- greenhouse | lever | ashby | workday | ... | unknown
+        fingerprint    -- ats_family + DOM signature (provider identity)
+        result         -- final Driver result string (applied, failed:*, ...)
+        tier_resolved  -- highest Resolver tier used: 0 | 1 | 2 | 3(escalated)
+        escalated      -- 1 if handed to Claude rescue
+        escalate_reason-- §8 trigger that caused escalation (NULL if none)
+        fields_total   -- fillable fields seen on the form
+        fields_llm     -- fields that needed Tier-2 Gemini
+        elapsed_ms     -- wall time for the attempt
+        created_at     -- ISO8601 UTC
+    """
+    if conn is None:
+        conn = get_connection()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS apply_outcomes (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            url             TEXT NOT NULL,
+            ats_family      TEXT,
+            fingerprint     TEXT,
+            result          TEXT,
+            tier_resolved   INTEGER,
+            escalated       INTEGER DEFAULT 0,
+            escalate_reason TEXT,
+            fields_total    INTEGER DEFAULT 0,
+            fields_llm      INTEGER DEFAULT 0,
+            elapsed_ms      INTEGER,
+            created_at      TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_apply_outcomes_created "
+        "ON apply_outcomes(created_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_apply_outcomes_fingerprint "
+        "ON apply_outcomes(fingerprint)"
+    )
+
+
+def record_apply_outcome(
+    conn: sqlite3.Connection | None = None,
+    *,
+    url: str,
+    ats_family: str | None = None,
+    fingerprint: str | None = None,
+    result: str | None = None,
+    tier_resolved: int | None = None,
+    escalated: bool = False,
+    escalate_reason: str | None = None,
+    fields_total: int = 0,
+    fields_llm: int = 0,
+    elapsed_ms: int | None = None,
+    created_at: str | None = None,
+) -> None:
+    """Append one apply-outcome row (Driver observability + learner signal)."""
+    if conn is None:
+        conn = get_connection()
+    ensure_apply_outcomes_table(conn)
+    conn.execute(
+        """
+        INSERT INTO apply_outcomes (
+            url, ats_family, fingerprint, result, tier_resolved,
+            escalated, escalate_reason, fields_total, fields_llm,
+            elapsed_ms, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            url,
+            ats_family,
+            fingerprint,
+            result,
+            tier_resolved,
+            1 if escalated else 0,
+            escalate_reason,
+            max(0, int(fields_total or 0)),
+            max(0, int(fields_llm or 0)),
+            elapsed_ms,
+            created_at or datetime.now(timezone.utc).isoformat(),
+        ),
+    )
+    conn.commit()
 
 
 def record_llm_usage(

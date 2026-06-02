@@ -169,6 +169,27 @@ def run(
         raise typer.Exit(code=1)
 
 
+@app.command("seed-qa-bank")
+def seed_qa_bank(
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Show what would be seeded without writing."
+    ),
+) -> None:
+    """Pre-seed the Resolver Tier-1 Q&A bank from config/common_questions.yaml.
+
+    Deterministic (zero LLM): token-backed answers come from your profile,
+    EEO defaults are curated literals, company-specific questions store only a
+    prompt template. Run once so the apply Driver is cache-warm from job #1.
+    """
+    _bootstrap()
+
+    from applypilot.apply.direct.seed import seed_common_questions
+
+    written = seed_common_questions(dry_run=dry_run)
+    verb = "Would seed" if dry_run else "Seeded"
+    console.print(f"[bold]{verb} {written} Q&A bank rows.[/bold]")
+
+
 @app.command()
 def apply(
     limit: Optional[int] = typer.Option(None, "--limit", "-l", help="Max applications to submit."),
