@@ -183,6 +183,30 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="Application not found")
         return ApplicationDetailResponse(application=row)
 
+    @api.get("/field-overrides")
+    def api_list_field_overrides() -> dict[str, object]:
+        from applypilot.database import list_field_overrides
+
+        return {"overrides": list_field_overrides()}
+
+    @api.post("/field-overrides")
+    def api_set_field_override(label: str, value: str) -> dict[str, object]:
+        """Save a correction applied to this field on every future form."""
+        from fastapi import HTTPException
+
+        from applypilot.database import set_field_override
+
+        if not (label or "").strip():
+            raise HTTPException(status_code=400, detail="label is required")
+        set_field_override(label, value)
+        return {"ok": True, "label": label, "value": value}
+
+    @api.delete("/field-overrides")
+    def api_delete_field_override(label: str) -> dict[str, object]:
+        from applypilot.database import delete_field_override
+
+        return {"ok": delete_field_override(label), "label": label}
+
     @api.post("/applications/confirm")
     def api_confirm_application(url: str) -> dict[str, object]:
         from fastapi import HTTPException

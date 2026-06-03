@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from applypilot.apply.launcher import _resolve_apply_result
 
@@ -44,7 +45,12 @@ RESULT:APPLIED
     assert not result.startswith("applied")
 
 
-def test_structured_result_json_with_submit_evidence_is_applied(tmp_path: Path):
+def test_structured_result_json_with_submit_evidence_is_applied(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(
+        "applypilot.apply.gmail_auth.wait_for_application_receipt",
+        lambda job: SimpleNamespace(confirmed=True, reason="gmail_receipt_found", message=None),
+    )
+
     result = _resolve(
         """
 >> browser_fill textarea message Hello team
@@ -55,3 +61,24 @@ RESULT_JSON:{"status":"applied","submit_click_ref":"submit-ref","submit_button_t
     )
 
     assert result == "applied"
+
+
+def test_structured_result_json_without_gmail_receipt_is_unverified(
+    tmp_path: Path,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "applypilot.apply.gmail_auth.wait_for_application_receipt",
+        lambda job: SimpleNamespace(confirmed=False, reason="gmail_receipt_not_found", message=None),
+    )
+
+    result = _resolve(
+        """
+>> browser_fill textarea message Hello team
+>> browser_click submit-ref Send
+RESULT_JSON:{"status":"applied","submit_click_ref":"submit-ref","submit_button_text":"Send","pre_submit_url":"https://www.workatastartup.com/application?signup_job_id=1","post_submit_url":"https://www.workatastartup.com/messages/sent","post_submit_snapshot":{"fieldCount":0,"fields":[]},"confirmation_copy":"Message sent","screenshot_path":"/tmp/apply-proof.png"}
+""",
+        tmp_path,
+    )
+
+    assert result == "submitted_unverified:gmail_receipt_not_found"

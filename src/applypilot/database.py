@@ -146,6 +146,7 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
     ensure_dashboard_activity_table(conn)
     ensure_qa_bank_table(conn)
     ensure_apply_outcomes_table(conn)
+    ensure_field_overrides_table(conn)
     conn.commit()
 
     # Run migrations for any columns added after initial schema
@@ -366,6 +367,102 @@ def record_apply_outcome(
         ),
     )
     conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Field overrides — user corrections that win over rules/cache/LLM everywhere
+# ---------------------------------------------------------------------------
+
+def _override_key(label: str | None) -> str:
+    """Normalize a field label to a stable, cross-company override key."""
+    import re
+
+    text = (label or "").strip().lower()
+    text = re.sub(r"[^\w\s]", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def ensure_field_overrides_table(conn: sqlite3.Connection | None = None) -> None:
+    """Create the user-correction store.
+
+    One row per normalized field label. The Resolver consults this FIRST (ahead
+    of profile rules, the Q&A cache, and Gemini), so a correction the user makes
+    once is applied to that field on every future form, for any company. Keyed
+    by the normalized label only (not name_attr) so it generalizes across ATSes.
+    """
+    if conn is None:
+        conn = get_connection()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS field_overrides (
+            label_key  TEXT PRIMARY KEY,
+            label      TEXT,
+            value      TEXT,
+            created_at TEXT,
+            updated_at TEXT
+        )
+        """
+    )
+
+
+def get_field_override(label: str | None, conn: sqlite3.Connection | None = None) -> str | None:
+    """Return the user-corrected value for a field label, or None."""
+    key = _override_key(label)
+    if not key:
+        return None
+    if conn is None:
+        conn = get_connection()
+    ensure_field_overrides_table(conn)
+    row = conn.execute(
+        "SELECT value FROM field_overrides WHERE label_key = ?", (key,)
+    ).fetchone()
+    return row["value"] if row else None
+
+
+def set_field_override(
+    label: str, value: str, conn: sqlite3.Connection | None = None
+) -> str:
+    """Upsert a user correction for a field label. Returns the label_key."""
+    key = _override_key(label)
+    if not key:
+        raise ValueError("label is required for an override")
+    if conn is None:
+        conn = get_connection()
+    ensure_field_overrides_table(conn)
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """
+        INSERT INTO field_overrides (label_key, label, value, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(label_key) DO UPDATE SET
+            label = excluded.label,
+            value = excluded.value,
+            updated_at = excluded.updated_at
+        """,
+        (key, label, value, now, now),
+    )
+    conn.commit()
+    return key
+
+
+def list_field_overrides(conn: sqlite3.Connection | None = None) -> list[dict]:
+    if conn is None:
+        conn = get_connection()
+    ensure_field_overrides_table(conn)
+    rows = conn.execute(
+        "SELECT label, value, updated_at FROM field_overrides ORDER BY updated_at DESC"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_field_override(label: str, conn: sqlite3.Connection | None = None) -> bool:
+    key = _override_key(label)
+    if conn is None:
+        conn = get_connection()
+    ensure_field_overrides_table(conn)
+    cur = conn.execute("DELETE FROM field_overrides WHERE label_key = ?", (key,))
+    conn.commit()
+    return cur.rowcount > 0
 
 
 def record_llm_usage(
@@ -756,6 +853,33 @@ def store_jobs(conn: sqlite3.Connection, jobs: list[dict],
 
     ensure_columns(conn)
 
+    def _backfill_detail_columns(existing_url: str, job: dict) -> None:
+        application_url = job.get("application_url")
+        full_description = job.get("full_description")
+        if not application_url and not full_description:
+            return
+        conn.execute(
+            """
+            UPDATE jobs
+            SET application_url = COALESCE(NULLIF(application_url, ''), ?),
+                full_description = COALESCE(NULLIF(full_description, ''), ?),
+                detail_scraped_at = CASE
+                    WHEN (detail_scraped_at IS NULL OR detail_scraped_at = '')
+                         AND ? IS NOT NULL
+                    THEN ?
+                    ELSE detail_scraped_at
+                END
+            WHERE url = ?
+            """,
+            (
+                application_url,
+                full_description,
+                full_description,
+                now,
+                existing_url,
+            ),
+        )
+
     for job in jobs:
         url = job.get("url")
         if not url:
@@ -773,20 +897,27 @@ def store_jobs(conn: sqlite3.Connection, jobs: list[dict],
                 duplicate["url"] if isinstance(duplicate, sqlite3.Row) else duplicate[0]
             )
             _append_job_source(conn, duplicate_url, site)
+            _backfill_detail_columns(duplicate_url, job)
             existing += 1
             continue
 
+        application_url = job.get("application_url")
+        full_description = job.get("full_description")
+        detail_scraped_at = now if full_description else None
         try:
             conn.execute(
                 "INSERT INTO jobs (url, title, salary, description, location, site, "
-                "content_hash, sources, strategy, discovered_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "content_hash, sources, strategy, discovered_at, application_url, "
+                "full_description, detail_scraped_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (url, job.get("title"), job.get("salary"), job.get("description"),
-                 job.get("location"), site, content_hash, site, strategy, now),
+                 job.get("location"), site, content_hash, site, strategy, now,
+                 application_url, full_description, detail_scraped_at),
             )
             new += 1
         except sqlite3.IntegrityError:
             _append_job_source(conn, url, site)
+            _backfill_detail_columns(url, job)
             existing += 1
 
     conn.commit()

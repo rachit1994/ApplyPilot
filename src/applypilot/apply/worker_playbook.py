@@ -59,12 +59,20 @@ def build_playbook_tokens(
 
     job_url = str(job.get("application_url") or job.get("url") or "").strip()
 
+    raw_phone = str(personal.get("phone") or "").strip()
+    phone_digits = _digits_only(raw_phone)
+    # E.164 (+countrycode...) when the stored number carries a country code, so
+    # international phone widgets (intl-tel-input on Greenhouse, etc.) detect the
+    # right country instead of treating it as an over-long US number.
+    phone_e164 = ("+" + phone_digits) if raw_phone.startswith("+") else phone_digits
+
     return {
         "full_name": full_name,
         "preferred_name": preferred,
         "email": str(personal.get("email") or "").strip(),
         "phone": str(personal.get("phone") or "").strip(),
-        "phone_digits": _digits_only(str(personal.get("phone") or "")),
+        "phone_digits": phone_digits,
+        "phone_e164": phone_e164,
         "address": str(personal.get("address") or "").strip(),
         "city": str(personal.get("city") or "").strip(),
         "province_state": str(personal.get("province_state") or "").strip(),

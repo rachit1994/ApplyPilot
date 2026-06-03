@@ -1,9 +1,12 @@
 # Copy to ~/.applypilot/discover.yaml to customize discover sources.
+# Public ATS APIs are enabled by default because they provide direct,
+# deterministic apply URLs. Broad SmartExtract scraping is opt-in; it can be
+# noisy and slow across large search/site matrices.
 
 sources:
   jobspy: true
   workday: true
-  smartextract: true
+  smartextract: false
   workatastartup: true
   hn_hiring: true
   himalayas: true
@@ -11,6 +14,7 @@ sources:
   weworkremotely: true
   greenhouse: true
   lever: true
+  ashby: true
   career_targets: true
   funded_startups: false
 

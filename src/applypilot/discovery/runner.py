@@ -114,10 +114,31 @@ def run_discover(*, workers: int = 1) -> dict[str, Any]:
     agent_cfg = cfg["agent_discover"]
     if priority_boards_only_enabled():
         sources = {key: False for key in sources}
+        sources["greenhouse"] = True
+        sources["lever"] = True
+        sources["ashby"] = True
         sources["smartextract"] = True
         agent_cfg = {**agent_cfg, "enabled": False}
-        log.info("Discover sources limited to smartextract (LinkedIn + Wellfound only)")
+        log.info("Discover sources limited to ATS APIs plus priority SmartExtract boards")
     stats: dict[str, Any] = {}
+
+    # Public ATS APIs produce direct, deterministic application URLs. Run them
+    # before broad scrape sources so the apply queue has high-confidence rows
+    # as early as possible.
+    if sources.get("greenhouse"):
+        from applypilot.discovery.ats.greenhouse import run_greenhouse_discovery
+
+        stats["greenhouse"] = _run_source("greenhouse", run_greenhouse_discovery)
+
+    if sources.get("lever"):
+        from applypilot.discovery.ats.lever import run_lever_discovery
+
+        stats["lever"] = _run_source("lever", run_lever_discovery)
+
+    if sources.get("ashby"):
+        from applypilot.discovery.ats.ashby import run_ashby_discovery
+
+        stats["ashby"] = _run_source("ashby", run_ashby_discovery)
 
     if sources.get("jobspy"):
         from applypilot.discovery.jobspy import run_discovery
@@ -156,16 +177,6 @@ def run_discover(*, workers: int = 1) -> dict[str, Any]:
 
         url = (cfg.get("hn_hiring") or {}).get("url", "https://hnhiring.com/locations/remote")
         stats["hn_hiring"] = _run_source("hn_hiring", run_hn_hiring_discovery, url=url)
-
-    if sources.get("greenhouse"):
-        from applypilot.discovery.ats.greenhouse import run_greenhouse_discovery
-
-        stats["greenhouse"] = _run_source("greenhouse", run_greenhouse_discovery)
-
-    if sources.get("lever"):
-        from applypilot.discovery.ats.lever import run_lever_discovery
-
-        stats["lever"] = _run_source("lever", run_lever_discovery)
 
     if sources.get("workatastartup"):
         from applypilot.discovery.workatastartup import (

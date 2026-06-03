@@ -8,7 +8,7 @@ from applypilot.apply.eligibility import (
 )
 
 
-def test_linkedin_url_is_manual_even_when_salary_ok():
+def test_linkedin_job_page_can_flow_to_company_website_apply():
     job = {
         "url": "https://www.linkedin.com/jobs/view/999",
         "application_url": "https://www.linkedin.com/jobs/view/999",
@@ -19,8 +19,8 @@ def test_linkedin_url_is_manual_even_when_salary_ok():
         "full_description": "5+ years experience required.",
     }
     result = classify_apply_target(job)
-    assert result.decision == ApplyDecision.MANUAL
-    assert result.reason == "manual ATS"
+    assert result.decision == ApplyDecision.ELIGIBLE
+    assert result.reason == "linkedin_company_website_flow"
 
 
 def test_greenhouse_url_is_eligible():
@@ -143,6 +143,20 @@ def test_ats_only_accepts_greenhouse_sourced_company_apply_url():
     }
     result = classify_apply_target(job, ats_only=True)
     assert result.decision == ApplyDecision.ELIGIBLE
+
+
+def test_location_ineligible_ats_job_skips_before_browser():
+    job = {
+        "url": "https://jobs.ashbyhq.com/acme/hybrid",
+        "application_url": "https://jobs.ashbyhq.com/acme/hybrid/application",
+        "title": "Staff Engineer",
+        "site": "Ashby:Acme",
+        "salary": "$180k",
+        "location": "San Francisco",
+    }
+    result = classify_apply_target(job, ats_only=True)
+    assert result.decision == ApplyDecision.SKIP_PERMANENT
+    assert result.reason == "not_eligible_location"
 
 
 def test_is_ats_url_markers():

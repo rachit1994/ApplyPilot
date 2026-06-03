@@ -84,7 +84,9 @@ def test_discover_config_defaults(tmp_path, monkeypatch):
     cfg = load_discover_config()
     assert "sources" in cfg
     assert cfg["sources"]["jobspy"] is True
+    assert cfg["sources"]["smartextract"] is False
     assert cfg["sources"]["funded_startups"] is False
+    assert cfg["sources"]["ashby"] is True
     assert cfg["agent_discover"]["enabled"] is True
 
 

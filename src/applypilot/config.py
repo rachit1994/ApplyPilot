@@ -245,6 +245,7 @@ DEFAULTS = {
     "apply_prompt_slim_enabled": True,
     "apply_session_reuse_enabled": True,
     "apply_gmail_mcp_enabled": False,
+    "apply_require_gmail_confirmation": True,
     "apply_prompt_mode": "legacy",
 }
 

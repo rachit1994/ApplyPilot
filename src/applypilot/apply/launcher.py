@@ -445,6 +445,17 @@ def acquire_job(
                 conn.execute("BEGIN IMMEDIATE")
                 continue
 
+            # --include-untailored: surface the base resume to the prompt builders,
+            # which read job["tailored_resume_path"] directly. Without this the
+            # job passes the queue filter but fails at prompt build
+            # (failed:resume_pdf_missing) and never reaches the apply agent.
+            if (
+                include_untailored
+                and not job_row.get("tailored_resume_path")
+                and resume_path
+            ):
+                job_row["tailored_resume_path"] = resume_path
+
             now = datetime.now(timezone.utc).isoformat()
             conn.execute("""
                 UPDATE jobs SET apply_status = 'in_progress',
@@ -454,7 +465,7 @@ def acquire_job(
             """, (f"worker-{worker_id}", now, row["url"]))
             conn.commit()
 
-            return dict(row)
+            return job_row
     except Exception:
         conn.rollback()
         raise
@@ -509,6 +520,7 @@ def mark_result(url: str, status: str, error: str | None = None,
                            apply_duration_ms = ?, apply_task_id = ?,
                            apply_log_path = COALESCE(?, apply_log_path),
                            apply_form_filled = COALESCE(?, apply_form_filled),
+                           verification_confidence = COALESCE(verification_confidence, 'gmail_confirmed'),
                            apply_not_before = NULL
             WHERE url = ?
         """, (now, duration_ms, task_id, log_value, form_json, url))
@@ -818,6 +830,20 @@ def _resolve_apply_result(
 
         if record.status == "applied":
             if verdict.decision == "verified":
+                if apply_settings.require_gmail_confirmation():
+                    from applypilot.apply.gmail_auth import wait_for_application_receipt
+
+                    receipt = wait_for_application_receipt(job)
+                    if receipt.confirmed:
+                        if receipt.message:
+                            logger.info(
+                                "Gmail receipt confirmed for %s via %s (%s)",
+                                job.get("title"),
+                                receipt.message.from_,
+                                receipt.message.subject,
+                            )
+                        return "applied"
+                    return f"submitted_unverified:{receipt.reason}"
                 return "applied"
             if verdict.decision == "unverified":
                 return "submitted_unverified:" + ";".join(verdict.reasons)
@@ -1389,6 +1415,113 @@ def _pause_worker_for_quota(worker_id: int, *, not_before: str) -> bool:
 # Worker loop
 # ---------------------------------------------------------------------------
 
+def _try_direct_apply(
+    job: dict,
+    *,
+    port: int,
+    worker_id: int,
+    dry_run: bool,
+) -> tuple[str, int, Path | None] | None:
+    """Attempt the deterministic Direct Apply engine ($0 Claude/apply).
+
+    Returns a (result, duration_ms, None) tuple to use directly, or None to
+    escalate to the Claude path below (only when APPLYPILOT_DIRECT_ESCALATE=1).
+    """
+    from applypilot.apply.direct import fingerprint
+    from applypilot.apply.direct.adapters import get_adapter
+    from applypilot.apply.direct.throttle import check_caps
+    from applypilot.database import record_apply_outcome
+
+    url = job.get("application_url") or job.get("url") or ""
+    family = fingerprint.ats_family(url)
+    if get_adapter(family) is None:
+        # No deterministic adapter for this ATS — hand straight to Claude rescue.
+        if apply_settings.direct_escalate_to_claude():
+            add_event(f"[W{worker_id}] Direct: no adapter for {family}, escalating to Claude")
+            return None
+        return f"failed:direct_no_adapter:{family}", 0, None
+
+    allowed, cap_reason = check_caps(url)
+    if not allowed:
+        add_event(f"[W{worker_id}] Direct: daily cap reached ({cap_reason})")
+        return cap_reason, 0, None
+
+    from applypilot.apply.direct.driver import DriverResult, apply_via_direct
+
+    # Run the in-process Driver under a hard wall-clock guard: a hung Playwright
+    # call on an unfamiliar form must not stall the worker overnight. On timeout
+    # we abandon the (daemon) thread — the next launch_chrome recycles port 9222,
+    # which unblocks and ends the orphan — and treat the job as escalatable.
+    _holder: dict = {}
+
+    def _run() -> None:
+        try:
+            _holder["dr"] = apply_via_direct(
+                job, port=port, worker_id=worker_id, dry_run=dry_run
+            )
+        except Exception as exc:  # noqa: BLE001
+            _holder["err"] = exc
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout=apply_settings.direct_job_timeout())
+    fp = fingerprint.provider_fingerprint(url)
+    if t.is_alive():
+        add_event(
+            f"[W{worker_id}] Direct timed out "
+            f"(> {apply_settings.direct_job_timeout():.0f}s)"
+        )
+        # Free the orphan: killing Chrome on this port makes the stuck
+        # Playwright call raise, so the daemon thread unwinds instead of
+        # lingering and blocking clean process exit.
+        try:
+            chrome._kill_on_port(port)
+        except Exception:  # noqa: BLE001
+            pass
+        # Park (don't escalate): the orphan thread may still hold Chrome, so a
+        # same-iteration Claude rescue could collide. Next pass relaunches Chrome
+        # clean and retries the job.
+        dr = DriverResult(
+            result="failed:direct_timeout", escalate=False,
+            escalate_reason="timeout", ats_family=family, fingerprint=fp,
+        )
+    elif "err" in _holder:
+        dr = DriverResult(
+            result="failed:direct_exception", escalate=True,
+            escalate_reason=str(_holder["err"])[:80],
+            ats_family=family, fingerprint=fp,
+        )
+    else:
+        dr = _holder["dr"]
+
+    escalating = bool(dr.escalate and apply_settings.direct_escalate_to_claude())
+    try:
+        record_apply_outcome(
+            url=url,
+            ats_family=dr.ats_family or family,
+            fingerprint=dr.fingerprint,
+            result=dr.result,
+            tier_resolved=dr.tier_resolved,
+            escalated=escalating,
+            escalate_reason=dr.escalate_reason,
+            fields_total=dr.fields_total,
+            fields_llm=dr.fields_llm,
+            elapsed_ms=dr.elapsed_ms,
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("record_apply_outcome failed", exc_info=True)
+
+    if dr.result.startswith("skipped"):
+        return "skipped", dr.elapsed_ms, None
+    if escalating:
+        add_event(
+            f"[W{worker_id}] Direct -> Claude rescue "
+            f"({dr.escalate_reason or dr.result[:30]})"
+        )
+        return None
+    return dr.result, dr.elapsed_ms, None
+
+
 def _run_job_with_optional_fallback(
     job: dict,
     *,
@@ -1400,6 +1533,14 @@ def _run_job_with_optional_fallback(
     confirm_submit: bool,
 ) -> tuple[str, int, Path | None]:
     """Run apply once on primary model; escalate to fallback on retriable failure."""
+    if apply_settings.apply_engine() == "direct":
+        direct = _try_direct_apply(
+            job, port=port, worker_id=worker_id, dry_run=dry_run,
+        )
+        if direct is not None:
+            return direct
+        # else: Direct escalated -> continue to the Claude path as rescue tier.
+
     fallback_model = apply_settings.apply_fallback_model()
     result, duration_ms, session_log = run_job(
         job,

@@ -190,6 +190,46 @@ def seed_qa_bank(
     console.print(f"[bold]{verb} {written} Q&A bank rows.[/bold]")
 
 
+@app.command("correct-field")
+def correct_field(
+    label: Optional[str] = typer.Argument(None, help="Field label to correct, e.g. \"Phone\"."),
+    value: Optional[str] = typer.Argument(None, help="Correct value to use everywhere."),
+    list_all: bool = typer.Option(False, "--list", help="List all saved corrections."),
+    delete: Optional[str] = typer.Option(None, "--delete", help="Delete the correction for this label."),
+) -> None:
+    """Save a field correction that the apply engine uses on EVERY future form.
+
+    Example: `applypilot correct-field "Phone" "+91 8168433423"`. The next time
+    any form has a field labelled "Phone", the Direct Apply engine fills this
+    value instead of its rule/LLM guess — for every company.
+    """
+    _bootstrap()
+    from applypilot.database import (
+        delete_field_override,
+        list_field_overrides,
+        set_field_override,
+    )
+
+    if delete:
+        ok = delete_field_override(delete)
+        console.print(f"[{'green' if ok else 'yellow'}]{'Deleted' if ok else 'No'} correction for {delete!r}[/]")
+        return
+    if list_all or (not label and not value):
+        rows = list_field_overrides()
+        if not rows:
+            console.print("[dim]No field corrections saved yet.[/dim]")
+            return
+        console.print("[bold]Field corrections (applied to all future forms):[/bold]")
+        for r in rows:
+            console.print(f"  • {r['label']!r} -> {r['value']!r}")
+        return
+    if not label or value is None:
+        console.print("[red]Provide both a LABEL and a VALUE, or use --list.[/red]")
+        raise typer.Exit(code=1)
+    set_field_override(label, value)
+    console.print(f"[green]Saved.[/green] '{label}' will be filled as '{value}' on all future forms.")
+
+
 @app.command()
 def apply(
     limit: Optional[int] = typer.Option(None, "--limit", "-l", help="Max applications to submit."),
@@ -267,9 +307,22 @@ def apply(
         "--prompt-mode",
         help="Apply stdin prompt: legacy (default) or playbook (worker-apply-playbook.md).",
     ),
+    engine: Optional[str] = typer.Option(
+        None,
+        "--engine",
+        help="Apply engine: claude (default, ~$0.15/apply) or direct "
+        "(deterministic Playwright, ~$0 Claude/apply for Greenhouse/Lever/Ashby).",
+    ),
 ) -> None:
     """Launch auto-apply to submit job applications."""
     _bootstrap()
+
+    if engine:
+        normalized = engine.strip().lower()
+        if normalized not in ("claude", "direct"):
+            console.print(f"[red]Invalid --engine: {engine!r} (use claude|direct)[/red]")
+            raise typer.Exit(code=1)
+        os.environ["APPLYPILOT_APPLY_ENGINE"] = normalized
 
     if priority_boards_only:
         os.environ["APPLYPILOT_PRIORITY_BOARDS_ONLY"] = "1"

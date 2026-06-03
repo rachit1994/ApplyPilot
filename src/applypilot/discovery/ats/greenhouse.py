@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 
+from bs4 import BeautifulSoup
+
 from applypilot.database import get_connection, init_db, store_jobs
 from applypilot.discovery.feeds._http import get_json
 from applypilot.discovery.watchlist import load_watchlist
@@ -12,6 +14,12 @@ log = logging.getLogger(__name__)
 
 SITE_PREFIX = "Greenhouse"
 STRATEGY = "greenhouse_api"
+
+
+def _clean_html(value: str | None) -> str | None:
+    if not value:
+        return None
+    return BeautifulSoup(value, "html.parser").get_text("\n", strip=True)
 
 
 def fetch_board_jobs(board: str) -> list[dict]:
@@ -30,12 +38,15 @@ def fetch_board_jobs(board: str) -> list[dict]:
         locs = row.get("location") or {}
         if isinstance(locs, dict):
             loc = locs.get("name")
+        full_description = _clean_html(row.get("content") or row.get("description"))
         jobs.append(
             {
                 "url": job_url,
+                "application_url": job_url,
                 "title": row.get("title"),
                 "salary": None,
-                "description": None,
+                "description": full_description,
+                "full_description": full_description,
                 "location": loc,
             }
         )

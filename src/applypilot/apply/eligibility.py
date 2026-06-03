@@ -11,6 +11,7 @@ from applypilot.apply.experience import is_too_junior_role
 from applypilot.apply.salary import salary_meets_regional_minimum
 from applypilot.apply.apply_url_extract import coerce_application_url
 from applypilot.config import DEFAULTS, is_contractor_marketplace, is_manual_ats, load_search_config
+from applypilot.discovery._filters import location_passes
 from applypilot.discovery.site_priority import job_is_priority_board
 
 # Known ATS hosts — auto-apply priority queue
@@ -83,7 +84,7 @@ def is_workatastartup_job(job: dict) -> bool:
 
 def is_ats_sourced_job(job: dict) -> bool:
     site = (job.get("site") or "").lower()
-    return site.startswith("greenhouse:") or site.startswith("lever:")
+    return site.startswith(("greenhouse:", "lever:", "ashby:"))
 
 
 def is_ats_url(url: str | None) -> bool:
@@ -159,6 +160,9 @@ def classify_apply_target(
     if not apply_url:
         return EligibilityResult(ApplyDecision.MANUAL, "no_apply_url")
 
+    if job.get("location") and not location_passes(job.get("location")):
+        return EligibilityResult(ApplyDecision.SKIP_PERMANENT, "not_eligible_location")
+
     if (
         ats_only
         and not is_ats_url(apply_url)
@@ -198,34 +202,58 @@ def ats_priority_sql_case() -> str:
     """SQL CASE expression: lower sort key = higher priority."""
     parts = ["CASE"]
     parts.append(
+        "WHEN LOWER(COALESCE(site, '')) LIKE 'greenhouse:%' "
+        "OR LOWER(COALESCE(url, '')) LIKE '%greenhouse.io%' "
+        "OR LOWER(COALESCE(application_url, '')) LIKE '%greenhouse.io%' THEN 0"
+    )
+    parts.append(
+        "WHEN LOWER(COALESCE(site, '')) LIKE 'lever:%' "
+        "OR LOWER(COALESCE(url, '')) LIKE '%lever.co%' "
+        "OR LOWER(COALESCE(application_url, '')) LIKE '%lever.co%' THEN 1"
+    )
+    parts.append(
+        "WHEN LOWER(COALESCE(site, '')) LIKE 'ashby:%' "
+        "OR LOWER(COALESCE(url, '')) LIKE '%ashbyhq.com%' "
+        "OR LOWER(COALESCE(application_url, '')) LIKE '%ashbyhq.com%' THEN 2"
+    )
+    parts.append(
         "WHEN LOWER(COALESCE(site, '')) = 'linkedin' "
         "OR LOWER(COALESCE(site, '')) = 'linkedin.com' "
         "OR LOWER(COALESCE(url, '')) LIKE '%linkedin.com%' "
-        "OR LOWER(COALESCE(application_url, '')) LIKE '%linkedin.com%' THEN 0"
+        "OR LOWER(COALESCE(application_url, '')) LIKE '%linkedin.com%' THEN 3"
     )
     parts.append(
         "WHEN LOWER(COALESCE(site, '')) = 'wellfound' "
         "OR LOWER(COALESCE(url, '')) LIKE '%wellfound.com%' "
         "OR LOWER(COALESCE(application_url, '')) LIKE '%wellfound.com%' "
         "OR LOWER(COALESCE(url, '')) LIKE '%angel.co%' "
-        "OR LOWER(COALESCE(application_url, '')) LIKE '%angel.co%' THEN 1"
+        "OR LOWER(COALESCE(application_url, '')) LIKE '%angel.co%' THEN 4"
     )
     for marker in ATS_URL_MARKERS:
         parts.append(
-            f"WHEN LOWER(COALESCE(application_url, '')) LIKE '%{marker}%' THEN 2"
+            f"WHEN LOWER(COALESCE(application_url, '')) LIKE '%{marker}%' THEN 5"
         )
     parts.append(
-        "WHEN LOWER(COALESCE(application_url, url, '')) LIKE '%workatastartup.com%' THEN 3"
+        "WHEN LOWER(COALESCE(application_url, url, '')) LIKE '%workatastartup.com%' THEN 6"
     )
-    parts.append("ELSE 4 END")
+    parts.append("ELSE 7 END")
     return " ".join(parts)
 
 
 def priority_boards_only_where_clause() -> str:
-    """Extra WHERE fragment: LinkedIn and Wellfound jobs only."""
+    """Extra WHERE fragment: ATS-first, LinkedIn, and Wellfound jobs only."""
     return (
         "AND ("
-        "LOWER(COALESCE(site, '')) = 'linkedin' "
+        "LOWER(COALESCE(site, '')) LIKE 'greenhouse:%' "
+        "OR LOWER(COALESCE(site, '')) LIKE 'lever:%' "
+        "OR LOWER(COALESCE(site, '')) LIKE 'ashby:%' "
+        "OR LOWER(COALESCE(url, '')) LIKE '%greenhouse.io%' "
+        "OR LOWER(COALESCE(application_url, '')) LIKE '%greenhouse.io%' "
+        "OR LOWER(COALESCE(url, '')) LIKE '%lever.co%' "
+        "OR LOWER(COALESCE(application_url, '')) LIKE '%lever.co%' "
+        "OR LOWER(COALESCE(url, '')) LIKE '%ashbyhq.com%' "
+        "OR LOWER(COALESCE(application_url, '')) LIKE '%ashbyhq.com%' "
+        "OR LOWER(COALESCE(site, '')) = 'linkedin' "
         "OR LOWER(COALESCE(site, '')) = 'linkedin.com' "
         "OR LOWER(COALESCE(url, '')) LIKE '%linkedin.com%' "
         "OR LOWER(COALESCE(application_url, '')) LIKE '%linkedin.com%' "
@@ -247,6 +275,7 @@ def ats_only_where_clause() -> str:
         f"AND ({likes} "
         "OR LOWER(COALESCE(site, '')) LIKE 'greenhouse:%' "
         "OR LOWER(COALESCE(site, '')) LIKE 'lever:%' "
+        "OR LOWER(COALESCE(site, '')) LIKE 'ashby:%' "
         "OR LOWER(COALESCE(application_url, url, '')) LIKE '%workatastartup.com%')"
     )
 

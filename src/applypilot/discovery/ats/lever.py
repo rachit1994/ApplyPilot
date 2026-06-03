@@ -30,12 +30,15 @@ def fetch_site_jobs(site: str) -> list[dict]:
         cats = row.get("categories") or {}
         if isinstance(cats, dict):
             loc = cats.get("location")
+        full_description = row.get("descriptionPlain")
         jobs.append(
             {
                 "url": job_url,
+                "application_url": job_url,
                 "title": row.get("text"),
                 "salary": None,
-                "description": row.get("descriptionPlain"),
+                "description": full_description,
+                "full_description": full_description,
                 "location": loc,
             }
         )

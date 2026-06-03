@@ -12,6 +12,7 @@ import json
 import queue
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Iterator
 from unittest.mock import patch
 
@@ -361,6 +362,13 @@ def _emit_applied_success(stdout: ControllableStdout, *, session_id: str | None 
     stdout.close_feed()
 
 
+def _confirm_gmail_receipt(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "applypilot.apply.gmail_auth.wait_for_application_receipt",
+        lambda job: SimpleNamespace(confirmed=True, reason="gmail_receipt_found", message=None),
+    )
+
+
 def test_e2e_run_job_invokes_haiku_with_session_reuse_not_no_persistence(
     quota_e2e_env, run_job_job, monkeypatch: pytest.MonkeyPatch
 ):
@@ -368,6 +376,7 @@ def test_e2e_run_job_invokes_haiku_with_session_reuse_not_no_persistence(
     mp = env["monkeypatch"]
     mp.setitem(config.DEFAULTS, "apply_inactivity_timeout", 2.0)
     mp.setitem(config.DEFAULTS, "apply_timeout", 10.0)
+    _confirm_gmail_receipt(monkeypatch)
 
     stdout = ControllableStdout()
     _fake, captured = _install_capturing_fake_popen(mp, stdout)
@@ -596,6 +605,7 @@ def test_e2e_success_records_quota_telemetry_in_db(
     mp = quota_e2e_env["monkeypatch"]
     mp.setitem(config.DEFAULTS, "apply_inactivity_timeout", 2.0)
     mp.setitem(config.DEFAULTS, "apply_timeout", 10.0)
+    _confirm_gmail_receipt(monkeypatch)
 
     stdout = ControllableStdout()
     _install_fake_popen(mp, stdout)

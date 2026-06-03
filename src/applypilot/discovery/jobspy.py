@@ -13,7 +13,10 @@ import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
-from jobspy import scrape_jobs
+try:
+    from jobspy import scrape_jobs
+except ModuleNotFoundError:
+    scrape_jobs = None
 
 from applypilot import config
 from applypilot.apply.apply_url_extract import (
@@ -111,6 +114,8 @@ def parse_proxy(proxy_str: str) -> dict:
 
 def _scrape_with_retry(kwargs: dict, max_retries: int = 2, backoff: float = 5.0):
     """Call scrape_jobs with retry on transient failures."""
+    if scrape_jobs is None:
+        raise RuntimeError("python-jobspy is not installed; disable jobspy or install the optional dependency")
     for attempt in range(max_retries + 1):
         try:
             return scrape_jobs(**kwargs)
@@ -412,6 +417,14 @@ def search_jobs(
 
     if "linkedin" in sites:
         kwargs["linkedin_fetch_description"] = True
+
+    if scrape_jobs is None:
+        return {
+            "error": "python-jobspy is not installed; disable jobspy or install the optional dependency",
+            "total": 0,
+            "new": 0,
+            "existing": 0,
+        }
 
     try:
         df = scrape_jobs(**kwargs)

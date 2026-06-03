@@ -11,7 +11,7 @@ from applypilot.config import APP_DIR, CONFIG_DIR
 _DEFAULT_SOURCES = {
     "jobspy": True,
     "workday": True,
-    "smartextract": True,
+    "smartextract": False,
     "workatastartup": True,
     "hn_hiring": True,
     "himalayas": True,
@@ -19,6 +19,7 @@ _DEFAULT_SOURCES = {
     "weworkremotely": True,
     "greenhouse": True,
     "lever": True,
+    "ashby": True,
     "career_targets": True,
     "funded_startups": False,
 }

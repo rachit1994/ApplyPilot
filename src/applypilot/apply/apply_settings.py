@@ -41,6 +41,61 @@ def _env_str(name: str, default: str) -> str:
     return stripped if stripped else default
 
 
+def apply_engine(cli_override: str | None = None) -> Literal["claude", "direct"]:
+    """Apply execution engine.
+
+    'claude' (default) — the existing Claude Code browser agent (~$0.15/apply).
+    'direct'           — deterministic Playwright Direct Apply (~$0 Claude/apply)
+                         for ATS families with an adapter; falls back to the
+                         Claude path as the rescue tier for anything else.
+    """
+    raw = (cli_override or _env_str("APPLYPILOT_APPLY_ENGINE", "claude")).strip().lower()
+    return "direct" if raw == "direct" else "claude"
+
+
+def direct_gemini_enabled() -> bool:
+    """Allow the Resolver Tier-2 (one cheap Gemini call for novel required fields)."""
+    return _env_bool("APPLYPILOT_DIRECT_GEMINI", True)
+
+
+def direct_escalate_to_claude() -> bool:
+    """When Direct Apply can't finish a job, fall back to the Claude path.
+
+    Off by default so a cost-capped run never silently spends Claude budget;
+    unresolved jobs are parked (failed:direct_*) for a later Claude pass.
+    """
+    return _env_bool("APPLYPILOT_DIRECT_ESCALATE", False)
+
+
+def direct_job_timeout() -> float:
+    """Hard wall-clock budget (seconds) for one Direct Apply attempt.
+
+    The Driver runs in-process (no subprocess wall-timeout covers it), so a hung
+    Playwright call on an unfamiliar form could otherwise stall a worker for the
+    whole night. On timeout the job escalates/parks and the worker moves on.
+    """
+    try:
+        return float(_env_str("APPLYPILOT_DIRECT_JOB_TIMEOUT", "100"))
+    except ValueError:
+        return 100.0
+
+
+def max_per_ats_family_per_day() -> int:
+    """IP-reputation cap: max submits per ATS family per local day (0 = unlimited)."""
+    try:
+        return int(_env_str("APPLYPILOT_MAX_PER_ATS_FAMILY_PER_DAY", "75"))
+    except ValueError:
+        return 75
+
+
+def max_per_apex_domain_per_day() -> int:
+    """IP-reputation cap: max submits per company apex domain per day (0 = unlimited)."""
+    try:
+        return int(_env_str("APPLYPILOT_MAX_PER_APEX_DOMAIN_PER_DAY", "25"))
+    except ValueError:
+        return 25
+
+
 def apply_model_default(cli_override: str | None = None) -> str:
     """Primary Claude model for apply runs (default haiku)."""
     if cli_override:
@@ -105,6 +160,13 @@ def gmail_mcp_enabled() -> bool:
     return _env_bool(
         "APPLYPILOT_APPLY_GMAIL_MCP",
         bool(config.DEFAULTS.get("apply_gmail_mcp_enabled", False)),
+    )
+
+
+def require_gmail_confirmation() -> bool:
+    return _env_bool(
+        "APPLYPILOT_APPLY_REQUIRE_GMAIL_CONFIRMATION",
+        bool(config.DEFAULTS.get("apply_require_gmail_confirmation", True)),
     )
 
 
@@ -239,6 +301,7 @@ def apply_telemetry_flags() -> dict[str, bool | str]:
         "prompt_mode": apply_prompt_mode(),
         "session_reuse": session_reuse_enabled(),
         "gmail_mcp": gmail_mcp_enabled(),
+        "require_gmail_confirmation": require_gmail_confirmation(),
         "apply_model_default": apply_model_default(),
         "apply_fallback_model": apply_fallback_model(),
     }
