@@ -8,6 +8,12 @@ from typing import Any
 
 from applypilot.database import get_connection, record_discover_source_stats
 from applypilot.discovery.career_targets import load_career_targets, partition_career_targets
+from applypilot.discovery.company_ranker import (
+    load_source_history,
+    rank_company_rows,
+    rank_employer_map,
+    safe_load_profile,
+)
 from applypilot.discovery.discover_config import load_discover_config
 from applypilot.discovery.site_priority import filter_priority_site_dicts
 from applypilot.discovery.smartextract import (
@@ -107,11 +113,22 @@ def _run_source(name: str, fn, *args, **kwargs) -> dict[str, Any]:
         return {"status": f"error: {exc}", "result": None}
 
 
+def _company_first_limit(cfg: dict[str, Any], key: str) -> int:
+    try:
+        return max(0, int((cfg.get("company_first") or {}).get(key, 0) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def run_discover(*, workers: int = 1) -> dict[str, Any]:
     """Run all enabled discover sources. Returns per-source stats."""
     cfg = load_discover_config()
     sources = cfg["sources"]
     agent_cfg = cfg["agent_discover"]
+    company_first_cfg = cfg.get("company_first") or {}
+    company_first_enabled = bool(company_first_cfg.get("enabled", True))
+    company_profile = safe_load_profile() if company_first_enabled else {}
+    source_history = load_source_history(days=30) if company_first_enabled else {}
     if priority_boards_only_enabled():
         sources = {key: False for key in sources}
         sources["greenhouse"] = True
@@ -125,20 +142,43 @@ def run_discover(*, workers: int = 1) -> dict[str, Any]:
     # Public ATS APIs produce direct, deterministic application URLs. Run them
     # before broad scrape sources so the apply queue has high-confidence rows
     # as early as possible.
+    ranked_watchlist: list[dict] | None = None
+    if company_first_enabled:
+        from applypilot.discovery.watchlist import load_watchlist
+
+        ranked_watchlist = rank_company_rows(
+            load_watchlist(),
+            profile=company_profile,
+            source_history=source_history,
+            max_rows=_company_first_limit(cfg, "max_watchlist_companies"),
+        )
+
     if sources.get("greenhouse"):
         from applypilot.discovery.ats.greenhouse import run_greenhouse_discovery
 
-        stats["greenhouse"] = _run_source("greenhouse", run_greenhouse_discovery)
+        stats["greenhouse"] = _run_source(
+            "greenhouse",
+            run_greenhouse_discovery,
+            companies=ranked_watchlist,
+        )
 
     if sources.get("lever"):
         from applypilot.discovery.ats.lever import run_lever_discovery
 
-        stats["lever"] = _run_source("lever", run_lever_discovery)
+        stats["lever"] = _run_source(
+            "lever",
+            run_lever_discovery,
+            companies=ranked_watchlist,
+        )
 
     if sources.get("ashby"):
         from applypilot.discovery.ats.ashby import run_ashby_discovery
 
-        stats["ashby"] = _run_source("ashby", run_ashby_discovery)
+        stats["ashby"] = _run_source(
+            "ashby",
+            run_ashby_discovery,
+            companies=ranked_watchlist,
+        )
 
     if sources.get("jobspy"):
         from applypilot.discovery.jobspy import run_discovery
@@ -146,9 +186,22 @@ def run_discover(*, workers: int = 1) -> dict[str, Any]:
         stats["jobspy"] = _run_source("jobspy", run_discovery)
 
     if sources.get("workday"):
-        from applypilot.discovery.workday import run_workday_discovery
+        from applypilot.discovery.workday import load_employers, run_workday_discovery
 
-        stats["workday"] = _run_source("workday", run_workday_discovery, workers=workers)
+        workday_employers = None
+        if company_first_enabled:
+            workday_employers = rank_employer_map(
+                load_employers(),
+                profile=company_profile,
+                source_history=source_history,
+                max_rows=_company_first_limit(cfg, "max_workday_employers"),
+            )
+        stats["workday"] = _run_source(
+            "workday",
+            run_workday_discovery,
+            employers=workday_employers,
+            workers=workers,
+        )
 
     if sources.get("remoteok"):
         from applypilot.discovery.feeds.remoteok import run_remoteok_discovery
@@ -197,19 +250,35 @@ def run_discover(*, workers: int = 1) -> dict[str, Any]:
     if priority_boards_only_enabled():
         yaml_sites = filter_priority_site_dicts(yaml_sites)
         log.info("Discover limited to priority boards: LinkedIn, Wellfound")
+    if company_first_enabled:
+        yaml_sites = rank_company_rows(
+            yaml_sites,
+            profile=company_profile,
+            source_history=source_history,
+            max_rows=_company_first_limit(cfg, "max_smartextract_sites"),
+        )
     yaml_agent, yaml_smart = partition_sites_by_mode(yaml_sites)
     extra_smart_sites: list[dict] = list(yaml_smart)
     agent_sites: list[dict] = list(yaml_agent)
 
     if sources.get("career_targets"):
-        _skipped, agent_sites, extra_smart = partition_career_targets(load_career_targets())
+        career_targets = load_career_targets()
+        if company_first_enabled:
+            career_targets = rank_company_rows(
+                career_targets,
+                profile=company_profile,
+                source_history=source_history,
+                max_rows=_company_first_limit(cfg, "max_career_targets"),
+            )
+        _skipped, career_agent_sites, extra_smart = partition_career_targets(career_targets)
+        agent_sites.extend(career_agent_sites)
         extra_smart_sites.extend(extra_smart)
         stats["career_targets"] = {
             "status": "ok",
             "result": {
-                "total_targets": len(load_career_targets()),
+                "total_targets": len(career_targets),
                 "workday_handled_separately": len(_skipped),
-                "agent_sites": len(agent_sites),
+                "agent_sites": len(career_agent_sites),
                 "smartextract_sites": len(extra_smart),
             },
         }
@@ -218,6 +287,13 @@ def run_discover(*, workers: int = 1) -> dict[str, Any]:
         from applypilot.discovery.funded_startups import build_funded_startup_sites
 
         funded_sites = build_funded_startup_sites(cfg.get("funded_startups") or {})
+        if company_first_enabled:
+            funded_sites = rank_company_rows(
+                funded_sites,
+                profile=company_profile,
+                source_history=source_history,
+                max_rows=_company_first_limit(cfg, "max_funded_startup_sites"),
+            )
         extra_smart_sites.extend(funded_sites)
         stats["funded_startups"] = {
             "status": "ok",
@@ -239,6 +315,13 @@ def run_discover(*, workers: int = 1) -> dict[str, Any]:
         )
 
     if sources.get("smartextract"):
+        if company_first_enabled:
+            extra_smart_sites = rank_company_rows(
+                extra_smart_sites,
+                profile=company_profile,
+                source_history=source_history,
+                max_rows=_company_first_limit(cfg, "max_smartextract_sites"),
+            )
         merged_sites = extra_smart_sites
         stats["smartextract"] = _run_source(
             "smartextract",

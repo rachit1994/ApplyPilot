@@ -21,10 +21,8 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
-from pathlib import Path
 from urllib.parse import quote_plus
 
-import httpx
 import yaml
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
@@ -34,10 +32,9 @@ from applypilot.discovery.site_priority import (
     is_priority_site_name,
     prioritize_site_dicts,
     prioritize_target_dicts,
-    site_order_key,
 )
 from applypilot.config import CONFIG_DIR
-from applypilot.database import get_connection, init_db, store_jobs, get_stats
+from applypilot.database import init_db, get_stats
 from applypilot.llm import get_client
 
 log = logging.getLogger(__name__)
@@ -98,15 +95,17 @@ def partition_sites_by_mode(sites: list[dict] | None = None) -> tuple[list[dict]
     smart: list[dict] = []
     for site in sites:
         if (site.get("mode") or "").strip().lower() == "agent":
-            agent.append(
-                {
-                    "name": site.get("name") or "Unknown",
-                    "url": site.get("url") or "",
-                    "type": site.get("type", "static"),
-                    "mode": "agent",
-                    "source": "sites_yaml",
-                }
-            )
+            row = {
+                "name": site.get("name") or "Unknown",
+                "url": site.get("url") or "",
+                "type": site.get("type", "static"),
+                "mode": "agent",
+                "source": "sites_yaml",
+            }
+            for key in ("company_priority", "company_priority_reasons"):
+                if key in site:
+                    row[key] = site[key]
+            agent.append(row)
         else:
             smart.append(site)
     return agent, smart
@@ -612,7 +611,7 @@ def format_strategy_briefing(intel: dict) -> str:
             sections.append(f"\nJSON-LD: {len(job_postings)} JobPosting entries found (usable!)")
             sections.append(f"First JobPosting:\n{json.dumps(job_postings[0], indent=2)[:3000]}")
         else:
-            sections.append(f"\nJSON-LD: NO JobPosting entries (json_ld strategy will NOT work)")
+            sections.append("\nJSON-LD: NO JobPosting entries (json_ld strategy will NOT work)")
         if other:
             types = [j.get("@type", "?") if isinstance(j, dict) else "?" for j in other]
             sections.append(f"Other JSON-LD types (NOT job data): {types}")

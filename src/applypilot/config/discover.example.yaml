@@ -18,6 +18,16 @@ sources:
   career_targets: true
   funded_startups: false
 
+company_first:
+  enabled: true
+  # 0 means rank all configured targets without cutting volume. Set limits when
+  # you want discover to spend effort only on the highest-probability companies.
+  max_watchlist_companies: 0
+  max_workday_employers: 0
+  max_career_targets: 0
+  max_smartextract_sites: 0
+  max_funded_startup_sites: 0
+
 agent_discover:
   enabled: true
   max_pages: 3

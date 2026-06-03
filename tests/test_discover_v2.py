@@ -309,12 +309,84 @@ def test_run_discover_feeds_funded_startups_to_smartextract(
 
     assert stats["funded_startups"]["result"]["smartextract_sites"] == 1
     mock_smart_extract.assert_called_once()
-    assert mock_smart_extract.call_args.kwargs["sites"] == [
+    sites = mock_smart_extract.call_args.kwargs["sites"]
+    assert len(sites) == 1
+    assert sites[0]["name"] == "YC:Recent AI"
+    assert sites[0]["url"] == "https://recent.ai/careers"
+    assert sites[0]["type"] == "static"
+    assert sites[0]["mode"] == "smartextract"
+    assert sites[0]["source"] == "funded_startups"
+    assert "company_priority" in sites[0]
+    assert "company_priority_reasons" in sites[0]
+
+
+@patch("applypilot.discovery.runner.load_source_history", return_value={})
+@patch(
+    "applypilot.discovery.runner.safe_load_profile",
+    return_value={
+        "experience": {"target_role": "Senior Full Stack Engineer"},
+        "skills_boundary": {"tools": ["LangChain", "pgvector"]},
+        "resume_facts": {
+            "preserved_companies": [
+                "Happening Today",
+                "MIRA",
+                "Delta Exchange",
+                "BetterPlace",
+            ]
+        },
+    },
+)
+@patch("applypilot.discovery.runner.run_smart_extract")
+@patch("applypilot.discovery.runner.load_sites", return_value=[])
+@patch("applypilot.discovery.runner.load_career_targets")
+def test_run_discover_ranks_career_targets_before_smartextract(
+    mock_career_targets,
+    _mock_load_sites,
+    mock_smart_extract,
+    _mock_profile,
+    _mock_history,
+):
+    mock_career_targets.return_value = [
         {
-            "name": "YC:Recent AI",
-            "url": "https://recent.ai/careers",
-            "type": "static",
+            "name": "Generic Retail Careers",
+            "careers_url": "https://retail.example/jobs",
             "mode": "smartextract",
-            "source": "funded_startups",
-        }
+            "ats": "custom",
+        },
+        {
+            "name": "Semantic AI Agent Platform",
+            "careers_url": "https://semantic-ai.example/careers",
+            "mode": "smartextract",
+            "ats": "greenhouse",
+        },
     ]
+    mock_smart_extract.return_value = {"total_new": 0, "total_existing": 0, "passed": 0, "total": 2}
+
+    def fake_config():
+        cfg = load_discover_config()
+        cfg["sources"] = {key: False for key in cfg["sources"]}
+        cfg["sources"]["career_targets"] = True
+        cfg["sources"]["smartextract"] = True
+        cfg["company_first"] = {
+            "enabled": True,
+            "max_watchlist_companies": 0,
+            "max_workday_employers": 0,
+            "max_career_targets": 0,
+            "max_smartextract_sites": 0,
+            "max_funded_startup_sites": 0,
+        }
+        cfg["agent_discover"] = {"enabled": False, "max_pages": 1, "headless": True}
+        return cfg
+
+    with patch("applypilot.discovery.runner.load_discover_config", fake_config):
+        from applypilot.discovery.runner import run_discover
+
+        run_discover(workers=1)
+
+    sites = mock_smart_extract.call_args.kwargs["sites"]
+    assert [site["name"] for site in sites] == [
+        "Semantic AI Agent Platform",
+        "Generic Retail Careers",
+    ]
+    assert sites[0]["company_priority"] > sites[1]["company_priority"]
+    assert "seed_like:" in ",".join(sites[0]["company_priority_reasons"])

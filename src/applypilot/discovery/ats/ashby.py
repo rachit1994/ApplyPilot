@@ -83,14 +83,14 @@ def fetch_board_jobs(board: str) -> list[dict]:
     return jobs
 
 
-def run_ashby_discovery() -> dict:
+def run_ashby_discovery(companies: list[dict] | None = None) -> dict:
     init_db()
     conn = get_connection()
     total_fetched = 0
     total_new = 0
     total_dup = 0
     boards = 0
-    for company in load_watchlist():
+    for company in (companies if companies is not None else load_watchlist()):
         board = (
             company.get("ashby_board")
             or company.get("ashby_site")

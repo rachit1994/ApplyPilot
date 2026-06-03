@@ -45,14 +45,14 @@ def fetch_site_jobs(site: str) -> list[dict]:
     return jobs
 
 
-def run_lever_discovery() -> dict:
+def run_lever_discovery(companies: list[dict] | None = None) -> dict:
     init_db()
     conn = get_connection()
     total_fetched = 0
     total_new = 0
     total_dup = 0
     sites = 0
-    for company in load_watchlist():
+    for company in (companies if companies is not None else load_watchlist()):
         site = (company.get("lever_site") or "").strip()
         if not site:
             continue
