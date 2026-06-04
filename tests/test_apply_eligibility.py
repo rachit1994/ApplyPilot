@@ -1,8 +1,11 @@
 """Tests for pre-acquire apply eligibility classification."""
 
+import sqlite3
+
 from applypilot.apply.eligibility import (
     ApplyDecision,
     classify_apply_target,
+    direct_adapter_priority_sql,
     is_ats_url,
     load_exclude_title_substrings,
 )
@@ -145,6 +148,29 @@ def test_ats_only_accepts_greenhouse_sourced_company_apply_url():
     assert result.decision == ApplyDecision.ELIGIBLE
 
 
+def test_workatastartup_is_prioritized_as_direct_adapter_sql():
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        "CREATE TABLE jobs (site TEXT, url TEXT, application_url TEXT, full_description TEXT)"
+    )
+    conn.executemany(
+        "INSERT INTO jobs VALUES (?, ?, ?, ?)",
+        [
+            (
+                "Work at a Startup",
+                f"https://www.workatastartup.com/jobs/{i}",
+                f"https://www.workatastartup.com/application?signup_job_id={i}",
+                "",
+            )
+            for i in range(10)
+        ],
+    )
+    direct_count = conn.execute(
+        f"SELECT COUNT(*) FROM jobs WHERE {direct_adapter_priority_sql()} = 0"
+    ).fetchone()[0]
+    assert direct_count == 10
+
+
 def test_location_ineligible_ats_job_skips_before_browser():
     job = {
         "url": "https://jobs.ashbyhq.com/acme/hybrid",
@@ -167,3 +193,107 @@ def test_is_ats_url_markers():
 def test_load_exclude_title_substrings_is_list():
     subs = load_exclude_title_substrings()
     assert isinstance(subs, list)
+
+
+# --- Location / work-authorization pre-filter (India candidate) ---------------
+
+_INDIA_PROFILE = {
+    "personal": {"country": "India"},
+    "work_authorization": {"require_sponsorship": "Yes"},
+}
+_US_PROFILE = {
+    "personal": {"country": "United States"},
+    "work_authorization": {"require_sponsorship": "No"},
+}
+
+
+def _greenhouse_job(description: str, *, location: str = "Remote") -> dict:
+    return {
+        "url": "https://boards.greenhouse.io/acme/jobs/42",
+        "application_url": "https://boards.greenhouse.io/acme/jobs/42",
+        "title": "Staff Software Engineer",
+        "site": "Greenhouse:Acme",
+        "salary": "$200k",
+        "location": location,
+        "full_description": description,
+    }
+
+
+def test_us_only_residency_in_description_skips_for_india_candidate():
+    job = _greenhouse_job(
+        "Remote role. You must live in a state where Acme, Inc. has a "
+        "registered entity. We offer great benefits."
+    )
+    result = classify_apply_target(job, profile=_INDIA_PROFILE)
+    assert result.decision == ApplyDecision.SKIP_PERMANENT
+    assert result.reason == "not_eligible_location"
+
+
+def test_no_sponsorship_clause_skips_when_candidate_needs_sponsorship():
+    job = _greenhouse_job(
+        "Great backend role. Applicants must be authorized to work in the "
+        "country of employment; we are unable to sponsor work visas at this time."
+    )
+    result = classify_apply_target(job, profile=_INDIA_PROFILE)
+    assert result.decision == ApplyDecision.SKIP_PERMANENT
+    assert result.reason == "not_eligible_sponsorship"
+
+
+def test_us_only_role_is_eligible_for_us_candidate():
+    job = _greenhouse_job(
+        "You must live in a state where Acme, Inc. has a registered entity."
+    )
+    result = classify_apply_target(job, profile=_US_PROFILE)
+    assert result.decision == ApplyDecision.ELIGIBLE
+
+
+def test_benign_description_remains_eligible_for_india_candidate():
+    job = _greenhouse_job(
+        "Build distributed systems with a global, remote-first team. "
+        "5+ years experience. Visa sponsorship available."
+    )
+    result = classify_apply_target(job, profile=_INDIA_PROFILE)
+    assert result.decision == ApplyDecision.ELIGIBLE
+
+
+def test_no_sponsorship_clause_ignored_when_candidate_self_authorized():
+    # Candidate in India but does NOT require sponsorship -> sponsorship clause
+    # should not disqualify (only the hard US-residency clause would).
+    profile = {
+        "personal": {"country": "India"},
+        "work_authorization": {"require_sponsorship": "No"},
+    }
+    job = _greenhouse_job(
+        "Strong role. We do not sponsor employment visas for this position."
+    )
+    result = classify_apply_target(job, profile=profile)
+    assert result.decision == ApplyDecision.ELIGIBLE
+
+
+def test_remote_usa_location_skips_for_india_candidate():
+    job = _greenhouse_job("Great role.", location="Remote - USA")
+    result = classify_apply_target(job, profile=_INDIA_PROFILE)
+    assert result.decision == ApplyDecision.SKIP_PERMANENT
+    assert result.reason == "not_eligible_location"
+
+
+def test_north_america_remote_stays_eligible():
+    # "North America, Remote" hires internationally; must NOT be blocked
+    # (this was a real, confirmed application).
+    job = _greenhouse_job("Great role.", location="North America, Remote")
+    result = classify_apply_target(job, profile=_INDIA_PROFILE)
+    assert result.decision == ApplyDecision.ELIGIBLE
+
+
+def test_non_us_remote_locations_stay_eligible():
+    for loc in ("Remote, Brazil", "Germany, Remote; Paris", "London, UK; Remote-Friendly"):
+        job = _greenhouse_job("Great role.", location=loc)
+        result = classify_apply_target(job, profile=_INDIA_PROFILE)
+        assert result.decision == ApplyDecision.ELIGIBLE, loc
+
+
+def test_candidate_home_city_segment_keeps_us_listing_eligible():
+    # Multi-location that includes the candidate's city is fine.
+    job = _greenhouse_job("Great role.", location="Remote - US; Bengaluru, India")
+    result = classify_apply_target(job, profile=_INDIA_PROFILE)
+    assert result.decision == ApplyDecision.ELIGIBLE

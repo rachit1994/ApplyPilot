@@ -5,6 +5,7 @@ import { jobPipelineStage } from "./utils/jobPipeline";
 export const PIPELINE_STAGE_IDS = [
   "discover",
   "enrich",
+  "filter",
   "score",
   "tailor",
   "cover",
@@ -25,6 +26,7 @@ export type DashboardPage =
 export const STAGE_LABELS: Record<PipelineStageId, string> = {
   discover: "Discover",
   enrich: "Enrich",
+  filter: "Filter",
   score: "Score",
   tailor: "Tailor",
   cover: "Cover",
@@ -34,6 +36,7 @@ export const STAGE_LABELS: Record<PipelineStageId, string> = {
 export const STAGE_DESCRIPTIONS: Record<PipelineStageId, string> = {
   discover: "Job discovery — JobSpy, Workday, feeds, and smart extract.",
   enrich: "Pull full descriptions and application URLs for new jobs.",
+  filter: "Reject low-fit jobs before LLM review.",
   score: "LLM fit scoring against your profile.",
   tailor: "Tailor resumes per job.",
   cover: "Generate cover letters for scored roles.",
@@ -59,6 +62,7 @@ export function isDashboardPage(value: string): value is DashboardPage {
 const STAGE_JOB_LABELS: Record<PipelineStageId, string[]> = {
   discover: ["Discovered"],
   enrich: ["Enriched", "Enrich error"],
+  filter: ["Rejected"],
   score: ["Scored", "Tailor exhausted"],
   tailor: ["Tailored", "Cover"],
   cover: ["Cover"],
@@ -125,7 +129,7 @@ export function pageSubtitle(page: DashboardPage): string {
 export function pageSubtitleWithStats(page: DashboardPage, stats: Stats | undefined): string {
   const p = stats?.pipeline;
   if (page === "jobs") {
-    const newPicks = (p?.scored ?? 0) + (p?.unscored ?? 0);
+    const newPicks = stats?.triage_counts?.new ?? (p?.scored ?? 0) + (p?.unscored ?? 0);
     return `${newPicks} new picks · plus everything else · filter by status`;
   }
   if (page === "applications") {
@@ -148,7 +152,8 @@ export function pageSubtitleWithStats(page: DashboardPage, stats: Stats | undefi
 /** Deep-link slug for Jobs page ?stage= when clicking a pipeline summary card. */
 export const PIPELINE_CARD_JOBS_STAGE: Record<PipelineStageId, string> = {
   discover: "discovered",
-  enrich: "enrich_error",
+  enrich: "enriched",
+  filter: "rejected",
   score: "scored",
   tailor: "tailored",
   cover: "cover",

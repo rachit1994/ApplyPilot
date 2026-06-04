@@ -133,8 +133,9 @@ def _setup_profile() -> dict:
     profile["experience"] = {
         "years_of_experience_total": Prompt.ask("Years of professional experience", default=""),
         "education_level": Prompt.ask("Highest education (e.g. Bachelor's, Master's, PhD, Self-taught)", default=""),
-        "current_title": current_title,
+        "current_job_title": current_title,
         "target_role": target_role,
+        "target_roles": [target_role] if target_role else [],
     }
 
     # -- Skills Boundary --
@@ -185,8 +186,10 @@ def _setup_profile() -> dict:
 # Search config
 # ---------------------------------------------------------------------------
 
-def _setup_searches() -> None:
-    """Generate a searches.yaml from user input."""
+def _setup_searches(profile: dict | None = None) -> None:
+    """Generate a searches.yaml from user input and the role resume catalog."""
+    from applypilot.role_resumes import discovery_search_query_entries
+
     console.print(Panel("[bold]Step 3: Job Search Config[/bold]\nDefine what you're looking for."))
 
     location = Prompt.ask("Target location (e.g. 'Remote', 'Canada', 'New York, NY')", default="Remote")
@@ -197,18 +200,25 @@ def _setup_searches() -> None:
         distance = 0
 
     roles_raw = Prompt.ask(
-        "Target job titles (comma-separated, e.g. 'Backend Engineer, Full Stack Developer')"
+        "Extra job titles to search (comma-separated; leave blank to use the full role catalog)",
+        default="",
     )
-    roles = [r.strip() for r in roles_raw.split(",") if r.strip()]
+    extra_roles = [r.strip() for r in roles_raw.split(",") if r.strip()]
 
-    if not roles:
-        console.print("[yellow]No roles provided. Using a default set.[/yellow]")
-        roles = ["Software Engineer"]
+    query_entries = discovery_search_query_entries(profile)
+    seen_queries = {_norm_search_query(str(e.get("query"))) for e in query_entries}
+    for role in extra_roles:
+        key = _norm_search_query(role)
+        if key and key not in seen_queries:
+            query_entries.insert(0, {"query": role, "tier": 1})
+            seen_queries.add(key)
 
     # Build YAML content
     lines = [
         "# ApplyPilot search configuration",
-        "# Edit this file to refine your job search queries.",
+        "# Discover merges ROLE_CATALOG queries at runtime (JobSpy, Workday, smart extract).",
+        "# Set role_catalog_queries: false to use only the queries listed below.",
+        "role_catalog_queries: true",
         "",
         "defaults:",
         f'  location: "{location}"',
@@ -222,12 +232,21 @@ def _setup_searches() -> None:
         "",
         "queries:",
     ]
-    for i, role in enumerate(roles):
-        lines.append(f'  - query: "{role}"')
-        lines.append(f"    tier: {min(i + 1, 3)}")
+    for entry in query_entries:
+        lines.append(f'  - query: "{entry["query"]}"')
+        lines.append(f"    tier: {entry['tier']}")
 
     SEARCH_CONFIG_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    console.print(f"[green]Search config saved to {SEARCH_CONFIG_PATH}[/green]")
+    console.print(
+        f"[green]Search config saved to {SEARCH_CONFIG_PATH} "
+        f"({len(query_entries)} discover queries from role catalog)[/green]"
+    )
+
+
+def _norm_search_query(text: str | None) -> str:
+    import re
+
+    return re.sub(r"[^a-z0-9+#.]+", " ", (text or "").lower()).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -346,11 +365,11 @@ def run_wizard() -> None:
     console.print()
 
     # Step 2: Profile
-    _setup_profile()
+    profile = _setup_profile()
     console.print()
 
     # Step 3: Search config
-    _setup_searches()
+    _setup_searches(profile)
     console.print()
 
     # Step 4: AI features (optional LLM)

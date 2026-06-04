@@ -57,6 +57,29 @@ def title_passes(
     return True
 
 
+def _location_segment_passes(
+    segment: str,
+    *,
+    accept: list[str],
+    reject: list[str],
+) -> bool:
+    seg = segment.strip().lower()
+    if not seg:
+        return False
+    if any(
+        r in seg
+        for r in ("remote", "anywhere", "work from home", "wfh", "distributed")
+    ):
+        return True
+    for r in reject:
+        if r.lower() in seg:
+            return False
+    for a in accept:
+        if a.lower() in seg:
+            return True
+    return False
+
+
 def location_passes(
     location: str | None,
     *,
@@ -71,22 +94,20 @@ def location_passes(
     if not location:
         return True
 
-    loc = location.lower()
-    if any(
-        r in loc
-        for r in ("remote", "anywhere", "work from home", "wfh", "distributed")
-    ):
-        return True
+    # Multi-location strings ("Remote - US; London; Bangalore") pass if ANY
+    # segment passes — avoids flaky reject when one listed city is blocked.
+    separators = (";", "|", "/", " / ")
+    parts = [location]
+    for sep in separators:
+        if sep in location:
+            parts = [p for p in location.split(sep) if p.strip()]
+            break
+    if len(parts) > 1:
+        return any(
+            _location_segment_passes(p, accept=accept, reject=reject) for p in parts
+        )
 
-    for r in reject:
-        if r.lower() in loc:
-            return False
-
-    for a in accept:
-        if a.lower() in loc:
-            return True
-
-    return False
+    return _location_segment_passes(location, accept=accept, reject=reject)
 
 
 def discover_job_passes(job: dict) -> bool:

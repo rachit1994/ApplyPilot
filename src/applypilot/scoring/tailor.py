@@ -23,7 +23,8 @@ from applypilot.scoring.templates import (
     keyword_density_ok,
     tailor_via_template,
 )
-from applypilot.database import get_connection, get_jobs_by_stage
+from applypilot.database import get_connection
+from applypilot.role_resumes import fetch_jobs_needing_tailor
 from applypilot.llm import get_client
 from applypilot.scoring.validator import (
     BANNED_WORDS,
@@ -511,13 +512,16 @@ def tailor_resume_with_routing(
 
 # ── Batch Entry Point ────────────────────────────────────────────────────
 
-def run_tailoring(min_score: int = 7, limit: int = 20,
+def run_tailoring(min_score: int = 7, limit: int = 0,
                   validation_mode: str = "normal") -> dict:
-    """Generate tailored resumes for high-scoring jobs.
+    """Generate tailored resumes for high-scoring jobs that still need per-job LLM tailor.
+
+    Skips jobs that already have a role-resume match above the JD threshold.
+    ``limit=0`` processes all jobs still needing tailor in one pass.
 
     Args:
         min_score:       Minimum fit_score to tailor for.
-        limit:           Maximum jobs to process.
+        limit:           Maximum jobs to process (0 = no cap).
         validation_mode: "strict", "normal", or "lenient".
 
     Returns:
@@ -527,10 +531,10 @@ def run_tailoring(min_score: int = 7, limit: int = 20,
     resume_text = RESUME_PATH.read_text(encoding="utf-8")
     conn = get_connection()
 
-    jobs = get_jobs_by_stage(conn=conn, stage="pending_tailor", min_score=min_score, limit=limit)
+    jobs = fetch_jobs_needing_tailor(conn, min_score=min_score, limit=limit)
 
     if not jobs:
-        log.info("No untailored jobs with score >= %d.", min_score)
+        log.info("No jobs need per-job tailoring (score >= %d).", min_score)
         return {"approved": 0, "failed": 0, "errors": 0, "elapsed": 0.0}
 
     TAILORED_DIR.mkdir(parents=True, exist_ok=True)

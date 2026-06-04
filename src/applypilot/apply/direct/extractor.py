@@ -59,15 +59,44 @@ EXTRACT_JS = r"""() => {
     return ids.map((id) => { const t = document.getElementById(id); return t ? t.innerText : ''; })
               .join(' ');
   };
-  const labelOf = (el) => norm(
-    (el.labels && el.labels[0] && el.labels[0].innerText) ||
-    el.getAttribute('aria-label') ||
-    labelledbyText(el) ||
-    el.getAttribute('placeholder') ||
-    el.name || el.id || el.type || 'field'
-  ).slice(0, 120);
+  // Ashby and many custom forms associate the question with the field via a
+  // sibling/ancestor <label> (not for=/aria-labelledby), so the standard label
+  // sources come back empty and we'd fall to a useless placeholder
+  // ("Pick date...", "Start typing..."). Walk up a few levels and take the
+  // nearest container's label — closest ancestor first, so we get THIS field's
+  // question, not a neighbour's.
+  const ancestorLabel = (el) => {
+    let n = el;
+    for (let i = 0; i < 6 && n; i++) {
+      n = n.parentElement;
+      if (!n) break;
+      const lab = n.querySelector('label, legend, [class*="label"], [class*="Label"], [class*="title"], [class*="Title"]');
+      if (lab && !lab.contains(el)) {
+        const t = norm(lab.innerText);
+        if (t.length > 2 && t.length < 120) return t;
+      }
+    }
+    return '';
+  };
+  const labelOf = (el) => {
+    const strong = norm(
+      (el.labels && el.labels[0] && el.labels[0].innerText) ||
+      el.getAttribute('aria-label') ||
+      labelledbyText(el)
+    );
+    if (strong) return strong.slice(0, 120);
+    const anc = ancestorLabel(el);
+    if (anc) return anc.slice(0, 120);
+    return norm(
+      el.getAttribute('placeholder') || el.name || el.id || el.type || 'field'
+    ).slice(0, 120);
+  };
   const isCombobox = (el) =>
     el.getAttribute('role') === 'combobox' || /select__input/.test(el.className || '');
+  const isMultiSelect = (el) => {
+    const ctrl = el.closest('.select__control');
+    return !!(ctrl && ctrl.classList.contains('select__control--is-multi'));
+  };
 
   const sha = (str) => {
     // Tiny non-crypto hash; stable enough for a per-form content key.
@@ -81,11 +110,28 @@ EXTRACT_JS = r"""() => {
   const seenKeys = {};
   let idx = 0;
 
+  // React-select (Greenhouse's modern job-boards form, Ashby, etc.) renders a
+  // hidden <input ... requiredInput> with tabindex="-1" inside the select
+  // container purely to drive native required-validation. It is NOT a field —
+  // it mirrors the sibling role=combobox and is populated when an option is
+  // picked. Treating it as a standalone required text input made every such
+  // form escalate (unresolved_required) or fail the final empty-required guard.
+  const isSelectRequiredProxy = (el) => {
+    if (el.tagName.toLowerCase() !== 'input') return false;
+    if (el.getAttribute('role') === 'combobox') return false;
+    if (/requiredInput/i.test(el.className || '')) return true;
+    return el.getAttribute('tabindex') === '-1'
+      && !!el.closest('.select__container, .select-shell, .select__control, .select');
+  };
+
   const els = document.querySelectorAll('input, select, textarea, [role="combobox"], [role="listbox"], [role="radiogroup"]');
   els.forEach((el) => {
     const tag = el.tagName.toLowerCase();
     const type = (el.getAttribute('type') || el.type || '').toLowerCase();
     if (tag === 'input' && type === 'hidden') return;
+    if (isSelectRequiredProxy(el)) return;
+    // Individual radios inside a radiogroup are filled via the group's options.
+    if (tag === 'input' && type === 'radio' && el.closest('[role="radiogroup"]')) return;
     if (!visible(el) && type !== 'hidden') {
       // styled-hidden file/date inputs are kept; truly invisible noise is not.
       if (!(type === 'file' || tag === 'input')) return;
@@ -123,6 +169,7 @@ EXTRACT_JS = r"""() => {
       section_header: section, required: !!required,
       options, value, empty: !String(value).trim(),
       combobox: isCombobox(el),
+      is_multi: isMultiSelect(el),
     });
     idx++;
   });
@@ -131,8 +178,24 @@ EXTRACT_JS = r"""() => {
   // escalates instead of submitting half-filled.
   if (document.querySelector('canvas[role], [data-widget="signature"]')) partial = true;
 
-  const errors = [...document.querySelectorAll('[role="alert"], [class*="error"], [class*="invalid"]')]
-    .map((e) => norm(e.innerText)).filter((t) => t.length > 2 && t.length < 200).slice(0, 8);
+  const errorNodes = new Set();
+  const pushErr = (el) => {
+    const t = norm(el.innerText);
+    if (t.length > 2 && t.length < 200) errorNodes.add(t);
+  };
+  document.querySelectorAll('[role="alert"], [class*="error"], [class*="invalid"]').forEach(pushErr);
+  document.querySelectorAll('[aria-invalid="true"]').forEach((el) => {
+    pushErr(el);
+    const sib = el.nextElementSibling;
+    if (sib) pushErr(sib);
+    const errId = el.getAttribute('aria-describedby');
+    if (errId) {
+      const node = document.getElementById(errId);
+      if (node) pushErr(node);
+    }
+  });
+  document.querySelectorAll('.field-error, [id$="-error"]').forEach(pushErr);
+  const errors = [...errorNodes].slice(0, 12);
   const buttons = [...document.querySelectorAll('button, [role="button"], input[type="submit"]')]
     .filter(visible).map((b) => norm(b.innerText || b.value || b.getAttribute('aria-label'))).filter(Boolean).slice(0, 15);
 
@@ -198,6 +261,7 @@ def _to_field(raw: dict) -> Field:
         value=str(raw.get("value") or ""),
         empty=bool(raw.get("empty", True)),
         combobox=bool(raw.get("combobox", False)),
+        is_multi=bool(raw.get("is_multi", False)),
     )
 
 

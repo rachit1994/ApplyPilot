@@ -4,7 +4,9 @@ from __future__ import annotations
 
 PRIORITY_SITE_NAMES: tuple[str, ...] = ("Greenhouse", "Lever", "Ashby", "LinkedIn", "Wellfound")
 
-APPLY_QUEUE_ORDER_LABEL = "Greenhouse → Lever → Ashby → LinkedIn → Wellfound → other"
+APPLY_QUEUE_ORDER_LABEL = (
+    "Direct apply (Greenhouse/Lever/Ashby) → Claude rescue → other ATS"
+)
 
 
 def is_priority_site_name(name: str | None) -> bool:
@@ -83,6 +85,26 @@ def job_is_priority_board(job: dict) -> bool:
 
 def filter_priority_site_dicts(sites: list[dict]) -> list[dict]:
     return [row for row in sites if is_priority_site_name(str(row.get("name") or ""))]
+
+
+def discover_source_key(site: str | None) -> str | None:
+    """Map a job ``site`` label to ``discover_source_stats.source`` (e.g. Greenhouse:Acme → greenhouse)."""
+    lowered = (site or "").strip().lower()
+    if lowered.startswith("greenhouse:") or lowered == "greenhouse":
+        return "greenhouse"
+    if lowered.startswith("lever:") or lowered == "lever":
+        return "lever"
+    if lowered.startswith("ashby:") or lowered == "ashby":
+        return "ashby"
+    return None
+
+
+def sql_site_matches_discover_source(site_sql: str, source_sql: str) -> str:
+    """SQL fragment: job site belongs to a discover source key."""
+    return (
+        f"(LOWER(COALESCE({site_sql}, '')) = LOWER({source_sql}) "
+        f"OR LOWER(COALESCE({site_sql}, '')) LIKE LOWER({source_sql}) || ':%')"
+    )
 
 
 def sort_source_count_rows(rows: list[dict]) -> list[dict]:

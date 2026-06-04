@@ -26,6 +26,7 @@ Two levels of identity:
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from hashlib import sha1
 from urllib.parse import parse_qs, urlsplit
 
@@ -56,7 +57,7 @@ _FAMILY_HOST_FRAGMENTS: dict[str, tuple[str, ...]] = {
 # Families with a hand-written deterministic adapter (Phase B/C). Jobs on a
 # family NOT in this set fall through to Claude rescue or get marked manual.
 ADAPTER_FAMILIES: frozenset[str] = frozenset(
-    {"greenhouse", "lever", "ashby", "workday"}
+    {"greenhouse", "lever", "ashby", "workday", "workatastartup"}
 )
 
 UNKNOWN_FAMILY = "unknown"
@@ -97,6 +98,86 @@ def ats_family(url: str | None) -> str:
         for family, keys in _FAMILY_QUERY_PARAMS.items():
             if any(k in params for k in keys):
                 return family
+    return UNKNOWN_FAMILY
+
+
+# High-confidence DOM/text markers that a *loaded* page is Greenhouse-backed
+# even when its URL gives nothing away. Employers embed Greenhouse on custom
+# career domains (dropbox.jobs, stripe.com/jobs, instacart.careers) where neither
+# the host nor a gh_jid query param is present, so URL-only ats_family() reads
+# "unknown". These markers are author-set by Greenhouse's own embed and are
+# reliable; keep the list conservative so a stray mention never forces a misroute.
+_GREENHOUSE_CONTENT_MARKERS: tuple[str, ...] = (
+    "boards.greenhouse.io",   # the embed script/iframe host (covers job-boards.*)
+    "grnhse_app",             # the embed container id (#grnhse_app)
+    "grnhse-iframe",          # the injected iframe id
+    "application--form",      # the Greenhouse application-form BEM class
+    "powered by greenhouse",  # footer attribution on hosted/embedded forms
+)
+
+
+def _greenhouse_token(url: str) -> str | None:
+    """Pull a Greenhouse job token (gh_jid / token query param) from a URL."""
+    qs = parse_qs(urlsplit(str(url or "")).query)
+    for key in ("gh_jid", "token"):
+        val = qs.get(key)
+        if val and val[0].strip():
+            return val[0].strip()
+    return None
+
+
+def greenhouse_form_url(embedded_urls: Iterable[str]) -> str | None:
+    """Pick the hosted Greenhouse application-form URL from embedded src/href.
+
+    Greenhouse's embed injects an iframe whose src is the hosted application form
+    (boards.greenhouse.io/embed/job_app?token=...). Navigating straight to it
+    turns the form into the top-level document so the extractor (which does not
+    descend into cross-origin iframes) can read and fill it. Returns the form URL
+    when one can be identified, else None (caller fills the page in place).
+    """
+    fallback: str | None = None
+    for u in embedded_urls:
+        if not u:
+            continue
+        parts = urlsplit(u)
+        host = parts.netloc.lower()
+        if "greenhouse.io" in host and "job_app" in parts.path.lower():
+            return u  # the actual application-form iframe
+        token = _greenhouse_token(u)
+        if token:
+            fallback = f"https://boards.greenhouse.io/embed/job_app?token={token}"
+    return fallback
+
+
+def sniff_ats_family(
+    html: str | None = None,
+    embedded_urls: Iterable[str] = (),
+) -> str:
+    """Content-based ATS family detection for a loaded page, or 'unknown'.
+
+    Complements the URL-only ats_family(): some employers embed a known ATS on a
+    custom career domain whose URL carries no host/param signal, so the family
+    can only be read from the rendered DOM. Two signals:
+
+      1. Embedded resource URLs (iframe/script src). An embedded boards.greenhouse.io
+         form — or any embedded URL whose own ats_family() is non-unknown — is a
+         definitive tell of the backing ATS.
+      2. High-confidence body markers (_GREENHOUSE_CONTENT_MARKERS).
+
+    Conservative by design — returns a family only on a high-confidence marker,
+    else 'unknown' so the caller escalates exactly as it does today.
+    """
+    for u in embedded_urls:
+        fam = ats_family(u)
+        if fam != UNKNOWN_FAMILY:
+            return fam
+        # A script/iframe literally named after greenhouse (e.g. dropbox.jobs'
+        # greenhouseApplyForm.js) is a definitive tell even on a custom host.
+        if "greenhouse" in (u or "").lower():
+            return "greenhouse"
+    blob = (html or "").lower()
+    if any(marker in blob for marker in _GREENHOUSE_CONTENT_MARKERS):
+        return "greenhouse"
     return UNKNOWN_FAMILY
 
 

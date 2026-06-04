@@ -1,6 +1,9 @@
 """Tests for apply experience eligibility."""
 
-from applypilot.apply.experience import is_too_junior_role
+from applypilot.apply.experience import (
+    description_satisfies_experience_floor,
+    is_too_junior_role,
+)
 
 
 def test_intern_role_is_too_junior():
@@ -18,6 +21,20 @@ def test_senior_five_plus_is_not_too_junior():
     assert not is_too_junior_role(
         "Senior Engineer",
         "5+ years building distributed systems.",
+    )
+
+
+def test_minimum_five_years_satisfies_experience_floor():
+    assert description_satisfies_experience_floor(
+        "Software Engineer",
+        "Minimum 5 years of experience in Python.",
+    )
+
+
+def test_minimum_five_years_role_is_not_too_junior_without_senior_title():
+    assert not is_too_junior_role(
+        "Backend Engineer",
+        "Minimum 5 years of experience required. You may mentor junior engineers.",
     )
 
 

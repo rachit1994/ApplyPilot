@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   fetchActiveRun,
+  fetchAgentSettings,
   fetchRun,
   fetchRunEventsHistory,
   fetchRuns,
@@ -11,6 +12,11 @@ import {
   type Run,
   type RunEvent,
 } from "../api";
+import {
+  applySettingsToCliOptions,
+  buildApplyCliCommand,
+  type ApplyRunSettings,
+} from "../utils/applyCliCommand";
 import {
   deriveApplyAgentState,
   type WorkerHeartbeatInfo,
@@ -37,7 +43,7 @@ export function useApplyRun() {
   const [watch, setWatch] = useState(true);
   const [pace, setPace] = useState(false);
   const [headless, setHeadless] = useState(false);
-  const [continuous, setContinuous] = useState(false);
+  const [continuous, setContinuous] = useState(true);
   const [dryRun, setDryRun] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
@@ -66,6 +72,17 @@ export function useApplyRun() {
           merged.sort((a, b) => (a.id ?? 0) - (b.id ?? 0));
           return merged.length > 2000 ? merged.slice(-1500) : merged;
         });
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    fetchAgentSettings()
+      .then((res) => {
+        const score = res.agent.apply_min_score;
+        if (typeof score === "number" && !Number.isNaN(score)) {
+          setMinScore(Math.max(0, Math.min(10, Math.round(score))));
+        }
       })
       .catch(() => {});
   }, []);
@@ -229,6 +246,62 @@ export function useApplyRun() {
     [activeRun, workerSnapshots, starting],
   );
 
+  const applyCli = useMemo(
+    () =>
+      buildApplyCliCommand(
+        applySettingsToCliOptions({
+          limit,
+          setLimit,
+          minScore,
+          setMinScore,
+          workers,
+          setWorkers,
+          watch,
+          setWatch,
+          pace,
+          setPace,
+          headless,
+          setHeadless,
+          continuous,
+          setContinuous,
+          dryRun,
+          setDryRun,
+          isRunning,
+        }),
+      ),
+    [
+      continuous,
+      dryRun,
+      headless,
+      isRunning,
+      limit,
+      minScore,
+      pace,
+      watch,
+      workers,
+    ],
+  );
+
+  const applySettings: ApplyRunSettings = {
+    limit,
+    setLimit,
+    minScore,
+    setMinScore,
+    workers,
+    setWorkers,
+    watch,
+    setWatch,
+    pace,
+    setPace,
+    headless,
+    setHeadless,
+    continuous,
+    setContinuous,
+    dryRun,
+    setDryRun,
+    isRunning,
+  };
+
   return {
     activeRun,
     events,
@@ -257,5 +330,7 @@ export function useApplyRun() {
     setDryRun,
     handleStart,
     handleStop,
+    applyCli,
+    applySettings,
   };
 }

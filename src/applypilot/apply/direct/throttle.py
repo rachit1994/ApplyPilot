@@ -29,6 +29,13 @@ def _today_utc_prefix() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
+def count_submits_today(*, conn=None) -> int:
+    """Successful form submissions today (UTC), all ATS families/domains."""
+    if conn is None:
+        conn = get_connection()
+    return _submit_count(conn, ats_family=None, apex=None)
+
+
 def _submit_count(conn, *, ats_family: str | None, apex: str | None) -> int:
     ensure_apply_outcomes_table(conn)
     like = _today_utc_prefix() + "%"
@@ -58,11 +65,20 @@ def check_caps(url: str, *, conn=None) -> tuple[bool, str | None]:
     family_cap = apply_settings.max_per_ats_family_per_day()
     if family_cap > 0 and family != fingerprint.UNKNOWN_FAMILY:
         if _submit_count(conn, ats_family=family, apex=None) >= family_cap:
-            return False, f"failed:direct_family_cap:{family}"
+            return False, f"deferred:direct_family_cap:{family}"
 
     domain_cap = apply_settings.max_per_apex_domain_per_day()
     if domain_cap > 0 and apex:
         if _submit_count(conn, ats_family=None, apex=apex) >= domain_cap:
-            return False, f"failed:direct_domain_cap:{apex}"
+            return False, f"deferred:direct_domain_cap:{apex}"
 
     return True, None
+
+
+def is_cap_defer(reason: str | None) -> bool:
+    """True when check_caps blocked due to daily submit cap (not a job failure)."""
+    if not reason:
+        return False
+    return reason.startswith("deferred:direct_family_cap:") or reason.startswith(
+        "deferred:direct_domain_cap:"
+    )

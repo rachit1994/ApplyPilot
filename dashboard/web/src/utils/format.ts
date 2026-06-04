@@ -25,6 +25,12 @@ export function runDuration(run: {
   return end - start;
 }
 
+/** API returns source efficiency as a 0–1 ratio (scored_ge7 / discovered). */
+export function sourceEfficiencyPercent(efficiency: number): number {
+  if (!Number.isFinite(efficiency)) return 0;
+  return Math.round(Math.max(0, Math.min(1, efficiency)) * 100);
+}
+
 export function formatTime(iso: string | null | undefined): string {
   if (!iso) return "—";
   try {

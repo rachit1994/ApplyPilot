@@ -18,6 +18,12 @@ TOKENS = {
     "current_job_title": "Senior Software Engineer",
     "earliest_start_date": "Immediately",
     "city": "Toronto",
+    # EEO tokens are always supplied by build_playbook_tokens (with these
+    # decline defaults); the resolver reads them by key, not as literals.
+    "gender": "Decline to self-identify",
+    "race_ethnicity": "Decline to self-identify",
+    "veteran_status": "I am not a protected veteran",
+    "disability_status": "I do not wish to answer",
 }
 
 
@@ -68,6 +74,25 @@ def test_unresolved_required_tracked_when_gemini_off(conn):
     out = rz.resolve(fields, TOKENS, conn=conn, gemini_enabled=False)
     assert "kq" in out.unresolved
     assert "kq" in out.unresolved_required
+
+
+def test_workatastartup_required_message_does_not_need_gemini(conn):
+    fields = [
+        Field(label="Message", tag="textarea", required=True, key="msg"),
+        Field(label="Email", type="email", key="email"),
+    ]
+    tokens = dict(
+        TOKENS,
+        job_url="https://www.workatastartup.com/application?signup_job_id=123",
+        cover_letter_text="I am excited about this YC startup role.",
+        job_title="Founding Engineer",
+        company="Acme AI",
+    )
+    out = rz.resolve(fields, tokens, conn=conn, gemini_enabled=False)
+    assert out.answers["msg"] == "I am excited about this YC startup role."
+    assert out.answers["email"] == "rachit@example.com"
+    assert out.unresolved_required == []
+    assert out.tier_max == 0
 
 
 def test_tier2_gemini_batch_and_writeback(conn, monkeypatch):

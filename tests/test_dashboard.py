@@ -82,8 +82,12 @@ def test_api_stats_and_stages(temp_db):
     assert isinstance(stats["by_site"], list)
     assert len(stats["by_site"]) <= 5
     assert stats["priority_boards"] == ["LinkedIn", "Wellfound"]
-    assert "LinkedIn" in stats["apply_queue_order"]
+    assert "Direct apply" in stats["apply_queue_order"]
     assert "scored" in stats["pipeline"]
+    assert "triage_counts" in stats
+    assert isinstance(stats["triage_counts"], dict)
+    for slug in ("new", "tailored", "applied", "failed", "ready", "pending_score"):
+        assert slug in stats["triage_counts"]
 
     r2 = client.get("/api/meta/stages")
     assert r2.status_code == 200
@@ -115,6 +119,45 @@ def test_api_overview_smoke(temp_db):
     assert "funnel" in body
     assert "score_distribution" in body
     assert isinstance(body["top_opportunities"], list)
+
+
+def test_overview_apply_caps_submits_vs_attempts(temp_db, monkeypatch):
+    from datetime import datetime, timezone
+
+    from applypilot.database import get_connection, init_db, record_apply_outcome
+    from applypilot.server.overview import build_overview
+
+    init_db()
+    conn = get_connection()
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    conn.execute(
+        """
+        INSERT INTO jobs (url, title, site, apply_status, last_attempted_at, applied_at)
+        VALUES
+          ('https://a.example/ok', 'Ok', 'Acme', 'applied', ?, ?),
+          ('https://a.example/fail', 'Fail', 'Acme', 'failed', ?, NULL)
+        """,
+        (today, today, today),
+    )
+    conn.commit()
+    record_apply_outcome(
+        conn=conn,
+        url="https://a.example/ok",
+        ats_family="greenhouse",
+        result="applied",
+    )
+    record_apply_outcome(
+        conn=conn,
+        url="https://a.example/fail",
+        ats_family="greenhouse",
+        result="failed:direct_unresolved_required",
+    )
+
+    caps = build_overview()["caps"]
+    assert caps["apply_today"] == 1
+    assert caps["apply_attempts_today"] == 2
+    assert "1 submits" in (caps["apply_subtitle"] or "")
+    assert "2 attempts" in (caps["apply_subtitle"] or "")
 
 
 def test_api_activity_and_workers_smoke(temp_db):
@@ -152,9 +195,12 @@ def test_api_activity_and_workers_smoke(temp_db):
     assert isinstance(r2.json()["workers"], list)
 
 def test_api_source_stats_rollup(temp_db):
+    from datetime import datetime, timezone
+
     from applypilot.database import get_connection, init_db, record_discover_source_stats
     from applypilot.server.app import create_app
 
+    now = datetime.now(timezone.utc).isoformat()
     init_db()
     conn = get_connection()
     record_discover_source_stats(
@@ -163,7 +209,7 @@ def test_api_source_stats_rollup(temp_db):
         run_id="run-source",
         discovered=10,
         passed_filter=6,
-        created_at="2026-05-26T00:00:00+00:00",
+        created_at=now,
     )
     conn.execute(
         """
@@ -184,6 +230,43 @@ def test_api_source_stats_rollup(temp_db):
     assert rows[0]["scored_ge7"] == 3
     assert rows[0]["tailored"] == 2
     assert rows[0]["efficiency"] == 0.3
+
+
+def test_api_source_stats_greenhouse_site_prefix(temp_db):
+    from datetime import datetime, timezone
+
+    from applypilot.database import get_connection, init_db, record_discover_source_stats
+    from applypilot.server.app import create_app
+
+    now = datetime.now(timezone.utc).isoformat()
+    init_db()
+    conn = get_connection()
+    record_discover_source_stats(
+        conn,
+        source="greenhouse",
+        run_id="run-gh",
+        discovered=100,
+        passed_filter=80,
+        created_at=now,
+    )
+    conn.execute(
+        """
+        INSERT INTO jobs (url, title, site, fit_score, discovered_at, scored_at)
+        VALUES
+          ('https://boards.greenhouse.io/a/j1', 'Role A', 'Greenhouse:Acme', 8, ?, ?),
+          ('https://boards.greenhouse.io/a/j2', 'Role B', 'Greenhouse:Beta', 6, ?, ?)
+        """,
+        (now, now, now, now),
+    )
+    conn.commit()
+
+    client = TestClient(create_app())
+    response = client.get("/api/source-stats?days=7")
+    assert response.status_code == 200
+    row = next(r for r in response.json()["sources"] if r["source"] == "greenhouse")
+    assert row["discovered"] == 100
+    assert row["scored_ge7"] == 1
+    assert row["efficiency"] == 0.01
 
 
 def test_api_jobs_search_and_sort(temp_db):
@@ -215,6 +298,60 @@ def test_api_jobs_search_and_sort(temp_db):
     sorted_resp = client.get("/api/jobs", params={"sort": "fit_score_asc"})
     scores = [j["fit_score"] for j in sorted_resp.json()["jobs"]]
     assert scores == sorted(scores)
+
+    desc_resp = client.get("/api/jobs", params={"sort": "discovered_at_desc"})
+    discovered = [j["discovered_at"] for j in desc_resp.json()["jobs"]]
+    assert discovered == sorted(discovered, reverse=True)
+
+    asc_resp = client.get("/api/jobs", params={"sort": "activity_asc"})
+    assert asc_resp.status_code == 200
+
+
+def test_api_jobs_pagination(temp_db):
+    from applypilot.database import get_connection, init_db
+    from applypilot.server.app import create_app
+
+    init_db()
+    conn = get_connection()
+    for i in range(5):
+        conn.execute(
+            """
+            INSERT INTO jobs (url, title, site, fit_score, discovered_at)
+            VALUES (?, ?, 'Board', 7, '2026-05-18T10:00:00+00:00')
+            """,
+            (f"https://paginate.example/j{i}", f"Role {i}"),
+        )
+    conn.commit()
+
+    client = TestClient(create_app())
+    page1 = client.get("/api/jobs", params={"limit": 2, "page": 1})
+    assert page1.status_code == 200
+    body1 = page1.json()
+    assert body1["total"] == 5
+    assert body1["limit"] == 2
+    assert body1["offset"] == 0
+    assert body1["page"] == 1
+    assert body1["pages"] == 3
+    assert len(body1["jobs"]) == 2
+    assert body1["jobs"][0]["title"] == "Role 0"
+
+    page2 = client.get("/api/jobs", params={"limit": 2, "page": 2})
+    body2 = page2.json()
+    assert body2["offset"] == 2
+    assert body2["page"] == 2
+    assert len(body2["jobs"]) == 2
+    assert body2["jobs"][0]["title"] == "Role 2"
+
+    page3 = client.get("/api/jobs", params={"limit": 2, "page": 3})
+    body3 = page3.json()
+    assert len(body3["jobs"]) == 1
+    assert body3["jobs"][0]["title"] == "Role 4"
+
+    beyond = client.get("/api/jobs", params={"limit": 2, "page": 99})
+    beyond_body = beyond.json()
+    assert beyond_body["page"] == 3
+    assert beyond_body["offset"] == 4
+    assert len(beyond_body["jobs"]) == 1
 
 
 def test_api_jobs_search_escapes_like_wildcards(temp_db):
@@ -273,15 +410,44 @@ def test_api_jobs_stage_filter_and_columns(temp_db):
     assert "cover_letter_at" in job
     assert "apply_error" in job
 
+    # Legacy ?stage=scored maps to triage "new" (pipeline stages before tailored).
     scored = client.get("/api/jobs", params={"stage": "scored"})
     assert scored.json()["total"] == 1
     assert scored.json()["jobs"][0]["url"] == "https://a.example/scored"
+    assert client.get("/api/jobs", params={"stage": "new"}).json()["total"] == 1
 
     discovered = client.get("/api/jobs", params={"stage": "discovered"})
     assert discovered.json()["total"] == 0
 
     unknown = client.get("/api/jobs", params={"stage": "not_a_real_stage"})
     assert unknown.json()["total"] == 0
+
+
+def test_api_jobs_enriched_pipeline_stage_filter(temp_db):
+    """?stage=enriched must match pipeline CASE label (not contradict not_enriched)."""
+    from applypilot.database import get_connection, init_db
+    from applypilot.server.app import create_app
+
+    init_db()
+    conn = get_connection()
+    conn.execute(
+        """
+        INSERT INTO jobs (url, title, site, fit_score, discovered_at, full_description)
+        VALUES
+          ('https://a.example/enriched', 'Enriched Role', 'Acme', NULL,
+           '2026-05-18T10:00:00+00:00', 'Long job description body'),
+          ('https://a.example/bare', 'Discovered only', 'Acme', NULL,
+           '2026-05-18T11:00:00+00:00', NULL)
+        """
+    )
+    conn.commit()
+
+    client = TestClient(create_app())
+    enriched = client.get("/api/jobs", params={"stage": "enriched"})
+    assert enriched.status_code == 200
+    body = enriched.json()
+    assert body["total"] == 1
+    assert body["jobs"][0]["url"] == "https://a.example/enriched"
 
 
 def test_start_pipeline_dry_run(temp_db, monkeypatch):
@@ -594,6 +760,57 @@ def test_applications_api_surfaces_submitted_unverified(temp_db):
     assert retried["applied_at"] is None
 
 
+def test_requeue_application_clears_ledger_and_leaves_applications_list(temp_db):
+    from applypilot.database import close_connection, get_connection, init_db
+    from applypilot.server.app import create_app
+
+    close_connection()
+    init_db()
+    conn = get_connection()
+    conn.execute(
+        """
+        INSERT INTO jobs (
+            url, title, site, tailored_resume_path, apply_status, apply_error,
+            last_attempted_at, application_url
+        )
+        VALUES (
+            'https://jobs.example/requeue-me', 'Requeue Me', 'Example',
+            '/tmp/resume.pdf', 'failed', 'captcha',
+            '2026-05-18T14:00:00+00:00', 'https://jobs.example/requeue-me/apply'
+        )
+        """
+    )
+    conn.commit()
+
+    client = TestClient(create_app())
+    before = client.get("/api/applications", params={"include_failed": "true", "status": "failed"})
+    assert before.status_code == 200
+    assert before.json()["total"] == 1
+
+    requeue = client.post(
+        "/api/applications/requeue",
+        params={"url": "https://jobs.example/requeue-me"},
+    )
+    assert requeue.status_code == 200
+    assert requeue.json()["ok"] is True
+
+    row = conn.execute(
+        """
+        SELECT apply_status, apply_error, applied_at, apply_not_before, agent_id
+        FROM jobs WHERE url = 'https://jobs.example/requeue-me'
+        """
+    ).fetchone()
+    assert row["apply_status"] is None
+    assert row["apply_error"] is None
+    assert row["applied_at"] is None
+    assert row["apply_not_before"] is None
+    assert row["agent_id"] is None
+
+    after = client.get("/api/applications", params={"include_failed": "true", "status": "failed"})
+    assert after.status_code == 200
+    assert after.json()["total"] == 0
+
+
 def test_application_actions_preserve_percent_encoded_urls(temp_db):
     from applypilot.database import close_connection, get_connection, init_db
     from applypilot.server.app import create_app
@@ -675,6 +892,107 @@ def test_applications_list_status_filter_and_include_failed(temp_db):
     assert failed_only.status_code == 200
     assert failed_only.json()["total"] == 1
     assert failed_only.json()["applications"][0]["apply_status"] == "failed"
+
+
+def test_applications_claude_escalated_filter(temp_db):
+    from applypilot.database import close_connection, get_connection, init_db
+    from applypilot.server.app import create_app
+
+    close_connection()
+    init_db()
+    conn = get_connection()
+    conn.execute(
+        """
+        INSERT INTO jobs (url, title, site, tailored_resume_path, apply_status, apply_error)
+        VALUES
+          ('https://jobs.example/claude', 'Claude job', 'Example', '/tmp/r.pdf',
+           'failed', 'pending_claude_rescue:partial_form'),
+          ('https://jobs.example/plain', 'Plain', 'Example', '/tmp/r.pdf',
+           'failed', 'captcha')
+        """
+    )
+    conn.commit()
+
+    client = TestClient(create_app())
+    resp = client.get(
+        "/api/applications",
+        params={"include_failed": "true", "claude_escalated": "true"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 1
+    assert body["applications"][0]["url"] == "https://jobs.example/claude"
+
+
+def test_applications_pagination_offset_and_site_search(temp_db):
+    from applypilot.database import close_connection, get_connection, init_db
+    from applypilot.server.app import create_app
+
+    close_connection()
+    init_db()
+    conn = get_connection()
+    for i in range(5):
+        conn.execute(
+            """
+            INSERT INTO jobs (url, title, site, tailored_resume_path, apply_status)
+            VALUES (?, ?, ?, '/tmp/r.pdf', 'applied')
+            """,
+            (f"https://jobs.example/app-{i}", f"Role {i}", "Acme Corp" if i % 2 == 0 else "OtherCo"),
+        )
+    conn.commit()
+
+    client = TestClient(create_app())
+    page1 = client.get("/api/applications", params={"limit": 2, "offset": 0, "status": "applied"})
+    assert page1.status_code == 200
+    assert page1.json()["total"] == 5
+    assert len(page1.json()["applications"]) == 2
+
+    page2 = client.get("/api/applications", params={"limit": 2, "offset": 2, "status": "applied"})
+    assert page2.status_code == 200
+    assert len(page2.json()["applications"]) == 2
+    urls_page1 = {row["url"] for row in page1.json()["applications"]}
+    urls_page2 = {row["url"] for row in page2.json()["applications"]}
+    assert urls_page1.isdisjoint(urls_page2)
+
+    by_site = client.get(
+        "/api/applications",
+        params={"status": "applied", "search": "Acme"},
+    )
+    assert by_site.status_code == 200
+    assert by_site.json()["total"] == 3
+    assert all("Acme" in row["site"] for row in by_site.json()["applications"])
+
+
+def test_applications_needs_attention_filter(temp_db):
+    from applypilot.database import close_connection, get_connection, init_db
+    from applypilot.server.app import create_app
+
+    close_connection()
+    init_db()
+    conn = get_connection()
+    conn.execute(
+        """
+        INSERT INTO jobs (url, title, site, tailored_resume_path, apply_status, apply_error)
+        VALUES
+          ('https://jobs.example/unverified', 'Ghost', 'Example', '/tmp/r.pdf',
+           'submitted_unverified', 'no_confirmation'),
+          ('https://jobs.example/captcha', 'Captcha fail', 'Example', '/tmp/r.pdf',
+           'failed', 'captcha'),
+          ('https://jobs.example/sso', 'SSO job', 'Example', '/tmp/r.pdf',
+           'failed', 'sso_login_needed')
+        """
+    )
+    conn.commit()
+
+    client = TestClient(create_app())
+    resp = client.get("/api/applications", params={"needs_attention": "true"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 2
+    urls = {row["url"] for row in body["applications"]}
+    assert "https://jobs.example/unverified" in urls
+    assert "https://jobs.example/sso" in urls
+    assert "https://jobs.example/captcha" not in urls
 
 
 def test_application_detail_includes_parsed_verification(temp_db):

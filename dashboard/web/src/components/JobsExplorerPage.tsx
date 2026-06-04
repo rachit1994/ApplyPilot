@@ -1,7 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
-import { fetchJobs, fetchStats, type Job } from "../api";
-import { JOB_TRIAGE_FILTERS, jobTriageLabel, triageFilterCount } from "../utils/jobTriage";
+import { useQuery } from "@tanstack/react-query";
+import { fetchJobs, fetchTriageCounts, fetchStats, type Job } from "../api";
+import {
+  JOB_TRIAGE_FILTERS,
+  jobTriageLabel,
+  normalizeTriageStageParam,
+  triageFilterCount,
+} from "../utils/jobTriage";
+import {
+  composeJobSort,
+  jobSortDirOptions,
+  jobSortFieldLabel,
+  jobSortFieldOptions,
+  parseJobSort,
+  type JobSortDir,
+  type JobSortField,
+} from "../utils/jobSort";
 import { isPriorityBoardName, sortByPriorityName } from "../utils/sitePriority";
 import { formatJobAge, statusbarClass } from "../utils/statusbar";
 import { useDebouncedValue } from "../utils/useDebouncedValue";
@@ -18,16 +32,21 @@ type Props = {
   onJobSelect?: (job: Job) => void;
 };
 
+function normalizePageSize(raw: number): number {
+  return (PAGE_SIZES as readonly number[]).includes(raw) ? raw : 50;
+}
+
 function parseFilters(sp: URLSearchParams) {
   const minScore = Number(sp.get("min_score") ?? "0") || 0;
   const site = sp.get("site") ?? "";
   const search = sp.get("search") ?? "";
-  const stage = sp.get("stage") ?? "";
-  const sortParam = sp.get("sort");
-  const sort = sortParam ?? (stage === "ready" ? "apply_priority" : "activity_desc");
+  const stage = normalizeTriageStageParam(sp.get("stage") ?? "");
+  const sort = parseJobSort(sp.get("sort"), stage).apiSort;
   const applyStatus = sp.get("apply_status") ?? "";
-  const limit = Number(sp.get("limit") ?? "50") || 50;
-  return { stage, minScore, site, search, sort, applyStatus, limit };
+  const lowScoreReason = sp.get("low_score_reason") ?? "";
+  const limit = normalizePageSize(Number(sp.get("limit") ?? "50") || 50);
+  const page = Math.max(1, Number(sp.get("page") ?? "1") || 1);
+  return { stage, minScore, site, search, sort, applyStatus, lowScoreReason, limit, page };
 }
 
 export function JobsExplorerPage({ searchParams, onSearchParamsChange, onJobSelect }: Props) {
@@ -37,7 +56,6 @@ export function JobsExplorerPage({ searchParams, onSearchParamsChange, onJobSele
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const debouncedSearch = useDebouncedValue(searchInput, 300);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const fetchingMoreRef = useRef(false);
 
   const patchParams = useCallback(
     (patch: Record<string, string | number | null | undefined>) => {
@@ -58,74 +76,125 @@ export function JobsExplorerPage({ searchParams, onSearchParamsChange, onJobSele
     setSearchInput(filters.search);
   }, [filters.search]);
 
+  // Advanced filters are hidden in the UI; stale URL params caused chip counts ≠ list.
+  useEffect(() => {
+    if (
+      filters.minScore > 0 ||
+      filters.site ||
+      filters.search ||
+      filters.applyStatus
+    ) {
+      patchParams({
+        min_score: null,
+        site: null,
+        search: null,
+        apply_status: null,
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once on mount
+  }, []);
+
   useEffect(() => {
     if (debouncedSearch === filters.search) return;
-    patchParams({ search: debouncedSearch || null });
+    patchParams({ search: debouncedSearch || null, page: 1 });
   }, [debouncedSearch, filters.search, patchParams]);
 
   const querySearch = debouncedSearch.trim();
-  const pipelineStage =
-    filters.stage === "tailored" || filters.stage === "ready" || filters.stage === "applied"
-      ? (filters.stage as import("../api").PipelineStageFilter)
-      : undefined;
-  const stageSlug = pipelineStage ? "" : filters.stage;
+  const stageSlug = filters.stage;
+
+  const sortFieldOptions = useMemo(
+    () => jobSortFieldOptions(stageSlug),
+    [stageSlug],
+  );
+
+  useEffect(() => {
+    const parsed = parseJobSort(filters.sort, stageSlug);
+    if (sortFieldOptions.includes(parsed.field)) return;
+    patchParams({ sort: composeJobSort("activity", "desc"), page: 1 });
+  }, [filters.sort, stageSlug, sortFieldOptions, patchParams]);
 
   const { data: stats } = useQuery({
     queryKey: ["stats"],
     queryFn: fetchStats,
+    refetchInterval: 15_000,
   });
 
-  const { data, isLoading, fetchNextPage, hasNextPage, isFetchingNextPage, refetch } =
-    useInfiniteQuery({
-      queryKey: [
-        "jobs",
-        stageSlug,
-        pipelineStage ?? "",
-        filters.minScore,
-        filters.site,
-        querySearch,
-        filters.sort,
-        filters.applyStatus,
-        filters.limit,
-      ],
-      initialPageParam: 0,
-      queryFn: ({ pageParam }) =>
-        fetchJobs({
-          stage: stageSlug || undefined,
-          pipeline_stage: pipelineStage,
-          min_score: filters.minScore > 0 ? filters.minScore : undefined,
-          site: filters.site || undefined,
-          search: querySearch || undefined,
-          apply_status: filters.applyStatus || undefined,
-          sort: filters.sort,
-          limit: filters.limit,
-          offset: Number(pageParam) * filters.limit,
-        }),
-      getNextPageParam: (lastPage, allPages) => {
-        const loaded = allPages.reduce((n, p) => n + (p.jobs?.length ?? 0), 0);
-        const total = lastPage.total ?? 0;
-        if (loaded >= total) return undefined;
-        return allPages.length;
-      },
-    });
+  const triageCountsKey = [
+    "jobs-triage-counts",
+    filters.minScore,
+    filters.site,
+    querySearch,
+    filters.applyStatus,
+    filters.lowScoreReason,
+  ] as const;
 
-  const jobs = useMemo(() => data?.pages.flatMap((p) => p.jobs ?? []) ?? [], [data?.pages]);
-  const total = data?.pages?.[0]?.total ?? 0;
+  const { data: triageCounts } = useQuery({
+    queryKey: triageCountsKey,
+    queryFn: () =>
+      fetchTriageCounts({
+        min_score: filters.minScore > 0 ? filters.minScore : undefined,
+        site: filters.site || undefined,
+        search: querySearch || undefined,
+        apply_status: filters.applyStatus || undefined,
+        low_score_reason: filters.lowScoreReason || undefined,
+      }),
+    refetchInterval: 15_000,
+  });
 
-  const maybeLoadMore = useCallback(() => {
+  const jobsQueryKey = [
+    "jobs",
+    stageSlug,
+    filters.minScore,
+    filters.site,
+    querySearch,
+    filters.sort,
+    filters.applyStatus,
+    filters.lowScoreReason,
+    filters.limit,
+    filters.page,
+  ] as const;
+
+  const { data, isPending, isFetching, refetch } = useQuery({
+    queryKey: jobsQueryKey,
+    queryFn: () =>
+      fetchJobs({
+        stage: stageSlug || undefined,
+        min_score: filters.minScore > 0 ? filters.minScore : undefined,
+        site: filters.site || undefined,
+        search: querySearch || undefined,
+        apply_status: filters.applyStatus || undefined,
+        low_score_reason: filters.lowScoreReason || undefined,
+        sort: filters.sort,
+        limit: filters.limit,
+        page: filters.page,
+      }),
+    staleTime: 0,
+    refetchInterval: 15_000,
+  });
+
+  const pageAligned = data == null || data.page === filters.page;
+  const jobs = pageAligned ? (data?.jobs ?? []) : [];
+  const total = pageAligned ? (data?.total ?? 0) : 0;
+  const pages = pageAligned
+    ? (data?.pages ?? (total > 0 ? Math.ceil(total / filters.limit) : 0))
+    : 0;
+  const currentPage = pageAligned ? (data?.page ?? filters.page) : filters.page;
+  const listLoading = isPending || (isFetching && jobs.length === 0);
+  const pageStart = total === 0 ? 0 : (currentPage - 1) * filters.limit + 1;
+  const pageEnd = total === 0 ? 0 : Math.min(currentPage * filters.limit, total);
+
+  useEffect(() => {
+    if (!pageAligned || pages === 0) return;
+    if (filters.page > pages) {
+      patchParams({ page: pages });
+    }
+  }, [filters.page, pages, pageAligned, patchParams]);
+
+  useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    if (!hasNextPage || isFetchingNextPage) return;
-    if (fetchingMoreRef.current) return;
-    const remaining = el.scrollHeight - el.scrollTop - el.clientHeight;
-    if (remaining > JOB_ROW_PX * 12) return;
-    fetchingMoreRef.current = true;
-    fetchNextPage()
-      .catch(() => {})
-      .finally(() => {
-        fetchingMoreRef.current = false;
-      });
-  }, [fetchNextPage, hasNextPage, isFetchingNextPage]);
+    el.scrollTo({ top: 0 });
+  }, [currentPage, stageSlug, filters.limit]);
 
   const siteOptions = useMemo(() => {
     const rows = sortByPriorityName(
@@ -135,6 +204,22 @@ export function JobsExplorerPage({ searchParams, onSearchParamsChange, onJobSele
   }, [stats?.by_site]);
 
   const stageChips = JOB_TRIAGE_FILTERS;
+  const lowScoreReasons = stats?.low_score_reasons ?? [];
+  const sortState = useMemo(
+    () => parseJobSort(filters.sort, stageSlug),
+    [filters.sort, stageSlug],
+  );
+  const sortDirOptions = useMemo(
+    () => jobSortDirOptions(sortState.field),
+    [sortState.field],
+  );
+
+  const setSort = useCallback(
+    (field: JobSortField, dir: JobSortDir) => {
+      patchParams({ sort: composeJobSort(field, dir), page: 1 });
+    },
+    [patchParams],
+  );
 
   const selectJob = useCallback(
     (job: Job) => {
@@ -155,6 +240,20 @@ export function JobsExplorerPage({ searchParams, onSearchParamsChange, onJobSele
     }
   }, [jobs, selectedJob, onJobSelect]);
 
+  const resetListFilters = useCallback(
+    () =>
+      patchParams({
+        stage: null,
+        min_score: null,
+        site: null,
+        search: null,
+        apply_status: null,
+        low_score_reason: null,
+        page: 1,
+      }),
+    [patchParams],
+  );
+
   return (
     <PageCanvas wide>
       <div className="jobs">
@@ -162,19 +261,97 @@ export function JobsExplorerPage({ searchParams, onSearchParamsChange, onJobSele
           <div className="jobs__filterbar">
             {stageChips.map((c) => {
               const on = c.slug === filters.stage;
-              const count = triageFilterCount(c.slug, stats);
+              let count = triageFilterCount(c.slug, triageCounts, stats);
+              if (on && pageAligned && total >= 0) {
+                count = total;
+              }
               return (
                 <button
                   key={c.slug || "__all"}
                   type="button"
                   className={on ? "chip chip--on" : "chip"}
-                  onClick={() => patchParams({ stage: c.slug || null })}
+                  onClick={() =>
+                    patchParams({
+                      stage: c.slug || null,
+                      min_score: null,
+                      site: null,
+                      search: null,
+                      apply_status: null,
+                      page: 1,
+                    })
+                  }
                 >
                   {c.label}
                   <span className="chip__count">{count}</span>
                 </button>
               );
             })}
+          </div>
+
+          {lowScoreReasons.length > 0 ? (
+            <div className="jobs__reasons" aria-label="Common low-score reasons">
+              <span className="jobs__reasons-label">Below 7 because</span>
+              {lowScoreReasons.slice(0, 8).map((row) => {
+                const active = filters.lowScoreReason === row.reason;
+                return (
+                  <button
+                    key={row.reason}
+                    type="button"
+                    className={active ? "chip chip--on" : "chip"}
+                    title={`${row.count} job${row.count === 1 ? "" : "s"} — click to filter`}
+                    aria-pressed={active}
+                    onClick={() =>
+                      patchParams({
+                        low_score_reason: active ? null : row.reason,
+                        page: 1,
+                      })
+                    }
+                  >
+                    {row.reason}
+                    <span className="chip__count">{row.count}</span>
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
+
+          <div className="jobs__sortbar" aria-label="Sort jobs list">
+            <label className="control jobs__sort-control">
+              <span className="control__label">Sort by</span>
+              <select
+                className="control__select"
+                value={sortState.field}
+                onChange={(e) => {
+                  const field = e.target.value as JobSortField;
+                  const dirs = jobSortDirOptions(field);
+                  const dir = dirs.some((d) => d.value === sortState.dir)
+                    ? sortState.dir
+                    : dirs[0]?.value ?? "desc";
+                  setSort(field, dir);
+                }}
+              >
+                {sortFieldOptions.map((field) => (
+                  <option key={field} value={field}>
+                    {jobSortFieldLabel(field)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="control jobs__sort-control">
+              <span className="control__label">Order</span>
+              <select
+                className="control__select"
+                value={sortState.dir}
+                disabled={sortState.field === "apply_priority"}
+                onChange={(e) => setSort(sortState.field, e.target.value as JobSortDir)}
+              >
+                {sortDirOptions.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
 
           <div className="jobs__filterbar jobs__filterbar--advanced" hidden aria-hidden>
@@ -193,7 +370,7 @@ export function JobsExplorerPage({ searchParams, onSearchParamsChange, onJobSele
               <select
                 className="control__select"
                 value={filters.site}
-                onChange={(e) => patchParams({ site: e.target.value || null })}
+                onChange={(e) => patchParams({ site: e.target.value || null, page: 1 })}
               >
                 <option value="">All</option>
                 {siteOptions.map((s) => (
@@ -208,40 +385,15 @@ export function JobsExplorerPage({ searchParams, onSearchParamsChange, onJobSele
               <select
                 className="control__select"
                 value={String(filters.minScore)}
-                onChange={(e) => patchParams({ min_score: Number(e.target.value) || 0 })}
+                onChange={(e) =>
+                  patchParams({ min_score: Number(e.target.value) || 0, page: 1 })
+                }
               >
                 <option value="0">Any</option>
                 <option value="6">6+</option>
                 <option value="7">7+</option>
                 <option value="8">8+</option>
                 <option value="9">9+</option>
-              </select>
-            </label>
-            <label className="control">
-              <span className="control__label">Sort</span>
-              <select
-                className="control__select"
-                value={filters.sort}
-                onChange={(e) => patchParams({ sort: e.target.value })}
-              >
-                <option value="apply_priority">Apply priority</option>
-                <option value="activity_desc">Activity ↓</option>
-                <option value="fit_score_desc">Score ↓</option>
-                <option value="discovered_at_desc">Discovered ↓</option>
-              </select>
-            </label>
-            <label className="control">
-              <span className="control__label">Page</span>
-              <select
-                className="control__select"
-                value={String(filters.limit)}
-                onChange={(e) => patchParams({ limit: Number(e.target.value) })}
-              >
-                {PAGE_SIZES.map((n) => (
-                  <option key={n} value={String(n)}>
-                    {n}
-                  </option>
-                ))}
               </select>
             </label>
             <div className="control" style={{ alignSelf: "flex-end" }}>
@@ -251,7 +403,69 @@ export function JobsExplorerPage({ searchParams, onSearchParamsChange, onJobSele
             </div>
           </div>
 
-          {isLoading ? (
+          <div className="jobs__pager" aria-label="Jobs list pagination">
+            <label className="control jobs__pager-size">
+              <span className="control__label">Per page</span>
+              <select
+                className="control__select"
+                value={String(filters.limit)}
+                onChange={(e) =>
+                  patchParams({ limit: normalizePageSize(Number(e.target.value)), page: 1 })
+                }
+              >
+                {PAGE_SIZES.map((n) => (
+                  <option key={n} value={String(n)}>
+                    {n}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <p className="jobs__pager-meta panel__sub">
+              {total === 0 ? (
+                "No jobs"
+              ) : (
+                <>
+                  Showing <strong>{pageStart}</strong>–<strong>{pageEnd}</strong> of{" "}
+                  <strong>{total}</strong>
+                  {pages > 1 ? (
+                    <>
+                      {" "}
+                      · page <strong>{currentPage}</strong> of <strong>{pages}</strong>
+                    </>
+                  ) : null}
+                  {listLoading ? " · loading…" : null}
+                </>
+              )}
+            </p>
+            <div className="jobs__pager-actions">
+              <button
+                type="button"
+                className="btn btn--ghost btn--sm"
+                disabled={currentPage <= 1 || listLoading}
+                onClick={() => patchParams({ page: currentPage - 1 })}
+              >
+                Previous
+              </button>
+              <button
+                type="button"
+                className="btn btn--ghost btn--sm"
+                disabled={pages === 0 || currentPage >= pages || listLoading}
+                onClick={() => patchParams({ page: currentPage + 1 })}
+              >
+                Next
+              </button>
+              <button
+                type="button"
+                className="btn btn--ghost btn--sm"
+                onClick={() => void refetch()}
+                disabled={listLoading}
+              >
+                Refresh
+              </button>
+            </div>
+          </div>
+
+          {listLoading ? (
             <div className="jobs__scroll">
               <p className="panel__sub" style={{ padding: 16 }}>
                 Loading jobs…
@@ -261,17 +475,25 @@ export function JobsExplorerPage({ searchParams, onSearchParamsChange, onJobSele
             <div className="jobs__scroll">
               <p className="panel__sub" style={{ padding: 16 }}>
                 No jobs match these filters.
+                {filters.stage || filters.minScore || filters.site || filters.search ? (
+                  <>
+                    {" "}
+                    <button type="button" className="btn btn--ghost btn--sm" onClick={resetListFilters}>
+                      Clear filters
+                    </button>
+                  </>
+                ) : null}
               </p>
             </div>
           ) : (
             <VirtualScroll
+              key={`${stageSlug}|${filters.page}|${filters.limit}|${filters.sort}|${filters.lowScoreReason}|${querySearch}`}
               scrollRef={scrollRef}
               className="jobs__scroll"
               items={jobs}
               getItemKey={(job) => job.url}
               estimateSize={JOB_ROW_PX}
               overscan={16}
-              onScroll={maybeLoadMore}
             >
               {(job) => (
                 <JobListRow
@@ -282,28 +504,6 @@ export function JobsExplorerPage({ searchParams, onSearchParamsChange, onJobSele
               )}
             </VirtualScroll>
           )}
-
-          {jobs.length > 0 ? (
-            <div style={{ padding: "10px 12px" }}>
-              <div className="panel__sub">
-                Showing <strong>{jobs.length}</strong> of {total || "—"}
-                {hasNextPage ? " · scrolling loads more" : " · end of list"}
-                {isFetchingNextPage ? " · loading…" : null}
-              </div>
-              {hasNextPage ? (
-                <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
-                  <button
-                    type="button"
-                    className="btn btn--ghost btn--sm"
-                    disabled={isFetchingNextPage}
-                    onClick={() => void fetchNextPage()}
-                  >
-                    {isFetchingNextPage ? "Loading…" : "Load more"}
-                  </button>
-                </div>
-              ) : null}
-            </div>
-          ) : null}
         </div>
 
         <JobDetailPane job={selectedJob} />

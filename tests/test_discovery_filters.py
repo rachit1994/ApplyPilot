@@ -53,6 +53,21 @@ def test_location_passes_remote_always_ok():
     assert not _filters.location_passes("New York, NY", accept=accept, reject=reject)
 
 
+def test_location_passes_multi_segment_any_match():
+    accept = ["bengaluru", "bangalore"]
+    reject = ["new york"]
+    assert _filters.location_passes(
+        "Remote - US; London; Bangalore, Karnataka",
+        accept=accept,
+        reject=reject,
+    )
+    assert not _filters.location_passes(
+        "New York, NY; London, UK",
+        accept=accept,
+        reject=reject,
+    )
+
+
 def test_init_db_creates_content_dedup_columns(tmp_path):
     conn = init_db(tmp_path / "applypilot.db")
 

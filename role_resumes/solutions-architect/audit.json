@@ -1,0 +1,697 @@
+{
+  "role": {
+    "key": "solutions-architect",
+    "title": "Solutions Architect",
+    "aliases": [
+      "solutions architect",
+      "solution architect",
+      "customer engineer",
+      "sales engineer"
+    ],
+    "keywords": [
+      "solution",
+      "architect",
+      "customer",
+      "stakeholder",
+      "aws",
+      "integration",
+      "system design",
+      "api",
+      "technical discovery"
+    ],
+    "summary": "Hands-on solutions architect and senior engineer with 10+ years designing scalable SaaS, fintech, cloud, and integration architectures.",
+    "skills": [
+      [
+        "Architecture",
+        "System design, distributed systems, API design, integration architecture, scalability, reliability"
+      ],
+      [
+        "Cloud & Data",
+        "AWS, Docker, Kubernetes, PostgreSQL, Redis, Kafka, Elasticsearch"
+      ],
+      [
+        "Integrations",
+        "Third-party APIs, event-driven workflows, security boundaries, migration planning"
+      ],
+      [
+        "Delivery",
+        "Stakeholder alignment, technical discovery, implementation planning, production support"
+      ]
+    ]
+  },
+  "benchmark_job": {
+    "source": "jobicy_research_only",
+    "url": "https://jobicy.com/jobs/144848-senior-solution-architect-medical-devices",
+    "title": "Senior Solution Architect – Medical Devices",
+    "company": "NVIDIA",
+    "salary": "",
+    "salary_usd_max": 80000,
+    "location": "Germany",
+    "description": "At NVIDIA, we are advancing healthcare through innovation. As a Senior Solutions Architect for Medical Devices, you will collaborate with medical device customers, developers, scientists, and academic and industry leaders across EMEA to harness AI and accelerated computing.\nNVIDIA’s Solution Architects are developers and scientists who apply the latest AI and accelerated computing technologies. Our machine learning, deep learning, and high-performance computing platforms are widely adopted across healthcare, including by medical device manufacturers, academic medical centers, pharmaceutical companies, and startups.\nIn this role, you will serve as a trusted technical advisor, helping customers integrate AI and accelerated computing at the edge and in the cloud. You will develop proof-of-concept demonstrations, build strategic executive relationships, and work with developers, researchers, data scientists, and IT leaders on impactful healthcare projects.\nThe ideal candidate is passionate about AI and accelerated computing in medical devices, has several years of medical device industry experience across research, technical project leadership, and product development, and enjoys cutting-edge technology and continuous learning.\nWhat you will be doing:\nPartner with our business/account team working with customers to develop a keen understanding of their goals, strategies, and technical needs and to help define and deliver high-value solutions meeting these needs.\nWork to design NVIDIA's HW/SW into next-generation software-defined medical devices, AI-enabled clinical applications, and advanced healthcare product platforms.\nStay up to date on the state of the art in medical image analysis, sensor processing, clinical AI, digital health, and surgical data science to apply the latest advancements in the field to customer needs.\nSupport customers to optimize workloads using NVIDIA’s computing platform.\nDocument what you know and teach others. This can vary from building targeted training for partners and other Solutions Architects, to writing whitepapers, blogs, and wiki articles, to simply working through hard problems with a customer on a whiteboard.\nPartner strategically with lighthouse customers and industry-specific solution partners targeting our computing platform.\nWe make heavy use of conferencing tools, but some travel is required for this role. You are empowered to find the best way to get your job done and make our customers successful.\nWhat we need to see:\nStrong foundational expertise: MS, PhD or equivalent experience in Computer Science, Mathematics, Biomedical Engineering, Electrical Engineering, or closely related fields.\n5+ years of work-related experience in software development, machine learning, deep learning or high-performance computing.\nIn-depth knowledge and practical experience with contemporary Deep Learning software architecture and frameworks, in particular regarding image and video processing of medical and surgical modalities.\nExperience in scientific computing and software development with C/C++, Python, or CUDA. Skilled in streaming data processing, performance analysis, and optimization from algorithms to pipelines.\nStrong time-management and organizational skills for coordinating multiple initiatives, priorities, and implementations of new technology and products into very complex projects.\nExcellent communication skills particularly in the presentation of highly technical material. Must enjoy interacting with forward-thinking people, life-long learning, and staying at the forefront of the domain.\nWays to stand out from the crowd:\nDomain expertise and proven hands-on experience applying accelerated computing and AI in one or more medical device areas, such as medical imaging, digital surgery, surgical data science, image-guided intervention, patient monitoring, or clinical workflow applications. Familiarity with clinical workflows, interventional and/or surgical procedures is a plus.\nSeveral years of industry experience in the medical device development life cycle, including research, technical project leadership, product development, or developing software in regulated environments. Understanding of regulatory requirements (e.g., HIPAA) and data privacy concerns specific to healthcare data.\nExtensive deep learning knowledge with practical experience in frameworks and model architectures (e.g., CNNs, LLMs, VLMs), medical image and video analysis, segmentation, detection, multimodal clinical AI, and training from simulation or Digital Twins. Proficiency in deploying AI models and optimizing inference using TensorRT, ONNX Runtime, Triton, or TensorRT-LLM is a plus.\nProven experience implementing and optimizing workloads with CUDA and Nsight Tools. Experience with high performance networking technologies, e.g. DPDK, DOCA, RMDA, RoCEv2 is a plus.\nPublished record of thought leadership in a technical area or industry segment.\nNVIDIA is widely considered to be one of the technology world’s most desirable employers. We have some of the most forward-thinking and hardworking people in the world working for us. If you're creative and autonomous, we want to hear from you! NVIDIA is committed to fostering a diverse work environment and proud to be an equal opportunity employer. As we highly value diversity in our current and future employees, we do not discriminate (including in our hiring and promotion practices) on the basis of race, religion, color, national origin, gender, gender expression, sexual orientation, age, marital status, veteran status, disability status or any other characteristic protected by law.\nIf you are passionate about NVIDIA technology and how it can unlock Healthcare or Life Sciences, we should talk!",
+    "eligibility_reason": "research_only: high-paying market JD, not eligible under current location/sponsorship filter"
+  },
+  "jd_analysis": {
+    "hard_requirements": [
+      "The ideal candidate is passionate about AI and accelerated computing in medical devices, has several years of medical device industry experience across research, technical project leadership, and product development, and enjoys cutting-edge technology and continuous learning.",
+      "Partner with our business/account team working with customers to develop a keen understanding of their goals, strategies, and technical needs and to help define and deliver high-value solutions meeting these needs.",
+      "Stay up to date on the state of the art in medical image analysis, sensor processing, clinical AI, digital health, and surgical data science to apply the latest advancements in the field to customer needs.",
+      "We make heavy use of conferencing tools, but some travel is required for this role.",
+      "Strong foundational expertise: MS, PhD or equivalent experience in Computer Science, Mathematics, Biomedical Engineering, Electrical Engineering, or closely related fields.",
+      "5+ years of work-related experience in software development, machine learning, deep learning or high-performance computing.",
+      "In-depth knowledge and practical experience with contemporary Deep Learning software architecture and frameworks, in particular regarding image and video processing of medical and surgical modalities.",
+      "Experience in scientific computing and software development with C/C++, Python, or CUDA.",
+      "Strong time-management and organizational skills for coordinating multiple initiatives, priorities, and implementations of new technology and products into very complex projects.",
+      "Must enjoy interacting with forward-thinking people, life-long learning, and staying at the forefront of the domain.",
+      "Domain expertise and proven hands-on experience applying accelerated computing and AI in one or more medical device areas, such as medical imaging, digital surgery, surgical data science, image-guided intervention, patient monitoring, or clinical workflow applications.",
+      "Several years of industry experience in the medical device development life cycle, including research, technical project leadership, product development, or developing software in regulated environments."
+    ],
+    "nice_to_haves": [
+      "Familiarity with clinical workflows, interventional and/or surgical procedures is a plus.",
+      "Proficiency in deploying AI models and optimizing inference using TensorRT, ONNX Runtime, Triton, or TensorRT-LLM is a plus.",
+      "DPDK, DOCA, RMDA, RoCEv2 is a plus."
+    ],
+    "keywords": [
+      "solution",
+      "architect",
+      "customer"
+    ],
+    "missing_role_keywords": [
+      "stakeholder",
+      "aws",
+      "integration",
+      "system design",
+      "api",
+      "technical discovery"
+    ],
+    "domain_problem_signals": [
+      "performance",
+      "customer",
+      "platform",
+      "data",
+      "ai",
+      "architecture",
+      "product",
+      "team"
+    ]
+  },
+  "company_problem_hypothesis": {
+    "benchmark_company_problem": "NVIDIA is hiring a Senior Solution Architect – Medical Devices to solve problems around performance, customer, platform, data, ai, architecture.",
+    "candidate_company_problem_map": [
+      {
+        "company": "Happening Today",
+        "domain": "event discovery and AI platform",
+        "problems": [
+          "retrieval quality and latency for event discovery",
+          "agentic workflow reliability",
+          "streaming inference, token budgets, and hallucination controls"
+        ],
+        "evidence": [
+          "RAG pipeline for event discovery with pgvector and semantic reranking",
+          "LangGraph planner/tool/critic orchestration",
+          "LLMOps evals, latency/cost dashboards, and hallucination alerts"
+        ]
+      },
+      {
+        "company": "MIRA",
+        "domain": "consumer-scale generative AI",
+        "problems": [
+          "serving GenAI to large user bases",
+          "personalization and fine-tuning quality",
+          "inference cost control and regression evaluation"
+        ],
+        "evidence": [
+          "GenAI features for 50M+ users",
+          "LoRA/QLoRA fine-tuning pipeline",
+          "35% cost reduction through compression, caching, and model routing"
+        ]
+      },
+      {
+        "company": "Delta Exchange",
+        "domain": "real-time fintech and trading",
+        "problems": [
+          "low-latency trading workflows",
+          "real-time UI reliability",
+          "technical debt and conversion improvements"
+        ],
+        "evidence": [
+          "real-time derivatives platform serving 5M+ users",
+          "60% system performance improvement",
+          "React component library and 25% conversion lift"
+        ]
+      },
+      {
+        "company": "BetterPlace",
+        "domain": "enterprise workforce SaaS",
+        "problems": [
+          "large-scale data ingestion",
+          "enterprise workflow scalability",
+          "frontend performance and microservice migration"
+        ],
+        "evidence": [
+          "3x ingestion throughput improvement",
+          "50% UI render time reduction",
+          "monolith-to-microservices migration"
+        ]
+      }
+    ]
+  },
+  "fact_support_map": [
+    {
+      "claim": "Owning the production platform operations stack: structured configuration versioning in Git, automated quality checks (automated regression checks + release regression suite), latency/cost dashboards in CloudWatch, and quality regression rate alerting.",
+      "support_ratio": 0.95,
+      "supporting_terms": [
+        "alerting.",
+        "automated",
+        "cloudwatch",
+        "cost",
+        "dashboards",
+        "latency",
+        "owning",
+        "platform",
+        "production",
+        "quality",
+        "rate",
+        "regression"
+      ]
+    },
+    {
+      "claim": "Implementing a streaming API layer (Server-Sent Events + Node.js) for high-volume product responses — Handling backpressure, request budget management, and graceful fallback on payload limit overflow.",
+      "support_ratio": 0.71,
+      "supporting_terms": [
+        "backpressure",
+        "budget",
+        "events",
+        "fallback",
+        "graceful",
+        "handling",
+        "high",
+        "implementing",
+        "layer",
+        "management",
+        "node.js",
+        "overflow."
+      ]
+    },
+    {
+      "claim": "Built and scaled platform services powering high-scale product features for 50M+ users — Including a production search and content system over proprietary content using search indexing, service orchestration, and managed APIs for responses.",
+      "support_ratio": 0.96,
+      "supporting_terms": [
+        "50m+",
+        "apis",
+        "built",
+        "content",
+        "features",
+        "high",
+        "including",
+        "indexing",
+        "orchestration",
+        "over",
+        "platform",
+        "powering"
+      ]
+    },
+    {
+      "claim": "Integrated regression gates into CI/CD to catch deployment regressions before release.",
+      "support_ratio": 0.78,
+      "supporting_terms": [
+        "before",
+        "catch",
+        "deployment",
+        "gates",
+        "integrated",
+        "into",
+        "regression"
+      ]
+    },
+    {
+      "claim": "Refactored legacy service architecture to reduce inter-service latency, achieving a 60% system performance improvement measured end-to-end.",
+      "support_ratio": 1.08,
+      "supporting_terms": [
+        "achieving",
+        "architecture",
+        "end.",
+        "improvement",
+        "inter",
+        "latency",
+        "legacy",
+        "measured",
+        "performance",
+        "reduce",
+        "refactored",
+        "service"
+      ]
+    },
+    {
+      "claim": "Designed and built core trading engine features for a real-time derivatives platform serving 5M+ users — Order book rendering, WebSocket feed management, and margin calculation APIs.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "apis.",
+        "book",
+        "built",
+        "calculation",
+        "core",
+        "derivatives",
+        "designed",
+        "engine",
+        "features",
+        "feed",
+        "management",
+        "margin"
+      ]
+    },
+    {
+      "claim": "Built a React component library and shared state management layer, cutting UI feature development time significantly and boosting conversion by 25%.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "boosting",
+        "built",
+        "component",
+        "conversion",
+        "cutting",
+        "development",
+        "feature",
+        "layer",
+        "library",
+        "management",
+        "react",
+        "shared"
+      ]
+    },
+    {
+      "claim": "Led technical debt reduction initiative: migrated critical services from callback-heavy Node to async/await patterns, reducing bug rate by 40%.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "async",
+        "await",
+        "callback",
+        "critical",
+        "debt",
+        "from",
+        "heavy",
+        "initiative",
+        "migrated",
+        "node",
+        "patterns",
+        "rate"
+      ]
+    },
+    {
+      "claim": "Built scalable SaaS modules (workforce management, compliance workflows) using React, Python (Django/Flask), and Node.js.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "built",
+        "compliance",
+        "django",
+        "flask",
+        "management",
+        "modules",
+        "node.js.",
+        "python",
+        "react",
+        "saas",
+        "scalable",
+        "using"
+      ]
+    },
+    {
+      "claim": "Designed a batched data ingestion pipeline that increased system throughput by 3x, enabling the platform to onboard enterprise clients with large worker datasets.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "batched",
+        "clients",
+        "data",
+        "datasets.",
+        "designed",
+        "enabling",
+        "enterprise",
+        "increased",
+        "ingestion",
+        "large",
+        "onboard",
+        "pipeline"
+      ]
+    },
+    {
+      "claim": "Introduced frontend performance patterns (lazy loading, memoisation, pagination) that reduced UI render times by 50%.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "frontend",
+        "introduced",
+        "lazy",
+        "loading",
+        "memoisation",
+        "pagination",
+        "patterns",
+        "performance",
+        "reduced",
+        "render",
+        "that",
+        "times"
+      ]
+    },
+    {
+      "claim": "Migrated monolith features to independently deployable microservices, improving deployment frequency and reducing rollback risk.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "deployable",
+        "deployment",
+        "features",
+        "frequency",
+        "improving",
+        "independently",
+        "microservices",
+        "migrated",
+        "monolith",
+        "reducing",
+        "risk.",
+        "rollback"
+      ]
+    },
+    {
+      "claim": "Built REST APIs.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "apis.",
+        "built",
+        "rest"
+      ]
+    },
+    {
+      "claim": "Delivered full stack features across web applications in early-career roles.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "across",
+        "applications",
+        "career",
+        "delivered",
+        "early",
+        "features",
+        "full",
+        "roles.",
+        "stack"
+      ]
+    },
+    {
+      "claim": "Integrated third-party services, and shipped React/Angular frontend modules.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "angular",
+        "frontend",
+        "integrated",
+        "modules.",
+        "party",
+        "react",
+        "services",
+        "shipped",
+        "third"
+      ]
+    }
+  ],
+  "rewrite_notes": [
+    "benchmark: jobicy_research_only — NVIDIA (Senior Solution Architect – Medical Devices)",
+    "deterministic rewrite: top-two employers tailored to benchmark JD; AI terms reframed or dropped"
+  ],
+  "audit": {
+    "score": 95,
+    "pass": true,
+    "keyword_coverage_score": 100,
+    "recruiter_rejection_risk_score": 5,
+    "evidence_support_score": 100,
+    "role_problem_fit_score": 95,
+    "critical_rejection_flags": [],
+    "benchmark_warnings": [],
+    "unsupported_claims": [],
+    "missing_experience_companies": [],
+    "missing_experience_title_lines": [],
+    "thin_experience_sections": [
+      {
+        "company": "Happening Today",
+        "required_bullets": 4,
+        "actual_bullets": 2
+      },
+      {
+        "company": "MIRA",
+        "required_bullets": 4,
+        "actual_bullets": 2
+      }
+    ],
+    "public_resume_quality_issues": [],
+    "tech_mismatches": [],
+    "rejection_risks": [],
+    "experience_role_lens_issues": [],
+    "improvement_instructions": [],
+    "fact_support_map": [
+      {
+        "claim": "Owning the production platform operations stack: structured configuration versioning in Git, automated quality checks (automated regression checks + release regression suite), latency/cost dashboards in CloudWatch, and quality regression rate alerting.",
+        "support_ratio": 0.95,
+        "supporting_terms": [
+          "alerting.",
+          "automated",
+          "cloudwatch",
+          "cost",
+          "dashboards",
+          "latency",
+          "owning",
+          "platform",
+          "production",
+          "quality",
+          "rate",
+          "regression"
+        ]
+      },
+      {
+        "claim": "Implementing a streaming API layer (Server-Sent Events + Node.js) for high-volume product responses — Handling backpressure, request budget management, and graceful fallback on payload limit overflow.",
+        "support_ratio": 0.71,
+        "supporting_terms": [
+          "backpressure",
+          "budget",
+          "events",
+          "fallback",
+          "graceful",
+          "handling",
+          "high",
+          "implementing",
+          "layer",
+          "management",
+          "node.js",
+          "overflow."
+        ]
+      },
+      {
+        "claim": "Built and scaled platform services powering high-scale product features for 50M+ users — Including a production search and content system over proprietary content using search indexing, service orchestration, and managed APIs for responses.",
+        "support_ratio": 0.96,
+        "supporting_terms": [
+          "50m+",
+          "apis",
+          "built",
+          "content",
+          "features",
+          "high",
+          "including",
+          "indexing",
+          "orchestration",
+          "over",
+          "platform",
+          "powering"
+        ]
+      },
+      {
+        "claim": "Integrated regression gates into CI/CD to catch deployment regressions before release.",
+        "support_ratio": 0.78,
+        "supporting_terms": [
+          "before",
+          "catch",
+          "deployment",
+          "gates",
+          "integrated",
+          "into",
+          "regression"
+        ]
+      },
+      {
+        "claim": "Refactored legacy service architecture to reduce inter-service latency, achieving a 60% system performance improvement measured end-to-end.",
+        "support_ratio": 1.08,
+        "supporting_terms": [
+          "achieving",
+          "architecture",
+          "end.",
+          "improvement",
+          "inter",
+          "latency",
+          "legacy",
+          "measured",
+          "performance",
+          "reduce",
+          "refactored",
+          "service"
+        ]
+      },
+      {
+        "claim": "Designed and built core trading engine features for a real-time derivatives platform serving 5M+ users — Order book rendering, WebSocket feed management, and margin calculation APIs.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "apis.",
+          "book",
+          "built",
+          "calculation",
+          "core",
+          "derivatives",
+          "designed",
+          "engine",
+          "features",
+          "feed",
+          "management",
+          "margin"
+        ]
+      },
+      {
+        "claim": "Built a React component library and shared state management layer, cutting UI feature development time significantly and boosting conversion by 25%.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "boosting",
+          "built",
+          "component",
+          "conversion",
+          "cutting",
+          "development",
+          "feature",
+          "layer",
+          "library",
+          "management",
+          "react",
+          "shared"
+        ]
+      },
+      {
+        "claim": "Led technical debt reduction initiative: migrated critical services from callback-heavy Node to async/await patterns, reducing bug rate by 40%.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "async",
+          "await",
+          "callback",
+          "critical",
+          "debt",
+          "from",
+          "heavy",
+          "initiative",
+          "migrated",
+          "node",
+          "patterns",
+          "rate"
+        ]
+      },
+      {
+        "claim": "Built scalable SaaS modules (workforce management, compliance workflows) using React, Python (Django/Flask), and Node.js.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "built",
+          "compliance",
+          "django",
+          "flask",
+          "management",
+          "modules",
+          "node.js.",
+          "python",
+          "react",
+          "saas",
+          "scalable",
+          "using"
+        ]
+      },
+      {
+        "claim": "Designed a batched data ingestion pipeline that increased system throughput by 3x, enabling the platform to onboard enterprise clients with large worker datasets.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "batched",
+          "clients",
+          "data",
+          "datasets.",
+          "designed",
+          "enabling",
+          "enterprise",
+          "increased",
+          "ingestion",
+          "large",
+          "onboard",
+          "pipeline"
+        ]
+      },
+      {
+        "claim": "Introduced frontend performance patterns (lazy loading, memoisation, pagination) that reduced UI render times by 50%.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "frontend",
+          "introduced",
+          "lazy",
+          "loading",
+          "memoisation",
+          "pagination",
+          "patterns",
+          "performance",
+          "reduced",
+          "render",
+          "that",
+          "times"
+        ]
+      },
+      {
+        "claim": "Migrated monolith features to independently deployable microservices, improving deployment frequency and reducing rollback risk.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "deployable",
+          "deployment",
+          "features",
+          "frequency",
+          "improving",
+          "independently",
+          "microservices",
+          "migrated",
+          "monolith",
+          "reducing",
+          "risk.",
+          "rollback"
+        ]
+      },
+      {
+        "claim": "Built REST APIs.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "apis.",
+          "built",
+          "rest"
+        ]
+      },
+      {
+        "claim": "Delivered full stack features across web applications in early-career roles.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "across",
+          "applications",
+          "career",
+          "delivered",
+          "early",
+          "features",
+          "full",
+          "roles.",
+          "stack"
+        ]
+      },
+      {
+        "claim": "Integrated third-party services, and shipped React/Angular frontend modules.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "angular",
+          "frontend",
+          "integrated",
+          "modules.",
+          "party",
+          "react",
+          "services",
+          "shipped",
+          "third"
+        ]
+      }
+    ],
+    "auditor": "deterministic"
+  }
+}

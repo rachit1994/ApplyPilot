@@ -1114,18 +1114,19 @@ def _run_one_site(name: str, url: str) -> dict:
         cleaned_check = clean_page_html(full_html) if full_html else ""
         _is_captcha = any(s in full_html.lower() for s in _captcha_signals) if full_html else False
 
+    if full_html and _is_captcha:
+        log.warning("%s: CAPTCHA/rate-limit page after retry; skipping LLM extraction", name)
+        return {
+            "name": name,
+            "status": "FAIL",
+            "strategy": "blocked_or_empty",
+            "total": 0,
+            "titles": 0,
+            "jobs": [],
+            "sample": [],
+        }
+
     if full_html and not intel["json_ld"] and not intel["api_responses"]:
-        if _is_captcha and len(cleaned_check) < 5000:
-            log.warning("%s: CAPTCHA/rate-limit page after retry; skipping LLM extraction", name)
-            return {
-                "name": name,
-                "status": "FAIL",
-                "strategy": "blocked_or_empty",
-                "total": 0,
-                "titles": 0,
-                "jobs": [],
-                "sample": [],
-            }
         if len(cleaned_check) < 1000 and len(intel.get("card_candidates") or []) <= 1:
             log.warning("%s: page too sparse after retry; skipping LLM extraction", name)
             return {

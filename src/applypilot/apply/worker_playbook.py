@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import re
 import shutil
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from applypilot import config
 from applypilot.apply.prompt import ensure_resume_pdf
+from applypilot.role_resumes import resolve_job_resume_path
 from applypilot.apply.worker_playbook_tools import build_tool_alias_section
 
 _TOKEN_RE = re.compile(r"\{\{(\w+)\}\}")
@@ -36,6 +37,7 @@ def build_playbook_tokens(
     *,
     resume_pdf_path: str,
     cover_letter_pdf_path: str = "",
+    cover_letter_text: str = "",
 ) -> dict[str, str]:
     """Build {{token}} values from profile and job (no invented fields)."""
     personal = profile["personal"]
@@ -58,6 +60,7 @@ def build_playbook_tokens(
         current_title = roles[0]
 
     job_url = str(job.get("application_url") or job.get("url") or "").strip()
+    eeo = profile.get("eeo_voluntary") or {}
 
     raw_phone = str(personal.get("phone") or "").strip()
     phone_digits = _digits_only(raw_phone)
@@ -91,12 +94,26 @@ def build_playbook_tokens(
         "years_experience": str(exp.get("years_of_experience_total") or "").strip(),
         "education_level": str(exp.get("education_level") or "").strip(),
         "current_job_title": current_title,
+        "job_title": str(job.get("title") or "").strip(),
+        "company": str(job.get("site") or job.get("company") or "").strip(),
         "earliest_start_date": str(avail.get("earliest_start_date") or "Immediately").strip(),
+        # Concrete date (MM/DD/YYYY) for date-picker "when can you start" fields,
+        # which reject free text like "Immediately". Two weeks out = realistic notice.
+        "start_date": (date.today() + timedelta(days=14)).strftime("%m/%d/%Y"),
         "resume_pdf_path": resume_pdf_path,
         "cover_letter_pdf_path": cover_letter_pdf_path,
+        "cover_letter_text": cover_letter_text.strip(),
         "today_date": date.today().isoformat(),
         "job_url": job_url,
         "password": str(personal.get("password") or "").strip(),
+        "gender": str(eeo.get("gender") or "Decline to self-identify").strip(),
+        "race_ethnicity": str(eeo.get("race_ethnicity") or "Decline to self-identify").strip(),
+        "veteran_status": str(
+            eeo.get("veteran_status") or "I am not a protected veteran"
+        ).strip(),
+        "disability_status": str(
+            eeo.get("disability_status") or "I do not wish to answer"
+        ).strip(),
     }
 
 
@@ -134,7 +151,7 @@ def build_worker_apply_prompt(
     profile = config.load_profile()
     personal = profile["personal"]
 
-    resume_path = job.get("tailored_resume_path")
+    resume_path = resolve_job_resume_path(job)
     if not resume_path:
         raise ValueError(f"No tailored resume for job: {job.get('title', 'unknown')}")
 
@@ -147,21 +164,18 @@ def build_worker_apply_prompt(
     shutil.copy(str(src_pdf), str(upload_pdf))
     pdf_path = str(upload_pdf)
 
-    cl_upload_path = ""
-    cl_path = job.get("cover_letter_path")
-    if cl_path and Path(cl_path).exists():
-        cl_src = Path(cl_path)
-        cl_pdf_src = cl_src.with_suffix(".pdf")
-        if cl_pdf_src.exists():
-            cl_upload = dest_dir / f"{name_slug}_Cover_Letter.pdf"
-            shutil.copy(str(cl_pdf_src), str(cl_upload))
-            cl_upload_path = str(cl_upload)
+    from applypilot.apply.cover_resolve import resolve_apply_cover_letter
+
+    _cl_text, _cl_txt, cl_upload_path = resolve_apply_cover_letter(
+        job, upload_dir=dest_dir
+    )
 
     tokens = build_playbook_tokens(
         profile,
         job,
         resume_pdf_path=pdf_path,
         cover_letter_pdf_path=cl_upload_path,
+        cover_letter_text=_cl_text,
     )
     resolved_path = playbook_path or default_playbook_path()
     body = load_playbook_markdown(resolved_path)

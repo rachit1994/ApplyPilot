@@ -8,9 +8,12 @@ sources:
   workday: true
   smartextract: false
   workatastartup: true
+  wellfound: false
+  startupjobs: false
   hn_hiring: true
   himalayas: true
   remotive: true
+  remoteok: true
   weworkremotely: true
   greenhouse: true
   lever: true
@@ -36,6 +39,19 @@ agent_discover:
 workatastartup:
   headless: true
   use_chrome_session: false
+
+wellfound:
+  # Optional fallback for Wellfound CAPTCHA/rate-limit blocks. Point this at a
+  # YAML/JSON/JSONL file of indexed public result records with title, url/href,
+  # and snippet/text fields. Rows are imported only when an employer ATS URL is
+  # present, preserving Wellfound as the discovery source.
+  indexed_results_file: ""
+
+startupjobs:
+  # Optional fallback for StartupJobs Cloudflare blocks. Same format as
+  # wellfound.indexed_results_file; rows are imported only when an employer ATS
+  # URL is present, preserving StartupJobs as the discovery source.
+  indexed_results_file: ""
 
 hn_hiring:
   url: "https://hnhiring.com/locations/remote"

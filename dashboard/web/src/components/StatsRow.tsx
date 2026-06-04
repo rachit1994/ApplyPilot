@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { fetchSourceStats, type SourceStats, type Stats } from "../api";
+import { sourceEfficiencyPercent } from "../utils/format";
 import { isPriorityBoardName, sortByPriorityName } from "../utils/sitePriority";
 import { PriorityBoardsBanner } from "./PriorityBoardsBanner";
 import { Badge } from "./ui/badge";
@@ -194,7 +195,7 @@ function SourceStatsCard({ rows }: { rows: SourceStats[] }) {
                     {row.tailored}
                   </td>
                   <td className="py-2 text-right font-mono tabular-nums text-accent">
-                    {Math.round(row.efficiency * 100)}%
+                    {sourceEfficiencyPercent(row.efficiency)}%
                   </td>
                 </tr>
               ))}

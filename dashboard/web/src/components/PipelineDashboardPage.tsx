@@ -1,18 +1,28 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { fetchOverview } from "../api";
+import { fetchOverview, fetchStats } from "../api";
 import { PIPELINE_STAGE_IDS } from "../dashboardNav";
 import { useApplyRun } from "../hooks/useApplyRun";
 import { useHomeRuns } from "../hooks/useHomeRuns";
+import { ApplyRunPlanModal } from "./ApplyRunPlanModal";
 import { ClaudeUsagePanel } from "./ClaudeUsagePanel";
+import { sourceEfficiencyPercent } from "../utils/format";
 import { PageCanvas } from "./layout/PageCanvas";
 
 export function PipelineDashboardPage() {
   const runControl = useHomeRuns();
   const applyRun = useApplyRun();
+  const [applyPlanOpen, setApplyPlanOpen] = useState(false);
 
   const { data: overview } = useQuery({
     queryKey: ["overview"],
     queryFn: fetchOverview,
+    refetchInterval: 5000,
+  });
+
+  const { data: stats } = useQuery({
+    queryKey: ["stats"],
+    queryFn: fetchStats,
     refetchInterval: 5000,
   });
 
@@ -95,7 +105,7 @@ export function PipelineDashboardPage() {
               type="button"
               className="btn btn--ghost"
               disabled={applyRun.isRunning || applyRun.starting}
-              onClick={() => void applyRun.handleStart()}
+              onClick={() => setApplyPlanOpen(true)}
             >
               {applyRun.starting ? "Starting…" : "Apply queue now"}
             </button>
@@ -162,7 +172,9 @@ export function PipelineDashboardPage() {
                   No source stats yet.
                 </p>
               ) : (
-                sources.map((src) => (
+                sources.map((src) => {
+                  const effPct = sourceEfficiencyPercent(src.efficiency);
+                  return (
                   <div key={src.source} className="src-row">
                     <div className="src__name">
                       {src.source} <small>{src.discovered} jobs</small>
@@ -170,16 +182,17 @@ export function PipelineDashboardPage() {
                     <div className="src__meter">
                       <div
                         className={
-                          src.efficiency < 50 ? "src__meter-fill src__meter-fill--dim" : "src__meter-fill"
+                          effPct < 50 ? "src__meter-fill src__meter-fill--dim" : "src__meter-fill"
                         }
-                        style={{ width: `${Math.round(src.efficiency)}%` }}
+                        style={{ width: `${effPct}%` }}
                       />
                     </div>
-                    <div className={src.efficiency < 50 ? "src__eff src__eff--dim" : "src__eff"}>
-                      {Math.round(src.efficiency)}%
+                    <div className={effPct < 50 ? "src__eff src__eff--dim" : "src__eff"}>
+                      {effPct}%
                     </div>
                   </div>
-                ))
+                  );
+                })
               )}
             </div>
           </div>
@@ -203,6 +216,7 @@ export function PipelineDashboardPage() {
                 value={String(caps?.apply_today ?? 0)}
                 used={caps?.apply_today ?? 0}
                 cap={caps?.apply_cap}
+                subtitle={caps?.apply_subtitle ?? undefined}
               />
               <CapRow
                 label="Resume tailoring"
@@ -216,6 +230,17 @@ export function PipelineDashboardPage() {
 
         <ClaudeUsagePanel className="pipeline__claude-usage" />
       </div>
+
+      <ApplyRunPlanModal
+        open={applyPlanOpen}
+        settings={applyRun.applySettings}
+        readyCount={stats?.ready_to_apply}
+        onCancel={() => setApplyPlanOpen(false)}
+        onConfirm={() => {
+          setApplyPlanOpen(false);
+          void applyRun.handleStart();
+        }}
+      />
     </PageCanvas>
   );
 }
@@ -225,18 +250,23 @@ function CapRow({
   value,
   used,
   cap,
+  subtitle,
 }: {
   label: string;
   value: string;
   used: number;
   cap?: number;
+  subtitle?: string;
 }) {
   const pct =
     cap != null && cap > 0 ? Math.min(100, Math.round((used / cap) * 100)) : 0;
   return (
     <div className="cost__row">
       <div className="cost__row-top">
-        <div className="cost__label">{label}</div>
+        <div>
+          <div className="cost__label">{label}</div>
+          {subtitle ? <div className="cost__hint">{subtitle}</div> : null}
+        </div>
         <div className="cost__value">
           {value}
           {cap != null ? <small>/ {cap}</small> : null}

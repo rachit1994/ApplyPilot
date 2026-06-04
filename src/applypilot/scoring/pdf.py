@@ -4,12 +4,77 @@ Parses the structured text resume format, renders via an HTML/CSS template,
 and exports to PDF using headless Chromium via Playwright.
 """
 
+import html
 import logging
+import re
 from pathlib import Path
 
 from applypilot.config import TAILORED_DIR
 
 log = logging.getLogger(__name__)
+
+RESUME_SECTION_HEADERS = frozenset(
+    {
+        "SUMMARY",
+        "TECHNICAL SKILLS",
+        "SKILLS",
+        "CORE COMPETENCIES",
+        "EXPERIENCE",
+        "WORK EXPERIENCE",
+        "PROFESSIONAL EXPERIENCE",
+        "PROJECTS",
+        "SELECTED PROJECTS",
+        "EDUCATION",
+        "CERTIFICATIONS",
+        "AWARDS",
+        "PUBLICATIONS",
+        "LEADERSHIP",
+        "VOLUNTEER EXPERIENCE",
+        "LANGUAGES",
+    }
+)
+
+
+def _is_section_header(line: str) -> bool:
+    """True for known resume section titles, not employer names like MIRA."""
+    stripped = line.strip()
+    return bool(stripped) and stripped.upper() in RESUME_SECTION_HEADERS
+
+
+def _split_contact_line(line: str) -> tuple[str, list[str]]:
+    """Split 'City · phone · email · links' into location and contact parts."""
+    parts = [p.strip() for p in re.split(r"\s*[·|]\s*", line) if p.strip()]
+    if not parts:
+        return "", []
+
+    location = ""
+    contact_parts: list[str] = []
+    for idx, part in enumerate(parts):
+        looks_like_location = (
+            idx == 0
+            and "@" not in part
+            and not part.lower().startswith(("http://", "https://"))
+            and not re.search(r"\d{5,}", part.replace(" ", "").replace("-", ""))
+            and ("," in part or re.search(r"\b(india|usa|uk|remote)\b", part, re.I))
+        )
+        if looks_like_location:
+            location = part
+        else:
+            contact_parts.append(part)
+    if not contact_parts and parts:
+        contact_parts = parts if not location else contact_parts
+    return location, contact_parts
+
+
+def _format_contact_part(part: str) -> str:
+    """Render one contact token with mailto/links when appropriate."""
+    safe = html.escape(part.strip())
+    if "@" in part and " " not in part.split("@", 1)[0]:
+        return f'<a href="mailto:{html.escape(part.strip())}">{safe}</a>'
+    if part.strip().lower().startswith(("http://", "https://")):
+        display = re.sub(r"^https?://(www\.)?", "", part.strip(), flags=re.I)
+        return f'<a href="{html.escape(part.strip())}">{html.escape(display)}</a>'
+    return safe
 
 
 # ── Resume Parser ────────────────────────────────────────────────────────
@@ -40,34 +105,24 @@ def parse_resume(text: str) -> dict:
 
     name = header_lines[0] if len(header_lines) > 0 else ""
     title = header_lines[1] if len(header_lines) > 1 else ""
-    # The header may have 3 or 4 lines depending on whether location is included
     location = ""
-    contact = ""
+    contact_parts: list[str] = []
     if len(header_lines) > 3:
         location = header_lines[2]
-        contact = header_lines[3]
+        contact_parts = [header_lines[3]]
     elif len(header_lines) > 2:
-        # Could be location or contact -- check for email/phone indicators
-        if "@" in header_lines[2] or "|" in header_lines[2]:
-            contact = header_lines[2]
-        else:
-            location = header_lines[2]
+        location, contact_parts = _split_contact_line(header_lines[2])
+        if not contact_parts and header_lines[2]:
+            contact_parts = [header_lines[2]]
 
-    # Split body into sections by ALL-CAPS headers
+    # Split body into sections by known ALL-CAPS headers
     sections: dict[str, str] = {}
     current_section: str | None = None
     current_lines: list[str] = []
 
     for line in lines[body_start:]:
         stripped = line.strip()
-        # Detect section headers (all caps, no leading dash/bullet, longer than 3 chars)
-        if (
-            stripped
-            and stripped == stripped.upper()
-            and not stripped.startswith("-")
-            and len(stripped) > 3
-            and not stripped.startswith("\u2022")
-        ):
+        if _is_section_header(stripped):
             if current_section:
                 sections[current_section] = "\n".join(current_lines).strip()
             current_section = stripped
@@ -82,7 +137,7 @@ def parse_resume(text: str) -> dict:
         "name": name,
         "title": title,
         "location": location,
-        "contact": contact,
+        "contact": contact_parts,
         "sections": sections,
     }
 
@@ -201,13 +256,16 @@ def build_html(resume: dict) -> str:
     if "SUMMARY" in sections:
         summary_html = f'<div class="section"><div class="section-title">Summary</div><div class="summary">{sections["SUMMARY"].strip()}</div></div>'
 
-    # Contact line parsing
-    contact = resume["contact"]
-    contact_parts = [p.strip() for p in contact.split("|")] if contact else []
-    contact_html = " &nbsp;|&nbsp; ".join(contact_parts)
+    contact_parts = resume.get("contact") or []
+    if isinstance(contact_parts, str):
+        contact_parts = [p.strip() for p in re.split(r"\s*[·|]\s*", contact_parts) if p.strip()]
+    contact_html = " &nbsp;·&nbsp; ".join(_format_contact_part(p) for p in contact_parts)
 
-    # Location line (may be empty)
-    location_html = f'<div class="location">{resume["location"]}</div>' if resume["location"] else ""
+    location = html.escape(resume["location"])
+    location_html = f'<div class="location">{location}</div>' if location else ""
+
+    name = html.escape(resume["name"])
+    title = html.escape(resume["title"])
 
     return f"""<!DOCTYPE html>
 <html>
@@ -216,7 +274,7 @@ def build_html(resume: dict) -> str:
 <style>
 @page {{
     size: letter;
-    margin: 0.35in 0.5in;
+    margin: 0.45in 0.55in;
 }}
 * {{
     margin: 0;
@@ -231,29 +289,32 @@ body {{
 }}
 .header {{
     text-align: center;
-    margin-bottom: 4px;
-    padding-bottom: 4px;
-    border-bottom: 1.5px solid #2a7ab5;
+    margin-bottom: 6px;
+    padding-bottom: 6px;
+    border-bottom: 2px solid #1a3a5c;
 }}
 .name {{
-    font-size: 18pt;
+    font-size: 20pt;
     font-weight: 700;
     color: #1a3a5c;
-    letter-spacing: 0.5px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
 }}
 .title {{
-    font-size: 10.5pt;
-    color: #3a6b8c;
-    margin: 1px 0;
+    font-size: 11pt;
+    font-weight: 600;
+    color: #2a5a7a;
+    margin: 2px 0 3px;
 }}
 .location {{
     font-size: 9pt;
-    color: #555;
+    color: #444;
+    margin-bottom: 2px;
 }}
 .contact {{
-    font-size: 9pt;
-    color: #444;
-    margin-top: 1px;
+    font-size: 8.5pt;
+    color: #333;
+    line-height: 1.45;
 }}
 .contact a {{
     color: #2c3e50;
@@ -317,8 +378,8 @@ li {{
 </head>
 <body>
 <div class="header">
-    <div class="name">{resume['name']}</div>
-    <div class="title">{resume['title']}</div>
+    <div class="name">{name}</div>
+    <div class="title">{title}</div>
     {location_html}
     <div class="contact">{contact_html}</div>
 </div>

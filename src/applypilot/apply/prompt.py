@@ -16,6 +16,7 @@ from applypilot import config
 from applypilot.apply import apply_settings
 from applypilot.apply import prompt_scripts
 from applypilot.apply.salary import get_min_annual_inr
+from applypilot.role_resumes import resolve_job_resume_path
 
 logger = logging.getLogger(__name__)
 
@@ -616,7 +617,7 @@ def build_prompt(job: dict, tailored_resume: str,
     personal = profile["personal"]
 
     # --- Resolve resume PDF path ---
-    resume_path = job.get("tailored_resume_path")
+    resume_path = resolve_job_resume_path(job)
     if not resume_path:
         raise ValueError(f"No tailored resume for job: {job.get('title', 'unknown')}")
 
@@ -631,24 +632,16 @@ def build_prompt(job: dict, tailored_resume: str,
     shutil.copy(str(src_pdf), str(upload_pdf))
     pdf_path = str(upload_pdf)
 
-    # --- Cover letter handling ---
-    cover_letter_text = cover_letter or ""
-    cl_upload_path = ""
-    cl_path = job.get("cover_letter_path")
-    if cl_path and Path(cl_path).exists():
-        cl_src = Path(cl_path)
-        # Read text from .txt sibling (PDF is binary)
-        cl_txt = cl_src.with_suffix(".txt")
-        if cl_txt.exists():
-            cover_letter_text = cl_txt.read_text(encoding="utf-8")
-        elif cl_src.suffix == ".txt":
-            cover_letter_text = cl_src.read_text(encoding="utf-8")
-        # Upload must be PDF
-        cl_pdf_src = cl_src.with_suffix(".pdf")
-        if cl_pdf_src.exists():
-            cl_upload = dest_dir / f"{name_slug}_Cover_Letter.pdf"
-            shutil.copy(str(cl_pdf_src), str(cl_upload))
-            cl_upload_path = str(cl_upload)
+    # --- Cover letter handling (aligned with resolve_job_resume) ---
+    from applypilot.apply.cover_resolve import resolve_apply_cover_letter
+
+    if cover_letter:
+        cover_letter_text = cover_letter
+        cl_upload_path = ""
+    else:
+        cover_letter_text, _cl_txt, cl_upload_path = resolve_apply_cover_letter(
+            job, upload_dir=dest_dir
+        )
 
     # --- Build all prompt sections ---
     profile_summary = _build_profile_summary(profile)

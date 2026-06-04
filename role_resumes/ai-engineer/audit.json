@@ -1,0 +1,820 @@
+{
+  "role": {
+    "key": "ai-engineer",
+    "title": "AI Engineer",
+    "aliases": [
+      "ai engineer",
+      "machine learning engineer",
+      "ml engineer",
+      "llm engineer"
+    ],
+    "keywords": [
+      "rag",
+      "llm",
+      "langchain",
+      "langgraph",
+      "openai",
+      "claude",
+      "embedding",
+      "vector",
+      "eval"
+    ],
+    "summary": "Senior AI engineer with 10+ years building high-scale products and recent production work across RAG, agentic workflows, LLMOps, streaming inference, and model cost control.",
+    "skills": [
+      [
+        "AI / LLM Engineering",
+        "RAG, LangChain, LangGraph, OpenAI API, Anthropic Claude, pgvector, Pinecone, LLM evals, prompt engineering"
+      ],
+      [
+        "Backend",
+        "Python, Node.js, TypeScript, REST, GraphQL, Redis, PostgreSQL"
+      ],
+      [
+        "Cloud",
+        "AWS, Docker, Kubernetes, CI/CD, CloudWatch"
+      ],
+      [
+        "Frontend",
+        "React, Next.js, WebSockets, performance optimization"
+      ]
+    ]
+  },
+  "benchmark_job": {
+    "source": "remotive_research_only",
+    "url": "https://remotive.com/remote-jobs/software-development/senior-independent-ai-engineer-architect-1919266",
+    "title": "Senior Independent AI Engineer / Architect",
+    "company": "A.Team",
+    "salary": "$120 - $170 /hour",
+    "salary_usd_max": 353600,
+    "location": "Americas, Europe, Israel",
+    "description": "Senior Independent AI Engineer / Architect\nRemote | Americas, Europe, or Israel\nMost AI engineers can find work.\nFinding work worth doing is harder.\nA.Team is an invite-only network of senior AI engineers, ML engineers, and AI architects building production AI systems for startups, enterprises, and global companies.\nSince 2020, builders in the network have earned more than $200M working with companies including Lyft, Google X, HCA, Unilever, Sightful, D-ID, and others.\nThe Work\nYou'll join small teams solving real problems.\nNot demos.\nNot proof-of-concepts that never ship.\nNot another thin wrapper around an API.\nRecent work has included:\nAI-native products built from 0→1\nAgent architectures and orchestration systems\nEnterprise AI deployments\nRetrieval, evaluation, and reliability infrastructure\nLLM-powered workflows and products\nMachine learning platforms operating at scale\nYou'll work directly with founders, CTOs, and product leaders, helping shape both technical direction and execution.\nWhy Builders Join\nThe best opportunities rarely make it to the open market.\nA.Team exists to solve that.\nNo bidding.\nNo prospecting.\nNo race to the bottom.\nJust ambitious companies, difficult problems, and experienced peers.\nWho Thrives Here\nPeople who have already shipped.\nEngineers who have deployed AI systems into production, understand the tradeoffs behind the hype, and know how to turn technical complexity into business value.\nWhat matters is a track record of building and shipping.\nThe Details\nTypical rates: $120-$170/hr\nRemote\nYou keep 100% of your rate\nNot a Fit\nEarly-career engineers\nPeople without production AI experience\nSmall gig seekers\nDevelopers focused primarily on simple AI wrappers or templated implementations\nApply\nTell us what you've built.\n👉\nbuild.a.team/apply-ai\n.\nWe'll take it from there.",
+    "eligibility_reason": "research_only: high-paying market JD, not eligible under current location/sponsorship filter"
+  },
+  "jd_analysis": {
+    "hard_requirements": [
+      "Just ambitious companies, difficult problems, and experienced peers.",
+      "People without production AI experience"
+    ],
+    "nice_to_haves": [],
+    "keywords": [
+      "llm",
+      "eval"
+    ],
+    "missing_role_keywords": [
+      "rag",
+      "langchain",
+      "langgraph",
+      "openai",
+      "claude",
+      "embedding",
+      "vector"
+    ],
+    "domain_problem_signals": [
+      "scale",
+      "reliability",
+      "platform",
+      "ai",
+      "architecture",
+      "product",
+      "team"
+    ]
+  },
+  "company_problem_hypothesis": {
+    "benchmark_company_problem": "A.Team is hiring a Senior Independent AI Engineer / Architect to solve problems around scale, reliability, platform, ai, architecture, product.",
+    "candidate_company_problem_map": [
+      {
+        "company": "Happening Today",
+        "domain": "event discovery and AI platform",
+        "problems": [
+          "retrieval quality and latency for event discovery",
+          "agentic workflow reliability",
+          "streaming inference, token budgets, and hallucination controls"
+        ],
+        "evidence": [
+          "RAG pipeline for event discovery with pgvector and semantic reranking",
+          "LangGraph planner/tool/critic orchestration",
+          "LLMOps evals, latency/cost dashboards, and hallucination alerts"
+        ]
+      },
+      {
+        "company": "MIRA",
+        "domain": "consumer-scale generative AI",
+        "problems": [
+          "serving GenAI to large user bases",
+          "personalization and fine-tuning quality",
+          "inference cost control and regression evaluation"
+        ],
+        "evidence": [
+          "GenAI features for 50M+ users",
+          "LoRA/QLoRA fine-tuning pipeline",
+          "35% cost reduction through compression, caching, and model routing"
+        ]
+      },
+      {
+        "company": "Delta Exchange",
+        "domain": "real-time fintech and trading",
+        "problems": [
+          "low-latency trading workflows",
+          "real-time UI reliability",
+          "technical debt and conversion improvements"
+        ],
+        "evidence": [
+          "real-time derivatives platform serving 5M+ users",
+          "60% system performance improvement",
+          "React component library and 25% conversion lift"
+        ]
+      },
+      {
+        "company": "BetterPlace",
+        "domain": "enterprise workforce SaaS",
+        "problems": [
+          "large-scale data ingestion",
+          "enterprise workflow scalability",
+          "frontend performance and microservice migration"
+        ],
+        "evidence": [
+          "3x ingestion throughput improvement",
+          "50% UI render time reduction",
+          "monolith-to-microservices migration"
+        ]
+      }
+    ]
+  },
+  "fact_support_map": [
+    {
+      "claim": "Implementing a streaming inference layer (Server-Sent Events + Node.js) over the Anthropic Claude API — handling backpressure, token-budget management, and graceful fallback on context-window overflow.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "anthropic",
+        "backpressure",
+        "budget",
+        "claude",
+        "context",
+        "events",
+        "fallback",
+        "graceful",
+        "handling",
+        "implementing",
+        "inference",
+        "layer"
+      ]
+    },
+    {
+      "claim": "Building a multi-agent orchestration layer using LangGraph: planner agent decomposes user intent into sub-tasks, tool-calling agents hit live APIs and internal knowledge bases, with a critic agent validating output before surface-level response.",
+      "support_ratio": 1.07,
+      "supporting_terms": [
+        "agent",
+        "agents",
+        "apis",
+        "bases",
+        "before",
+        "building",
+        "calling",
+        "critic",
+        "decomposes",
+        "intent",
+        "internal",
+        "into"
+      ]
+    },
+    {
+      "claim": "Designing prompt engineering architecture for multi-step agentic workflows — chain-of-thought decomposition, few-shot example selection from a retrieval store, and output schema enforcement via constrained decoding.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "agentic",
+        "architecture",
+        "chain",
+        "constrained",
+        "decoding.",
+        "decomposition",
+        "designing",
+        "enforcement",
+        "engineering",
+        "example",
+        "from",
+        "multi"
+      ]
+    },
+    {
+      "claim": "Architecting an end-to-end RAG pipeline for event discovery — document ingestion, chunk-overlap strategies, embedding generation (OpenAI text-embedding-3-large), pgvector indexing, and semantic reranking — delivering sub-200ms retrieval at scale.",
+      "support_ratio": 1.05,
+      "supporting_terms": [
+        "200ms",
+        "architecting",
+        "chunk",
+        "delivering",
+        "discovery",
+        "document",
+        "embedding",
+        "event",
+        "generation",
+        "indexing",
+        "ingestion",
+        "large"
+      ]
+    },
+    {
+      "claim": "Built the dataset curation, training job submission, and automated evaluation harness (ROUGE + human-preference scoring).",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "automated",
+        "built",
+        "curation",
+        "dataset",
+        "evaluation",
+        "harness",
+        "human",
+        "preference",
+        "rouge",
+        "scoring",
+        "submission",
+        "training"
+      ]
+    },
+    {
+      "claim": "Integrated regression gates into CI/CD to catch prompt-drift before deployment.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "before",
+        "catch",
+        "deployment.",
+        "drift",
+        "gates",
+        "integrated",
+        "into",
+        "prompt",
+        "regression"
+      ]
+    },
+    {
+      "claim": "Built an evaluation framework for LLM output quality: automated benchmarks for factual accuracy, groundedness, and instruction-following.",
+      "support_ratio": 0.92,
+      "supporting_terms": [
+        "accuracy",
+        "automated",
+        "benchmarks",
+        "built",
+        "evaluation",
+        "factual",
+        "framework",
+        "groundedness",
+        "instruction",
+        "output",
+        "quality"
+      ]
+    },
+    {
+      "claim": "Reduced LLM inference costs by 35% through prompt compression (selective context pruning), response caching (semantic similarity threshold on Redis), and model routing (GPT-4o for complex tasks, GPT-4o-mini for classification).",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "caching",
+        "classification",
+        "complex",
+        "compression",
+        "context",
+        "costs",
+        "inference",
+        "mini",
+        "model",
+        "prompt",
+        "pruning",
+        "redis"
+      ]
+    },
+    {
+      "claim": "Designed and built core trading engine features for a real-time derivatives platform serving 5M+ users — order book rendering, WebSocket feed management, and margin calculation APIs.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "apis.",
+        "book",
+        "built",
+        "calculation",
+        "core",
+        "derivatives",
+        "designed",
+        "engine",
+        "features",
+        "feed",
+        "management",
+        "margin"
+      ]
+    },
+    {
+      "claim": "Refactored legacy service architecture to reduce inter-service latency, achieving a 60% system performance improvement measured end-to-end.",
+      "support_ratio": 1.08,
+      "supporting_terms": [
+        "achieving",
+        "architecture",
+        "end.",
+        "improvement",
+        "inter",
+        "latency",
+        "legacy",
+        "measured",
+        "performance",
+        "reduce",
+        "refactored",
+        "service"
+      ]
+    },
+    {
+      "claim": "Built a React component library and shared state management layer, cutting UI feature development time significantly and boosting conversion by 25%.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "boosting",
+        "built",
+        "component",
+        "conversion",
+        "cutting",
+        "development",
+        "feature",
+        "layer",
+        "library",
+        "management",
+        "react",
+        "shared"
+      ]
+    },
+    {
+      "claim": "Led technical debt reduction initiative: migrated critical services from callback-heavy Node to async/await patterns, reducing bug rate by 40%.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "async",
+        "await",
+        "callback",
+        "critical",
+        "debt",
+        "from",
+        "heavy",
+        "initiative",
+        "migrated",
+        "node",
+        "patterns",
+        "rate"
+      ]
+    },
+    {
+      "claim": "Built scalable SaaS modules (workforce management, compliance workflows) using React, Python (Django/Flask), and Node.js.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "built",
+        "compliance",
+        "django",
+        "flask",
+        "management",
+        "modules",
+        "node.js.",
+        "python",
+        "react",
+        "saas",
+        "scalable",
+        "using"
+      ]
+    },
+    {
+      "claim": "Designed a batched data ingestion pipeline that increased system throughput by 3x, enabling the platform to onboard enterprise clients with large worker datasets.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "batched",
+        "clients",
+        "data",
+        "datasets.",
+        "designed",
+        "enabling",
+        "enterprise",
+        "increased",
+        "ingestion",
+        "large",
+        "onboard",
+        "pipeline"
+      ]
+    },
+    {
+      "claim": "Introduced frontend performance patterns (lazy loading, memoisation, pagination) that reduced UI render times by 50%.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "frontend",
+        "introduced",
+        "lazy",
+        "loading",
+        "memoisation",
+        "pagination",
+        "patterns",
+        "performance",
+        "reduced",
+        "render",
+        "that",
+        "times"
+      ]
+    },
+    {
+      "claim": "Migrated monolith features to independently deployable microservices, improving deployment frequency and reducing rollback risk.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "deployable",
+        "deployment",
+        "features",
+        "frequency",
+        "improving",
+        "independently",
+        "microservices",
+        "migrated",
+        "monolith",
+        "reducing",
+        "risk.",
+        "rollback"
+      ]
+    },
+    {
+      "claim": "Delivered full stack features across web applications in early-career roles.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "across",
+        "applications",
+        "career",
+        "delivered",
+        "early",
+        "features",
+        "full",
+        "roles.",
+        "stack"
+      ]
+    },
+    {
+      "claim": "Built REST APIs.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "apis.",
+        "built",
+        "rest"
+      ]
+    },
+    {
+      "claim": "Integrated third-party services, and shipped React/Angular frontend modules.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "angular",
+        "frontend",
+        "integrated",
+        "modules.",
+        "party",
+        "react",
+        "services",
+        "shipped",
+        "third"
+      ]
+    }
+  ],
+  "rewrite_notes": [
+    "deterministic fallback: Gemini rewrite left thin experience sections: [{'company': 'Delta Exchange', 'required_bullets': 4, 'actual_bullets': 3}, {'company': 'BetterPlace', 'required_bullets': 4, 'actual_bullets': 3}, {'company': 'Liftoff Pvt Ltd & Daffodils Software', 'required_bullets': 2, 'actual_bullets': 1}]"
+  ],
+  "audit": {
+    "score": 92,
+    "pass": true,
+    "keyword_coverage_score": 95,
+    "recruiter_rejection_risk_score": 10,
+    "evidence_support_score": 90,
+    "role_problem_fit_score": 95,
+    "critical_rejection_flags": [],
+    "benchmark_warnings": [],
+    "unsupported_claims": [],
+    "missing_experience_companies": [],
+    "missing_experience_title_lines": [],
+    "thin_experience_sections": [],
+    "public_resume_quality_issues": [],
+    "tech_mismatches": [],
+    "rejection_risks": [],
+    "experience_role_lens_issues": [],
+    "improvement_instructions": [
+      "The resume is highly aligned with the A.Team benchmark. To further increase the 'Senior Architect' signal, consider adding a brief 'Architecture Principles' or 'System Design' section that highlights how you handle trade-offs between latency, cost, and accuracy in multi-agent systems.",
+      "Ensure your GitHub link contains at least one public repository demonstrating the LangGraph or RAG orchestration mentioned, as A.Team prioritizes 'builders' who can show their code.",
+      "The current resume is excellent; no major structural changes are required."
+    ],
+    "fact_support_map": [
+      {
+        "claim": "Implementing a streaming inference layer (Server-Sent Events + Node.js) over the Anthropic Claude API — handling backpressure, token-budget management, and graceful fallback on context-window overflow.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "anthropic",
+          "backpressure",
+          "budget",
+          "claude",
+          "context",
+          "events",
+          "fallback",
+          "graceful",
+          "handling",
+          "implementing",
+          "inference",
+          "layer"
+        ]
+      },
+      {
+        "claim": "Building a multi-agent orchestration layer using LangGraph: planner agent decomposes user intent into sub-tasks, tool-calling agents hit live APIs and internal knowledge bases, with a critic agent validating output before surface-level response.",
+        "support_ratio": 1.07,
+        "supporting_terms": [
+          "agent",
+          "agents",
+          "apis",
+          "bases",
+          "before",
+          "building",
+          "calling",
+          "critic",
+          "decomposes",
+          "intent",
+          "internal",
+          "into"
+        ]
+      },
+      {
+        "claim": "Designing prompt engineering architecture for multi-step agentic workflows — chain-of-thought decomposition, few-shot example selection from a retrieval store, and output schema enforcement via constrained decoding.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "agentic",
+          "architecture",
+          "chain",
+          "constrained",
+          "decoding.",
+          "decomposition",
+          "designing",
+          "enforcement",
+          "engineering",
+          "example",
+          "from",
+          "multi"
+        ]
+      },
+      {
+        "claim": "Architecting an end-to-end RAG pipeline for event discovery — document ingestion, chunk-overlap strategies, embedding generation (OpenAI text-embedding-3-large), pgvector indexing, and semantic reranking — delivering sub-200ms retrieval at scale.",
+        "support_ratio": 1.05,
+        "supporting_terms": [
+          "200ms",
+          "architecting",
+          "chunk",
+          "delivering",
+          "discovery",
+          "document",
+          "embedding",
+          "event",
+          "generation",
+          "indexing",
+          "ingestion",
+          "large"
+        ]
+      },
+      {
+        "claim": "Built the dataset curation, training job submission, and automated evaluation harness (ROUGE + human-preference scoring).",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "automated",
+          "built",
+          "curation",
+          "dataset",
+          "evaluation",
+          "harness",
+          "human",
+          "preference",
+          "rouge",
+          "scoring",
+          "submission",
+          "training"
+        ]
+      },
+      {
+        "claim": "Integrated regression gates into CI/CD to catch prompt-drift before deployment.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "before",
+          "catch",
+          "deployment.",
+          "drift",
+          "gates",
+          "integrated",
+          "into",
+          "prompt",
+          "regression"
+        ]
+      },
+      {
+        "claim": "Built an evaluation framework for LLM output quality: automated benchmarks for factual accuracy, groundedness, and instruction-following.",
+        "support_ratio": 0.92,
+        "supporting_terms": [
+          "accuracy",
+          "automated",
+          "benchmarks",
+          "built",
+          "evaluation",
+          "factual",
+          "framework",
+          "groundedness",
+          "instruction",
+          "output",
+          "quality"
+        ]
+      },
+      {
+        "claim": "Reduced LLM inference costs by 35% through prompt compression (selective context pruning), response caching (semantic similarity threshold on Redis), and model routing (GPT-4o for complex tasks, GPT-4o-mini for classification).",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "caching",
+          "classification",
+          "complex",
+          "compression",
+          "context",
+          "costs",
+          "inference",
+          "mini",
+          "model",
+          "prompt",
+          "pruning",
+          "redis"
+        ]
+      },
+      {
+        "claim": "Designed and built core trading engine features for a real-time derivatives platform serving 5M+ users — order book rendering, WebSocket feed management, and margin calculation APIs.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "apis.",
+          "book",
+          "built",
+          "calculation",
+          "core",
+          "derivatives",
+          "designed",
+          "engine",
+          "features",
+          "feed",
+          "management",
+          "margin"
+        ]
+      },
+      {
+        "claim": "Refactored legacy service architecture to reduce inter-service latency, achieving a 60% system performance improvement measured end-to-end.",
+        "support_ratio": 1.08,
+        "supporting_terms": [
+          "achieving",
+          "architecture",
+          "end.",
+          "improvement",
+          "inter",
+          "latency",
+          "legacy",
+          "measured",
+          "performance",
+          "reduce",
+          "refactored",
+          "service"
+        ]
+      },
+      {
+        "claim": "Built a React component library and shared state management layer, cutting UI feature development time significantly and boosting conversion by 25%.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "boosting",
+          "built",
+          "component",
+          "conversion",
+          "cutting",
+          "development",
+          "feature",
+          "layer",
+          "library",
+          "management",
+          "react",
+          "shared"
+        ]
+      },
+      {
+        "claim": "Led technical debt reduction initiative: migrated critical services from callback-heavy Node to async/await patterns, reducing bug rate by 40%.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "async",
+          "await",
+          "callback",
+          "critical",
+          "debt",
+          "from",
+          "heavy",
+          "initiative",
+          "migrated",
+          "node",
+          "patterns",
+          "rate"
+        ]
+      },
+      {
+        "claim": "Built scalable SaaS modules (workforce management, compliance workflows) using React, Python (Django/Flask), and Node.js.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "built",
+          "compliance",
+          "django",
+          "flask",
+          "management",
+          "modules",
+          "node.js.",
+          "python",
+          "react",
+          "saas",
+          "scalable",
+          "using"
+        ]
+      },
+      {
+        "claim": "Designed a batched data ingestion pipeline that increased system throughput by 3x, enabling the platform to onboard enterprise clients with large worker datasets.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "batched",
+          "clients",
+          "data",
+          "datasets.",
+          "designed",
+          "enabling",
+          "enterprise",
+          "increased",
+          "ingestion",
+          "large",
+          "onboard",
+          "pipeline"
+        ]
+      },
+      {
+        "claim": "Introduced frontend performance patterns (lazy loading, memoisation, pagination) that reduced UI render times by 50%.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "frontend",
+          "introduced",
+          "lazy",
+          "loading",
+          "memoisation",
+          "pagination",
+          "patterns",
+          "performance",
+          "reduced",
+          "render",
+          "that",
+          "times"
+        ]
+      },
+      {
+        "claim": "Migrated monolith features to independently deployable microservices, improving deployment frequency and reducing rollback risk.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "deployable",
+          "deployment",
+          "features",
+          "frequency",
+          "improving",
+          "independently",
+          "microservices",
+          "migrated",
+          "monolith",
+          "reducing",
+          "risk.",
+          "rollback"
+        ]
+      },
+      {
+        "claim": "Delivered full stack features across web applications in early-career roles.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "across",
+          "applications",
+          "career",
+          "delivered",
+          "early",
+          "features",
+          "full",
+          "roles.",
+          "stack"
+        ]
+      },
+      {
+        "claim": "Built REST APIs.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "apis.",
+          "built",
+          "rest"
+        ]
+      },
+      {
+        "claim": "Integrated third-party services, and shipped React/Angular frontend modules.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "angular",
+          "frontend",
+          "integrated",
+          "modules.",
+          "party",
+          "react",
+          "services",
+          "shipped",
+          "third"
+        ]
+      }
+    ],
+    "auditor": "gemini"
+  }
+}

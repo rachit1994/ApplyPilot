@@ -29,8 +29,18 @@ app = typer.Typer(
 console = Console()
 log = logging.getLogger(__name__)
 
-# Valid pipeline stages (in execution order)
-VALID_STAGES = ("discover", "enrich", "score", "tailor", "pdf", "refer", "cover")
+# Valid pipeline stages (default `all` runs STAGE_ORDER; role_resumes is optional one-time prep)
+VALID_STAGES = (
+    "discover",
+    "enrich",
+    "filter",
+    "score",
+    "tailor",
+    "pdf",
+    "refer",
+    "cover",
+    "role_resumes",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -124,8 +134,13 @@ def run(
             "lenient: banned words ignored, LLM judge skipped (fastest, fewest API calls)."
         ),
     ),
+    rescore: bool = typer.Option(
+        False,
+        "--rescore",
+        help="Re-score all jobs with descriptions (not only unscored rows).",
+    ),
 ) -> None:
-    """Run pipeline stages: discover, enrich, score, tailor, cover, pdf."""
+    """Run pipeline stages (default: discover → enrich → filter → score → tailor → pdf → refer → cover)."""
     _bootstrap()
 
     from applypilot.pipeline import run_pipeline
@@ -163,6 +178,7 @@ def run(
         stream=stream,
         workers=workers,
         validation_mode=validation,
+        rescore=rescore,
     )
 
     if result.get("errors"):
@@ -248,7 +264,13 @@ def apply(
         "-m",
         help="Claude model for apply (default haiku; sonnet retries on retriable failures).",
     ),
-    continuous: bool = typer.Option(False, "--continuous", "-c", help="Run forever, polling for new jobs."),
+    continuous: bool = typer.Option(
+        True,
+        "--continuous/--no-continuous",
+        "-c",
+        help="Keep running until the queue is empty (poll for new jobs). "
+        "Use --no-continuous to stop after --limit.",
+    ),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview actions without submitting."),
     headless: bool = typer.Option(False, "--headless", help="Run browsers in headless mode."),
     pace: float = typer.Option(
@@ -310,8 +332,8 @@ def apply(
     engine: Optional[str] = typer.Option(
         None,
         "--engine",
-        help="Apply engine: claude (default, ~$0.15/apply) or direct "
-        "(deterministic Playwright, ~$0 Claude/apply for Greenhouse/Lever/Ashby).",
+        help="Apply engine: direct (default, Playwright ATS applier) or claude "
+        "(Claude Code browser agent, ~$0.15/apply).",
     ),
 ) -> None:
     """Launch auto-apply to submit job applications."""
@@ -411,8 +433,8 @@ def apply(
         )
         raise typer.Exit(code=1)
 
-    # Check 3: Jobs the apply worker can actually acquire (skip for --gen/--url/--continuous)
-    if not (gen and url) and not continuous and not url:
+    # Check 3: Jobs the apply worker can actually acquire (skip for --gen/--url)
+    if not (gen and url) and not url:
         from applypilot.apply.launcher import count_acquirable_jobs, format_apply_queue_hint
 
         effective_min = min_score if min_score > 0 else 0
@@ -470,16 +492,28 @@ def apply(
         )
         return
 
-    from applypilot.apply.launcher import main as apply_main
+    from applypilot.apply.launcher import count_acquirable_jobs, main as apply_main
 
-    effective_limit = limit if limit is not None else (0 if continuous else 1)
+    if watch and not continuous:
+        continuous = True
+
+    if limit is not None:
+        effective_limit = limit
+    elif continuous:
+        effective_limit = 0
+    else:
+        effective_limit = count_acquirable_jobs(
+            min_score=min_score if min_score > 0 else 0,
+            ats_only=ats_only,
+            priority_boards_only=priority_boards_only,
+            include_untailored=include_untailored,
+        )
 
     if watch:
         if pace <= 0:
             pace = 2.0
         if keep_open <= 0:
             keep_open = 45.0
-        confirm_submit = True
         workers = 1
 
     effective_pace = pace
@@ -487,7 +521,12 @@ def apply(
     effective_confirm = confirm_submit
 
     console.print("\n[bold blue]Launching Auto-Apply[/bold blue]")
-    console.print(f"  Limit:    {'unlimited' if continuous else effective_limit}")
+    limit_label = (
+        "unlimited"
+        if continuous or effective_limit == 0
+        else str(effective_limit)
+    )
+    console.print(f"  Limit:    {limit_label}")
     console.print(f"  Workers:  {workers}")
     console.print(f"  Model:    {model}")
     console.print(f"  Headless: {headless}")

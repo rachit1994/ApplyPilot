@@ -8,6 +8,7 @@ without migration ordering issues.
 import json
 import sqlite3
 import threading
+import time
 from datetime import datetime, timezone
 from hashlib import md5
 from pathlib import Path
@@ -115,6 +116,9 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
             detail_error          TEXT,
 
             -- Scoring stage (job_scorer)
+            pre_fit_score        INTEGER,
+            pre_filter_reason    TEXT,
+            pre_filter_rejected_at TEXT,
             fit_score             INTEGER,
             score_reasoning       TEXT,
             scored_at             TEXT,
@@ -578,9 +582,15 @@ _ALL_COLUMNS: dict[str, str] = {
     "application_url": "TEXT",
     "detail_scraped_at": "TEXT",
     "detail_error": "TEXT",
+    "detail_enrich_attempts": "INTEGER DEFAULT 0",
     # Scoring
+    "pre_fit_score": "INTEGER",
+    "pre_filter_reason": "TEXT",
+    "pre_filter_rejected_at": "TEXT",
     "fit_score": "INTEGER",
     "score_reasoning": "TEXT",
+    "score_role_key": "TEXT",
+    "score_jd_fit": "INTEGER",
     "scored_at": "TEXT",
     # Tailoring
     "tailored_resume_path": "TEXT",
@@ -656,7 +666,25 @@ def ensure_columns(conn: sqlite3.Connection | None = None) -> list[str]:
     return added
 
 
-def get_stats(conn: sqlite3.Connection | None = None) -> dict:
+_STATS_CACHE_TTL_S = 2.0
+_stats_cache: tuple[float, dict] | None = None
+_stats_cache_lock = threading.Lock()
+
+
+def invalidate_stats_cache() -> None:
+    """Drop cached dashboard stats (e.g. after bulk DB writes)."""
+    global _stats_cache
+    with _stats_cache_lock:
+        _stats_cache = None
+    try:
+        from applypilot.role_resumes import invalidate_tailor_count_cache
+
+        invalidate_tailor_count_cache()
+    except Exception:
+        pass
+
+
+def get_stats(conn: sqlite3.Connection | None = None, *, use_cache: bool = True) -> dict:
     """Return job counts by pipeline stage.
 
     Provides a snapshot of how many jobs are at each stage, useful for
@@ -671,134 +699,115 @@ def get_stats(conn: sqlite3.Connection | None = None) -> dict:
             scored, unscored, tailored, untailored_eligible,
             with_cover_letter, applied, score_distribution
     """
+    global _stats_cache
+    if conn is not None:
+        use_cache = False
+    if use_cache:
+        now = time.monotonic()
+        with _stats_cache_lock:
+            if _stats_cache is not None:
+                cached_at, cached = _stats_cache
+                if now - cached_at < _STATS_CACHE_TTL_S:
+                    return dict(cached)
+
+    stats = _compute_job_stats(conn)
+
+    if use_cache:
+        with _stats_cache_lock:
+            _stats_cache = (time.monotonic(), stats)
+
+    return stats
+
+
+def _compute_job_stats(conn: sqlite3.Connection | None = None) -> dict:
+    """Uncached job counts for dashboard and pipeline progress."""
     if conn is None:
         conn = get_connection()
 
-    stats: dict = {}
+    from applypilot.enrichment.pending import detail_pending_clause
 
-    # Total jobs
-    stats["total"] = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+    pending_detail_sql = detail_pending_clause()
+    row = conn.execute(
+        f"""
+        SELECT
+          COUNT(*) AS total,
+          SUM(CASE WHEN {pending_detail_sql} THEN 1 ELSE 0 END) AS pending_detail,
+          SUM(CASE WHEN full_description IS NOT NULL THEN 1 ELSE 0 END) AS with_description,
+          SUM(CASE WHEN detail_error IS NOT NULL THEN 1 ELSE 0 END) AS detail_errors,
+          SUM(CASE WHEN pre_filter_rejected_at IS NOT NULL THEN 1 ELSE 0 END) AS pre_filter_rejected,
+          SUM(CASE WHEN pre_fit_score IS NOT NULL
+                    AND pre_filter_rejected_at IS NULL
+                    AND pre_filter_reason IS NULL THEN 1 ELSE 0 END) AS pre_filter_kept,
+          SUM(CASE WHEN fit_score IS NOT NULL THEN 1 ELSE 0 END) AS scored,
+          SUM(CASE WHEN full_description IS NOT NULL AND fit_score IS NULL THEN 1 ELSE 0 END) AS unscored,
+          SUM(CASE WHEN tailored_resume_path IS NOT NULL THEN 1 ELSE 0 END) AS tailored,
+          SUM(CASE WHEN COALESCE(tailor_attempts, 0) >= 5
+                    AND tailored_resume_path IS NULL THEN 1 ELSE 0 END) AS tailor_exhausted,
+          SUM(CASE WHEN cover_letter_path IS NOT NULL THEN 1 ELSE 0 END) AS with_cover_letter,
+          SUM(CASE WHEN COALESCE(cover_attempts, 0) >= 5
+                    AND (cover_letter_path IS NULL OR cover_letter_path = '') THEN 1 ELSE 0 END) AS cover_exhausted,
+          SUM(CASE WHEN apply_status = 'applied' THEN 1 ELSE 0 END) AS applied,
+          SUM(CASE WHEN apply_status = 'submitted_unverified' THEN 1 ELSE 0 END) AS submitted_unverified,
+          SUM(CASE WHEN apply_error IS NOT NULL THEN 1 ELSE 0 END) AS apply_errors,
+          SUM(CASE WHEN apply_status = 'manual' THEN 1 ELSE 0 END) AS apply_manual,
+          SUM(CASE WHEN recruiter_public_id IS NOT NULL THEN 1 ELSE 0 END) AS referral_recruiter_scraped,
+          SUM(CASE WHEN referral_status = 'pending_connect' THEN 1 ELSE 0 END) AS referral_pending_connect,
+          SUM(CASE WHEN referral_status = 'connect_sent' THEN 1 ELSE 0 END) AS referral_connect_sent,
+          SUM(CASE WHEN referral_status = 'message_sent' THEN 1 ELSE 0 END) AS referral_message_sent,
+          SUM(CASE WHEN referral_status = 'failed' THEN 1 ELSE 0 END) AS referral_failed,
+          SUM(CASE WHEN referral_status = 'skipped' THEN 1 ELSE 0 END) AS referral_skipped,
+          SUM(CASE WHEN referral_connect_at IS NOT NULL
+                    AND referral_connect_at >= datetime('now', '-7 days') THEN 1 ELSE 0 END) AS referral_connects_this_week
+        FROM jobs
+        """
+    ).fetchone()
 
-    # By site breakdown
-    rows = conn.execute(
+    stats: dict = {key: int(row[key] or 0) for key in row.keys()}
+
+    site_rows = conn.execute(
         "SELECT site, COUNT(*) as cnt FROM jobs GROUP BY site ORDER BY cnt DESC"
     ).fetchall()
-    stats["by_site"] = [(row[0], row[1]) for row in rows]
+    stats["by_site"] = [(site_row[0], site_row[1]) for site_row in site_rows]
 
-    # Enrichment stage
-    stats["pending_detail"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE detail_scraped_at IS NULL"
-    ).fetchone()[0]
-
-    stats["with_description"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE full_description IS NOT NULL"
-    ).fetchone()[0]
-
-    stats["detail_errors"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE detail_error IS NOT NULL"
-    ).fetchone()[0]
-
-    # Scoring stage
-    stats["scored"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE fit_score IS NOT NULL"
-    ).fetchone()[0]
-
-    stats["unscored"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs "
-        "WHERE full_description IS NOT NULL AND fit_score IS NULL"
-    ).fetchone()[0]
-
-    # Score distribution
     dist_rows = conn.execute(
         "SELECT fit_score, COUNT(*) as cnt FROM jobs "
         "WHERE fit_score IS NOT NULL "
         "GROUP BY fit_score ORDER BY fit_score DESC"
     ).fetchall()
-    stats["score_distribution"] = [(row[0], row[1]) for row in dist_rows]
+    stats["score_distribution"] = [(dist_row[0], dist_row[1]) for dist_row in dist_rows]
 
-    # Tailoring stage
-    stats["tailored"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE tailored_resume_path IS NOT NULL"
-    ).fetchone()[0]
+    from applypilot.role_resumes import count_jobs_needing_tailor
 
-    stats["untailored_eligible"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs "
-        "WHERE fit_score >= 7 AND full_description IS NOT NULL "
-        "AND tailored_resume_path IS NULL"
-    ).fetchone()[0]
+    stats["untailored_eligible"] = count_jobs_needing_tailor(conn, min_score=7)
+    stats["apply_queue_min_ready"] = int(config.DEFAULTS.get("apply_queue_min_ready", 300))
 
-    stats["tailor_exhausted"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs "
-        "WHERE COALESCE(tailor_attempts, 0) >= 5 "
-        "AND tailored_resume_path IS NULL"
-    ).fetchone()[0]
+    from applypilot.apply.launcher import count_acquirable_jobs
 
-    # Cover letter stage
-    stats["with_cover_letter"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE cover_letter_path IS NOT NULL"
-    ).fetchone()[0]
-
-    stats["cover_exhausted"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs "
-        "WHERE COALESCE(cover_attempts, 0) >= 5 "
-        "AND (cover_letter_path IS NULL OR cover_letter_path = '')"
-    ).fetchone()[0]
-
-    # Application stage
-    stats["applied"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE apply_status = 'applied'"
-    ).fetchone()[0]
-
-    stats["submitted_unverified"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE apply_status = 'submitted_unverified'"
-    ).fetchone()[0]
-
-    stats["apply_errors"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE apply_error IS NOT NULL"
-    ).fetchone()[0]
-
-    max_apply_attempts = config.DEFAULTS["max_apply_attempts"]
-    stats["ready_to_apply"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs "
-        "WHERE tailored_resume_path IS NOT NULL "
-        "AND applied_at IS NULL "
-        "AND (apply_status IS NULL OR apply_status = 'failed') "
-        "AND (apply_attempts IS NULL OR apply_attempts < ?)",
-        (max_apply_attempts,),
-    ).fetchone()[0]
-
-    stats["apply_manual"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE apply_status = 'manual'"
-    ).fetchone()[0]
-
-    # Referral outreach funnel
-    stats["referral_recruiter_scraped"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE recruiter_public_id IS NOT NULL"
-    ).fetchone()[0]
-    stats["referral_pending_connect"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE referral_status = 'pending_connect'"
-    ).fetchone()[0]
-    stats["referral_connect_sent"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE referral_status = 'connect_sent'"
-    ).fetchone()[0]
-    stats["referral_message_sent"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE referral_status = 'message_sent'"
-    ).fetchone()[0]
-    stats["referral_failed"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE referral_status = 'failed'"
-    ).fetchone()[0]
-    stats["referral_skipped"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE referral_status = 'skipped'"
-    ).fetchone()[0]
-    stats["referral_connects_this_week"] = conn.execute(
-        """
-        SELECT COUNT(*) FROM jobs
-        WHERE referral_connect_at >= datetime('now', '-7 days')
-          AND referral_connect_at IS NOT NULL
-        """
-    ).fetchone()[0]
+    stats["ready_to_apply"] = count_acquirable_jobs()
+    stats["claude_escalated"] = count_claude_escalated_jobs(conn)
 
     return stats
+
+
+def count_claude_escalated_jobs(conn: sqlite3.Connection | None = None) -> int:
+    """Jobs in the apply ledger deferred to or handled by Claude rescue."""
+    if conn is None:
+        conn = get_connection()
+    ensure_apply_outcomes_table(conn)
+    row = conn.execute(
+        """
+        SELECT COUNT(*) FROM jobs
+        WHERE (
+            COALESCE(apply_error, '') LIKE 'pending_claude_rescue%'
+            OR url IN (SELECT DISTINCT url FROM apply_outcomes WHERE escalated = 1)
+        )
+        AND (
+            apply_status IN ('applied', 'submitted_unverified', 'failed', 'manual')
+            OR applied_at IS NOT NULL
+        )
+        """
+    ).fetchone()
+    return int(row[0] or 0)
 
 
 def _content_hash_for_job(job: dict, site: str = "") -> str:
@@ -954,11 +963,47 @@ def record_discover_source_stats(
     conn.commit()
 
 
+_DISCOVER_SOURCE_KEY_SQL = """
+    CASE
+        WHEN LOWER(COALESCE(site, '')) LIKE 'greenhouse:%'
+             OR LOWER(COALESCE(site, '')) = 'greenhouse' THEN 'greenhouse'
+        WHEN LOWER(COALESCE(site, '')) LIKE 'lever:%'
+             OR LOWER(COALESCE(site, '')) = 'lever' THEN 'lever'
+        WHEN LOWER(COALESCE(site, '')) LIKE 'ashby:%'
+             OR LOWER(COALESCE(site, '')) = 'ashby' THEN 'ashby'
+        ELSE NULL
+    END
+"""
+
+
+def _live_scored_ge7_by_source(
+    conn: sqlite3.Connection,
+    *,
+    days: int = 7,
+) -> dict[str, int]:
+    """Count score≥7 jobs in the window, grouped by discover source key (site prefix)."""
+    rows = conn.execute(
+        f"""
+        SELECT {_DISCOVER_SOURCE_KEY_SQL} AS source_key, COUNT(*) AS n
+        FROM jobs
+        WHERE fit_score >= 7
+          AND discovered_at >= datetime('now', ?)
+        GROUP BY source_key
+        HAVING source_key IS NOT NULL
+        """,
+        (f"-{max(1, int(days))} days",),
+    ).fetchall()
+    return {str(row["source_key"]): int(row["n"] or 0) for row in rows}
+
+
 def refresh_source_stats_scores(conn: sqlite3.Connection | None = None, *, run_id: str = "") -> None:
     """Refresh per-source score counts for source telemetry rows."""
+    from applypilot.discovery.site_priority import sql_site_matches_discover_source
+
     if conn is None:
         conn = get_connection()
     ensure_source_stats_table(conn)
+    site_match = sql_site_matches_discover_source("site", "discover_source_stats.source")
     if run_id:
         where = "WHERE run_id = ?"
         params: tuple[str, ...] = (run_id,)
@@ -973,7 +1018,7 @@ def refresh_source_stats_scores(conn: sqlite3.Connection | None = None, *, run_i
             FROM jobs
             WHERE fit_score >= 7
               AND scored_at >= discover_source_stats.created_at
-              AND LOWER(COALESCE(site, '')) = LOWER(discover_source_stats.source)
+              AND {site_match}
         )
         {where}
         """,
@@ -984,9 +1029,12 @@ def refresh_source_stats_scores(conn: sqlite3.Connection | None = None, *, run_i
 
 def refresh_source_stats_tailored(conn: sqlite3.Connection | None = None, *, run_id: str = "") -> None:
     """Refresh per-source tailored counts for source telemetry rows."""
+    from applypilot.discovery.site_priority import sql_site_matches_discover_source
+
     if conn is None:
         conn = get_connection()
     ensure_source_stats_table(conn)
+    site_match = sql_site_matches_discover_source("site", "discover_source_stats.source")
     if run_id:
         where = "WHERE run_id = ?"
         params: tuple[str, ...] = (run_id,)
@@ -1000,7 +1048,7 @@ def refresh_source_stats_tailored(conn: sqlite3.Connection | None = None, *, run
             SELECT COUNT(*)
             FROM jobs
             WHERE tailored_at >= discover_source_stats.created_at
-              AND LOWER(COALESCE(site, '')) = LOWER(discover_source_stats.source)
+              AND {site_match}
         )
         {where}
         """,
@@ -1018,6 +1066,7 @@ def get_source_stats_rollup(
     if conn is None:
         conn = get_connection()
     ensure_source_stats_table(conn)
+    window = f"-{max(1, int(days))} days"
     rows = conn.execute(
         """
         SELECT
@@ -1029,31 +1078,32 @@ def get_source_stats_rollup(
         FROM discover_source_stats
         WHERE created_at >= datetime('now', ?)
         GROUP BY source
-        ORDER BY
-            CASE WHEN SUM(discovered) > 0
-                THEN CAST(SUM(scored_ge7) AS REAL) / SUM(discovered)
-                ELSE 0
-            END DESC,
-            SUM(scored_ge7) DESC,
-            SUM(discovered) DESC
+        ORDER BY SUM(discovered) DESC
         """,
-        (f"-{max(1, int(days))} days",),
+        (window,),
     ).fetchall()
-    return [
-        {
-            "source": row["source"],
-            "discovered": int(row["discovered"] or 0),
-            "passed_filter": int(row["passed_filter"] or 0),
-            "scored_ge7": int(row["scored_ge7"] or 0),
-            "tailored": int(row["tailored"] or 0),
-            "efficiency": (
-                float(row["scored_ge7"] or 0) / float(row["discovered"])
-                if row["discovered"]
-                else 0.0
-            ),
-        }
-        for row in rows
-    ]
+    live_scored = _live_scored_ge7_by_source(conn, days=days)
+    out: list[dict] = []
+    for row in rows:
+        source = str(row["source"] or "")
+        discovered = int(row["discovered"] or 0)
+        scored_ge7 = live_scored.get(source.lower(), int(row["scored_ge7"] or 0))
+        efficiency = float(scored_ge7) / float(discovered) if discovered else 0.0
+        out.append(
+            {
+                "source": source,
+                "discovered": discovered,
+                "passed_filter": int(row["passed_filter"] or 0),
+                "scored_ge7": scored_ge7,
+                "tailored": int(row["tailored"] or 0),
+                "efficiency": efficiency,
+            }
+        )
+    out.sort(
+        key=lambda r: (r["efficiency"], r["scored_ge7"], r["discovered"]),
+        reverse=True,
+    )
+    return out
 
 
 def get_jobs_by_stage(conn: sqlite3.Connection | None = None,
@@ -1076,7 +1126,7 @@ def get_jobs_by_stage(conn: sqlite3.Connection | None = None,
 
     conditions = {
         "discovered": "1=1",
-        "pending_detail": "detail_scraped_at IS NULL",
+        "pending_detail": None,  # filled below with detail_pending_clause()
         "enriched": "full_description IS NOT NULL",
         "pending_score": "full_description IS NOT NULL AND fit_score IS NULL",
         "scored": "fit_score IS NOT NULL",
@@ -1093,14 +1143,23 @@ def get_jobs_by_stage(conn: sqlite3.Connection | None = None,
     }
 
     where = conditions.get(stage, "1=1")
+    if where is None and stage == "pending_detail":
+        from applypilot.enrichment.pending import detail_pending_clause
+
+        where = detail_pending_clause()
     params: list = []
 
-    if "?" in where and min_score is not None:
+    if where and "?" in where and min_score is not None:
         params.append(min_score)
-    elif "?" in where:
+    elif where and "?" in where:
         params.append(7)  # default min_score
 
-    if min_score is not None and "fit_score" not in where and stage in ("scored", "tailored", "applied"):
+    if (
+        where
+        and min_score is not None
+        and "fit_score" not in where
+        and stage in ("scored", "tailored", "applied")
+    ):
         where += " AND fit_score >= ?"
         params.append(min_score)
 

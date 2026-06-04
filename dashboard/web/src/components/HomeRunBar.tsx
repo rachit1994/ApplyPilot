@@ -167,6 +167,15 @@ export function HomeRunBar() {
             <label className="flex items-center gap-1.5">
               <input
                 type="checkbox"
+                checked={run.continuous}
+                disabled={run.isRunning}
+                onChange={(e) => run.setContinuous(e.target.checked)}
+              />
+              Continuous
+            </label>
+            <label className="flex items-center gap-1.5">
+              <input
+                type="checkbox"
                 checked={run.pace}
                 disabled={run.isRunning}
                 onChange={(e) => run.setPace(e.target.checked)}
@@ -232,8 +241,9 @@ export function HomeRunBar() {
         cliCommand={run.applyCli}
         summaryLines={[
           `Ready: ${stats?.ready_to_apply ?? "—"} (≥${run.applyMinScore})`,
-          `${run.applyWorkers} worker(s)`,
-          run.watch ? "Visible Chrome (--watch)" : "Headless unless checked",
+          `${run.applyWorkers} worker(s) · direct engine`,
+          run.watch ? "Visible Chrome (--watch)" : run.headless ? "Headless" : "Visible Chrome",
+          run.continuous ? "Drain queue (--continuous)" : "Stop when limit reached",
         ]}
         onCancel={() => setPlanKind(null)}
         onConfirm={() => {

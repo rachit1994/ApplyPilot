@@ -46,7 +46,10 @@ export function useStageRun(stage: PipelineStageId) {
   useEffect(() => {
     fetchActiveRun()
       .then((run) => {
-        if (!run) return;
+        if (!run) {
+          setActiveRun(null);
+          return;
+        }
         setActiveRun(run);
         if (run.status !== "running") {
           fetchRunEventsHistory(run.id)
@@ -56,6 +59,34 @@ export function useStageRun(stage: PipelineStageId) {
       })
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    const tick = () => {
+      fetchActiveRun()
+        .then((run) => {
+          setActiveRun((prev) => {
+            if (!run) {
+              return prev?.status === "running" ? null : prev;
+            }
+            if (
+              prev?.id === run.id &&
+              prev.status === run.status &&
+              prev.current_stage === run.current_stage
+            ) {
+              return prev;
+            }
+            return run;
+          });
+          if (run) {
+            queryClient.invalidateQueries({ queryKey: ["overview"] });
+            queryClient.invalidateQueries({ queryKey: ["runs", "active"] });
+          }
+        })
+        .catch(() => {});
+    };
+    const id = window.setInterval(tick, 3000);
+    return () => window.clearInterval(id);
+  }, [queryClient]);
 
   const refreshRun = useCallback((runId: string) => {
     fetchRun(runId)

@@ -45,6 +45,7 @@ class Field:
     value: str = ""             # current value as seen by the extractor
     empty: bool = True          # True when the field has no value yet
     combobox: bool = False      # react-select / role=combobox (options load on open)
+    is_multi: bool = False      # react-select --is-multi (select-all-that-apply)
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,12 @@ def _norm(s: str | None) -> str:
     return (s or "").strip().lower()
 
 
+def _norm_option(s: str | None) -> str:
+    """Normalize option/answer text for loose EEO and decline matching."""
+    t = _norm(s)
+    return t.replace("'", "").replace("’", "")
+
+
 # ---------------------------------------------------------------------------
 # FIELD MAP — label substring -> token key (or a derive function)
 # Ordered: first match wins. Mirrors worker-apply-playbook.md FIELD MAP.
@@ -72,6 +79,15 @@ def _first_word(tokens: dict) -> str:
 def _last_word(tokens: dict) -> str:
     parts = (tokens.get("full_name") or "").split()
     return parts[-1] if len(parts) > 1 else ""
+
+
+def _start_date(tokens: dict) -> str:
+    """A concrete date for date-picker 'when can you start' questions.
+
+    The profile's earliest_start_date is free text ('Immediately'), which a date
+    widget rejects. Use a real near-future date the widget will accept.
+    """
+    return tokens.get("start_date", "")
 
 
 # Each rule: (list of label substrings, token_key OR callable(tokens)->str)
@@ -94,6 +110,19 @@ FIELD_MAP: tuple[tuple[tuple[str, ...], object], ...] = (
     (("years of experience", "years experience"), "years_experience"),
     (("education", "degree", "highest level"), "education_level"),
     (("salary", "compensation", "expected pay", "desired salary"), "salary_number"),
+    # Date-picker phrasings need a real date, not "Immediately" — checked before
+    # the generic start/availability rule below.
+    (
+        (
+            "when can you start",
+            "start a new role",
+            "earliest start date",
+            "available start date",
+            "date available",
+            "available to start",
+        ),
+        _start_date,
+    ),
     (("start date", "available", "notice period"), "earliest_start_date"),
 )
 
@@ -125,13 +154,14 @@ QUESTION_MAP: tuple[tuple[tuple[str, ...], str, bool], ...] = (
     (("interviewed", "interview before", "previously interviewed", "interview with"), "No", False),
     (("how did you hear", "referral source", "source"), "Online Job Board", False),
     (("ai policy", "acknowledge", "i have read", "i agree", "i confirm", "candidate privacy", "terms"), "Yes", False),
+    (("by checking this box", "i consent", "consent to", "i authorize", "i certify"), "Yes", False),
     (("willing to relocate", "relocation", "relocate"), "Yes", False),
     (("work remotely", "comfortable remote", "remote work"), "Yes", False),
-    (("gender",), "Decline to self-identify", False),
-    (("race", "ethnicity"), "Decline to self-identify", False),
-    (("hispanic", "latino"), "Decline to self-identify", False),
-    (("veteran",), "I am not a protected veteran", False),
-    (("disability",), "I do not wish to answer", False),
+    (("gender",), "gender", True),
+    (("race", "ethnicity"), "race_ethnicity", True),
+    (("hispanic", "latino"), "race_ethnicity", True),
+    (("veteran",), "veteran_status", True),
+    (("disability",), "disability_status", True),
 )
 
 # Free-text triggers (the only place a sentence is written).
@@ -140,7 +170,72 @@ _FREE_TEXT_RE = re.compile(
 )
 
 # Decline-style fallbacks for selects whose exact option is missing, in order.
-DECLINE_FALLBACKS: tuple[str, ...] = ("decline", "prefer not", "i don't wish", "no")
+DECLINE_FALLBACKS: tuple[str, ...] = (
+    "decline",
+    "prefer not",
+    "do not wish",
+    "don't wish",
+    "wish to answer",
+    "i don't wish",
+    "no",
+)
+
+
+# "How did you hear about us?" style questions render as a required checkbox
+# group (pick ≥1). They are low-stakes and have no profile-derived answer, so we
+# check a single plausible option rather than escalating the whole form.
+SOURCE_QUESTION_MARKERS: tuple[str, ...] = (
+    "how did you hear",
+    "how you heard",
+    "where did you hear",
+    "referral source",
+    "source of your",
+    "hear about us",
+    "hear about this",
+)
+PREFERRED_SOURCE_OPTIONS: tuple[str, ...] = (
+    "linkedin",
+    "indeed",
+    "online job board",
+    "job board",
+    "company website",
+    "careers website",
+    "company site",
+    "other",
+)
+
+
+def is_source_question(text: str | None) -> bool:
+    """True for 'how did you hear about us' style group questions."""
+    blob = _norm(text)
+    return any(m in blob for m in SOURCE_QUESTION_MARKERS)
+
+
+def choose_checkbox_group_option(
+    question: str | None, option_labels: tuple[str, ...]
+) -> str | None:
+    """Pick ONE option label to check for a required checkbox group.
+
+    Only answers low-stakes source questions; returns None (escalate) for any
+    other required multi-checkbox group rather than guessing a wrong answer.
+    """
+    if not option_labels or not is_source_question(question):
+        return None
+    for pref in PREFERRED_SOURCE_OPTIONS:
+        for opt in option_labels:
+            if pref in _norm(opt):
+                return opt
+    return option_labels[0]
+
+
+def _is_decline_answer(answer: str) -> bool:
+    n = _norm_option(answer)
+    return any(fb in n for fb in DECLINE_FALLBACKS if fb != "no") or "decline" in n
+
+
+def _question_context(field: Field) -> str:
+    """Section + label — disability radios often label options, not the question."""
+    return f"{_norm(field.section_header)} {_norm(field.label)}".strip()
 
 
 def _match_field_map(label: str, tokens: dict) -> tuple[str, str] | None:
@@ -190,6 +285,35 @@ def _match_question_map(label: str, tokens: dict) -> tuple[str, str] | None:
     return None
 
 
+def _workatastartup_message(field: Field, tokens: dict) -> str | None:
+    """Deterministic answer for YC Work at a Startup's required Message box."""
+    job_url = _norm(tokens.get("job_url"))
+    label = _norm(field.label)
+    if "workatastartup.com" not in job_url:
+        return None
+    if field.tag != "textarea" and "message" not in label:
+        return None
+    if "message" not in label and "cover letter" not in label:
+        return None
+
+    cover_text = str(tokens.get("cover_letter_text") or "").strip()
+    if cover_text:
+        return cover_text[:1800]
+
+    name = str(tokens.get("preferred_name") or tokens.get("full_name") or "").strip()
+    title = str(tokens.get("job_title") or "this role").strip()
+    company = str(tokens.get("company") or "your team").strip()
+    current = str(tokens.get("current_job_title") or "software engineer").strip()
+    years = str(tokens.get("years_experience") or "").strip()
+    exp = f" with {years} years of experience" if years else ""
+    return (
+        f"Hi, I'm {name}. I'm interested in the {title} role at {company}. "
+        f"My background is in {current}{exp}, with hands-on work across production "
+        "software, automation, and AI-enabled systems. I'd like to explore whether "
+        "my experience fits what you're building."
+    )
+
+
 def resolve_field(field: Field, tokens: dict) -> Resolution | None:
     """Resolve one field to a Tier-0 answer, or None to escalate.
 
@@ -205,7 +329,7 @@ def resolve_field(field: Field, tokens: dict) -> Resolution | None:
         return Resolution(answer=attr[0], confidence=0.97, via=attr[1])
 
     # 2. Screening / EEO questions (yes-no, dropdown).
-    q = _match_question_map(label, tokens)
+    q = _match_question_map(_question_context(field), tokens)
     if q:
         return Resolution(answer=q[0], confidence=0.9, via=q[1])
 
@@ -214,7 +338,14 @@ def resolve_field(field: Field, tokens: dict) -> Resolution | None:
     if fm:
         return Resolution(answer=fm[0], confidence=0.9, via=fm[1])
 
-    # 4. Free-text is intentionally NOT answered here. Generic boilerplate is
+    # 4. Work at a Startup's apply form is intentionally sparse: a required
+    #    "Message" textarea, and sometimes email. Fill that known field locally
+    #    instead of escalating the whole application to a browser agent.
+    waas_message = _workatastartup_message(field, tokens)
+    if waas_message:
+        return Resolution(answer=waas_message, confidence=0.86, via="label")
+
+    # 5. Free-text is intentionally NOT answered here. Generic boilerplate is
     #    exactly what recruiters bin, so company-specific prose ("why this
     #    role") flows to Tier 2 (Gemini) with live {company, role} context, or
     #    is left blank when optional. Tier 0 stays factual-only.
@@ -241,11 +372,15 @@ def choose_select_option(answer: str, options: tuple[str, ...]) -> str | None:
     if not options:
         return answer or None
     norm_answer = _norm(answer)
+    norm_answer_loose = _norm_option(answer)
     if not norm_answer:
         return None
     by_norm = {_norm(o): o for o in options}
+    by_loose = {_norm_option(o): o for o in options}
     if norm_answer in by_norm:
         return by_norm[norm_answer]
+    if norm_answer_loose in by_loose:
+        return by_loose[norm_answer_loose]
     # Option starts with the answer (handles "India +91", "Yes - authorized").
     for opt in options:
         n = _norm(opt)
@@ -267,12 +402,11 @@ def choose_select_option(answer: str, options: tuple[str, ...]) -> str | None:
         if norm_answer in _norm(opt):
             return opt
     # Decline-style fallback fires ONLY when our answer is itself a decline
-    # (e.g. "Decline to self-identify" worded "I prefer not to say" on the form).
+    # (e.g. "I do not wish to answer" vs "I don't wish to answer" on the form).
     # For a non-decline answer with no match, escalate rather than guess "No".
-    answer_is_decline = any(fb in norm_answer for fb in DECLINE_FALLBACKS[:-1])
-    if answer_is_decline:
+    if _is_decline_answer(answer):
         for fb in DECLINE_FALLBACKS:
             for opt in options:
-                if fb in _norm(opt):
+                if fb in _norm_option(opt):
                     return opt
     return None

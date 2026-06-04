@@ -22,11 +22,15 @@ def test_greenhouse_adapter_dispatched():
     assert adapter.submit_button_texts
 
 
-@pytest.mark.parametrize("family", ["lever", "ashby", "workday", "unknown", "", None])
+@pytest.mark.parametrize("family", ["lever", "ashby"])
+def test_lever_ashby_adapter_dispatched(family):
+    adapter = get_adapter(family)
+    assert adapter is not None
+    assert adapter.family == family
+
+
+@pytest.mark.parametrize("family", ["workday", "unknown", "", None])
 def test_adapter_not_dispatched(family):
-    # Lever/Ashby are staged but not yet dispatched; unknown/workday never were.
-    # All escalate to the Claude rescue path instead of running an unverified
-    # deterministic fill.
     assert get_adapter(family) is None
 
 
@@ -34,9 +38,9 @@ def test_adapter_not_dispatched(family):
 # Engine + cap settings
 # --------------------------------------------------------------------------- #
 
-def test_apply_engine_default_claude(monkeypatch):
+def test_apply_engine_default_direct(monkeypatch):
     monkeypatch.delenv("APPLYPILOT_APPLY_ENGINE", raising=False)
-    assert apply_settings.apply_engine() == "claude"
+    assert apply_settings.apply_engine() == "direct"
 
 
 def test_apply_engine_direct_env(monkeypatch):
@@ -99,7 +103,26 @@ def test_throttle_blocks_family_cap(tmp_path, monkeypatch):
         "https://job-boards.greenhouse.io/acme/jobs/99", conn=conn
     )
     assert not allowed
-    assert reason == "failed:direct_family_cap:greenhouse"
+    assert reason == "deferred:direct_family_cap:greenhouse"
+    assert throttle.is_cap_defer(reason)
+
+
+def test_count_submits_today_matches_outcomes(tmp_path, monkeypatch):
+    db = _fresh_db(tmp_path, monkeypatch)
+    conn = db.get_connection()
+    db.record_apply_outcome(
+        conn=conn,
+        url="https://job-boards.greenhouse.io/acme/jobs/1",
+        ats_family="greenhouse",
+        result="applied",
+    )
+    db.record_apply_outcome(
+        conn=conn,
+        url="https://job-boards.greenhouse.io/acme/jobs/2",
+        ats_family="greenhouse",
+        result="failed:direct_unresolved_required",
+    )
+    assert throttle.count_submits_today(conn=conn) == 1
 
 
 def test_throttle_ignores_non_submit_results(tmp_path, monkeypatch):
@@ -158,6 +181,44 @@ def test_canonical_apply_url_greenhouse(url, expected):
 def test_canonical_apply_url_non_greenhouse_untouched():
     u = "https://jobs.ashbyhq.com/X/abc?gh_jid=9"
     assert driver._canonical_apply_url(u, "ashby") == u
+
+
+class _FakePage:
+    """Minimal stand-in for a Playwright page for content-sniff tests."""
+
+    def __init__(self, *, html="", resource_urls=(), url="https://acme.jobs/x"):
+        self._html = html
+        self._resource_urls = list(resource_urls)
+        self.url = url
+
+    def eval_on_selector_all(self, _selector, _js):
+        return list(self._resource_urls)
+
+    def content(self):
+        return self._html
+
+
+def test_content_sniff_detects_greenhouse_iframe():
+    page = _FakePage(
+        resource_urls=["https://boards.greenhouse.io/embed/job_app?token=7862086"],
+    )
+    family, form_url = driver._content_sniff_family(page)
+    assert family == "greenhouse"
+    assert form_url == "https://boards.greenhouse.io/embed/job_app?token=7862086"
+
+
+def test_content_sniff_detects_greenhouse_from_markers_no_form_url():
+    page = _FakePage(html='<div id="grnhse_app"></div>')
+    family, form_url = driver._content_sniff_family(page)
+    assert family == "greenhouse"
+    assert form_url is None  # inline embed: fill in place, no re-navigation
+
+
+def test_content_sniff_unknown_page_stays_unknown():
+    page = _FakePage(html="<html><body>Careers</body></html>")
+    family, form_url = driver._content_sniff_family(page)
+    assert family == "unknown"
+    assert form_url is None
 
 
 def test_driver_matches_any():

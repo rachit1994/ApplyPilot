@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from applypilot.config import APP_DIR, load_env, ensure_dirs
+from applypilot.dashboard_settings import bootstrap_dashboard_settings, save_agent_settings
 from applypilot.database import init_db
 from applypilot.server import activity as activity_module
 from applypilot.server import events as events_routes
@@ -29,6 +30,7 @@ from applypilot.server.schemas import (
     ApplyErrorSummaryRow,
     JobRow,
     JobsResponse,
+    TriageCountsResponse,
     LlmUsageResponse,
     OverviewResponse,
     ReferralActionRequest,
@@ -39,6 +41,9 @@ from applypilot.server.schemas import (
     SourceStatsResponse,
     SourceStatsRow,
     StatsResponse,
+    AgentSettingsPayload,
+    AgentSettingsResponse,
+    AgentSettingsPatch,
 )
 from applypilot.orchestration.run_controller import reconcile_orphaned_runs
 from applypilot.server.overview import build_overview
@@ -51,6 +56,7 @@ _DASHBOARD_DIST = _REPO_ROOT / "dashboard" / "web" / "dist"
 def create_app() -> FastAPI:
     load_env()
     ensure_dirs()
+    bootstrap_dashboard_settings()
     init_db()
 
     app = FastAPI(title="ApplyPilot Dashboard", version="0.1.0")
@@ -112,10 +118,18 @@ def create_app() -> FastAPI:
         pipeline_stage: str | None = None,
         stage: str | None = None,
         apply_status: str | None = None,
+        low_score_reason: str | None = None,
         sort: str = "activity_desc",
-        limit: int = 100,
+        limit: int = 50,
         offset: int = 0,
+        page: int | None = None,
     ) -> JobsResponse:
+        limit, query_offset, current_page, _ = jobs_module.resolve_jobs_pagination(
+            limit=limit,
+            offset=offset,
+            page=page,
+            total=0,
+        )
         rows, total = jobs_module.query_jobs(
             min_score=min_score,
             site=site,
@@ -123,11 +137,55 @@ def create_app() -> FastAPI:
             pipeline_stage=pipeline_stage,
             stage=stage,
             apply_status=apply_status,
+            low_score_reason=low_score_reason,
             sort=sort,
-            limit=min(limit, 500),
-            offset=offset,
+            limit=limit,
+            offset=query_offset,
         )
-        return JobsResponse(jobs=[JobRow(**r) for r in rows], total=total)
+        limit, offset, current_page, pages = jobs_module.resolve_jobs_pagination(
+            limit=limit,
+            offset=query_offset,
+            page=page if page is not None else current_page,
+            total=total,
+        )
+        if offset != query_offset:
+            rows, total = jobs_module.query_jobs(
+                min_score=min_score,
+                site=site,
+                search=search,
+                pipeline_stage=pipeline_stage,
+                stage=stage,
+                apply_status=apply_status,
+                low_score_reason=low_score_reason,
+                sort=sort,
+                limit=limit,
+                offset=offset,
+            )
+        return JobsResponse(
+            jobs=[JobRow(**r) for r in rows],
+            total=total,
+            limit=limit,
+            offset=offset,
+            page=current_page,
+            pages=pages,
+        )
+
+    @api.get("/jobs/triage-counts", response_model=TriageCountsResponse)
+    def api_jobs_triage_counts(
+        min_score: int | None = None,
+        site: str | None = None,
+        search: str | None = None,
+        apply_status: str | None = None,
+        low_score_reason: str | None = None,
+    ) -> TriageCountsResponse:
+        counts = jobs_module.fetch_triage_counts_filtered(
+            min_score=min_score,
+            site=site,
+            search=search,
+            apply_status=apply_status,
+            low_score_reason=low_score_reason,
+        )
+        return TriageCountsResponse(counts=counts)
 
     @api.get("/jobs/recent", response_model=JobsResponse)
     def api_jobs_recent(minutes: int = 60, limit: int = 50) -> JobsResponse:
@@ -142,6 +200,8 @@ def create_app() -> FastAPI:
         status: str | None = None,
         site: str | None = None,
         search: str | None = None,
+        claude_escalated: bool = False,
+        needs_attention: bool = False,
     ) -> ApplicationsResponse:
         rows, total = applications_module.query_applied_jobs(
             limit=min(limit, 500),
@@ -150,6 +210,8 @@ def create_app() -> FastAPI:
             status=status,
             site=site,
             search=search,
+            claude_escalated=claude_escalated,
+            needs_attention=needs_attention,
         )
         return ApplicationsResponse(
             applications=[ApplicationRow(**r) for r in rows],
@@ -274,6 +336,29 @@ def create_app() -> FastAPI:
             action=payload["action"],
             results=[ReferralActionResult(**r) for r in payload["results"]],
             summary=payload.get("summary") or {},
+        )
+
+    @api.get("/settings/agent", response_model=AgentSettingsResponse)
+    def api_get_agent_settings() -> AgentSettingsResponse:
+        from applypilot.dashboard_settings import load_dashboard_settings
+
+        payload = load_dashboard_settings()
+        return AgentSettingsResponse(
+            agent=AgentSettingsPayload.model_validate(payload["agent"]),
+            updated_at=payload.get("updated_at"),
+        )
+
+    @api.patch("/settings/agent", response_model=AgentSettingsResponse)
+    def api_patch_agent_settings(body: AgentSettingsPatch) -> AgentSettingsResponse:
+        patch = body.model_dump(exclude_unset=True)
+        if not patch:
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=400, detail="No settings fields provided")
+        saved = save_agent_settings(patch)
+        return AgentSettingsResponse(
+            agent=AgentSettingsPayload.model_validate(saved["agent"]),
+            updated_at=saved.get("updated_at"),
         )
 
     @api.get("/meta/stages")

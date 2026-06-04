@@ -42,8 +42,22 @@ class FakeBatchClient:
 def scoring_env(tmp_path, monkeypatch):
     monkeypatch.setenv("APPLYPILOT_DIR", str(tmp_path))
 
+    from applypilot import config
     from applypilot import database
     from applypilot.scoring import scorer
+
+    monkeypatch.setattr(config, "APP_DIR", tmp_path)
+    monkeypatch.setattr(config, "PROFILE_PATH", tmp_path / "profile.json")
+    (tmp_path / "profile.json").write_text(
+        json.dumps(
+            {
+                "experience": {"target_roles": ["Senior Frontend Engineer"]},
+                "compensation": {"salary_currency": "INR"},
+                "scoring": {"role_aware": False},
+            }
+        ),
+        encoding="utf-8",
+    )
 
     db_path = tmp_path / "applypilot.db"
     conn = database.init_db(db_path)
@@ -53,7 +67,13 @@ def scoring_env(tmp_path, monkeypatch):
     monkeypatch.setattr(scorer, "RESUME_PATH", resume_path)
     monkeypatch.setattr(scorer, "get_connection", lambda: conn)
     monkeypatch.setattr(scorer, "load_search_config", lambda: {})
+    monkeypatch.setattr(scorer, "role_aware_scoring_enabled", lambda output_dir=None: False)
     monkeypatch.setattr(scorer.embedding_filter, "encode_resume", lambda _text: None)
+    monkeypatch.setattr(
+        scorer.embedding_filter,
+        "encode_resume_for_key",
+        lambda _text, _key: None,
+    )
     monkeypatch.setattr(scorer.embedding_filter, "threshold_from_profile", lambda _profile: 0.25)
     monkeypatch.setattr(
         scorer.embedding_filter,
@@ -112,10 +132,12 @@ def test_run_scoring_batches_survivors_with_default_size(scoring_env, monkeypatc
     assert "x" * 2001 not in client.calls[0][1]["content"]
 
     rows = conn.execute(
-        "SELECT url, fit_score, score_reasoning FROM jobs ORDER BY url"
+        "SELECT url, fit_score, pre_fit_score, pre_filter_reason, score_reasoning FROM jobs ORDER BY url"
     ).fetchall()
     assert len(rows) == 6
     assert all(row["fit_score"] in (7, 8) for row in rows)
+    assert all(row["pre_fit_score"] is not None for row in rows)
+    assert all(row["pre_filter_reason"] is None for row in rows)
     assert rows[0]["score_reasoning"].startswith("apply\npython, react")
 
 
@@ -139,7 +161,7 @@ def test_scoring_batch_size_one_uses_single_job_path(scoring_env, monkeypatch):
         lambda *_args, **_kwargs: pytest.fail("batch scorer should not be used"),
     )
 
-    def fake_score_job(_resume_text, job, profile=None):
+    def fake_score_job(_resume_text, job, profile=None, role_title=None):
         single_calls.append(job["url"])
         return {
             "score": 7,
@@ -177,7 +199,7 @@ def test_malformed_batch_falls_back_to_single_job_path(scoring_env, monkeypatch,
     )
     monkeypatch.setattr(scorer, "get_client", lambda: client)
 
-    def fake_score_job(_resume_text, job, profile=None):
+    def fake_score_job(_resume_text, job, profile=None, role_title=None):
         single_calls.append(job["url"])
         return {
             "score": 6,
@@ -193,7 +215,7 @@ def test_malformed_batch_falls_back_to_single_job_path(scoring_env, monkeypatch,
 
     assert summary["scored"] == 5
     assert len(single_calls) == 5
-    assert "batch_id=score-batch-1" in caplog.text
+    assert "batch_id=score-batch-base-base-" in caplog.text
     assert "reason=" in caplog.text
 
     scores = conn.execute("SELECT fit_score FROM jobs").fetchall()

@@ -15,7 +15,7 @@ marked manual. See docs/maxed-apply-pipeline-jun-2026.md §4.
 from __future__ import annotations
 
 from applypilot.apply.direct.adapters.base import Adapter
-from applypilot.apply.direct.adapters import ashby, greenhouse, lever
+from applypilot.apply.direct.adapters import ashby, greenhouse, lever, workatastartup
 
 # family -> descriptor. Only families whose deterministic form-fill is verified
 # end-to-end are dispatched to the Driver; everything else escalates to the
@@ -25,13 +25,13 @@ from applypilot.apply.direct.adapters import ashby, greenhouse, lever
 # pending their own field-handling + fixtures; flip them on once verified.
 _REGISTRY: dict[str, Adapter] = {
     greenhouse.ADAPTER.family: greenhouse.ADAPTER,
-}
-
-# Built but not yet dispatched (see note above).
-_STAGED: dict[str, Adapter] = {
     lever.ADAPTER.family: lever.ADAPTER,
     ashby.ADAPTER.family: ashby.ADAPTER,
+    workatastartup.ADAPTER.family: workatastartup.ADAPTER,
 }
+
+# Reserved for families not yet verified end-to-end.
+_STAGED: dict[str, Adapter] = {}
 
 
 def get_adapter(family: str | None) -> Adapter | None:

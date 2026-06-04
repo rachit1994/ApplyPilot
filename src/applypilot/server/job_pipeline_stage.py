@@ -184,7 +184,7 @@ def stage_filter_clause(
         STAGE_TAILORED: f"({before_tailored} AND {tailored} AND {not_cover})",
         STAGE_TAILOR_EXHAUSTED: f"({before_tailor_exhausted} AND {tailor_exhausted})",
         STAGE_SCORED: f"({before_scored} AND {scored})",
-        STAGE_ENRICHED: f"({before_enrich_error} AND {enriched})",
+        STAGE_ENRICHED: f"({before_enriched} AND {enriched})",
         STAGE_ENRICH_ERROR: f"({before_enrich_error} AND {enrich_error})",
         STAGE_DISCOVERED: f"({before_enrich_error} AND {not_enrich_error})",
     }

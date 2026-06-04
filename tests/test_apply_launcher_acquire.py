@@ -18,6 +18,7 @@ def apply_db(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(config, "DB_PATH", db_path)
     monkeypatch.setattr(database, "DB_PATH", db_path)
     monkeypatch.setattr(launcher, "_load_blocked", lambda: (set(), []))
+    monkeypatch.setattr(launcher, "role_resumes_available", lambda: False)
     monkeypatch.setattr(config, "load_profile", lambda: {})
 
     def fake_ensure_resume_pdf(path: str | Path) -> Path:
@@ -45,6 +46,9 @@ def _insert_job(
     status: str | None = None,
     attempts: int | None = 0,
     last_attempted_at: str | None = None,
+    application_url: str | None = None,
+    site: str = "Example",
+    full_description: str = "Build production systems.",
 ) -> None:
     conn.execute(
         """
@@ -53,10 +57,19 @@ def _insert_job(
             fit_score, full_description, salary, apply_status,
             apply_attempts, last_attempted_at
         )
-        VALUES (?, ?, 'Example', ?, '/tmp/resume.pdf', 9,
-                'Build production systems.', '$150K', ?, ?, ?)
+        VALUES (?, ?, ?, ?, '/tmp/resume.pdf', 9,
+                ?, '$150K', ?, ?, ?)
         """,
-        (url, title, f"{url}/apply", status, attempts, last_attempted_at),
+        (
+            url,
+            title,
+            site,
+            application_url if application_url is not None else f"{url}/apply",
+            full_description,
+            status,
+            attempts,
+            last_attempted_at,
+        ),
     )
     conn.commit()
 
@@ -71,6 +84,7 @@ def test_acquire_job_includes_ready_rows_with_null_apply_status(tmp_path: Path, 
     monkeypatch.setattr(config, "DB_PATH", db_path)
     monkeypatch.setattr(database, "DB_PATH", db_path)
     monkeypatch.setattr(launcher, "_load_blocked", lambda: (set(), []))
+    monkeypatch.setattr(launcher, "role_resumes_available", lambda: False)
     monkeypatch.setattr(config, "load_profile", lambda: {})
 
     def fake_ensure_resume_pdf(path: str | Path) -> Path:
@@ -163,9 +177,17 @@ def test_acquire_job_continues_after_persisted_skip(apply_db, monkeypatch):
     ]
 
 
+def _patch_apply_engine_claude(monkeypatch):
+    monkeypatch.setattr(
+        "applypilot.apply.apply_settings.apply_engine",
+        lambda **_: "claude",
+    )
+
+
 def test_worker_loop_retries_after_quota_reset_without_continuous(apply_db, monkeypatch):
     from applypilot.apply import launcher
 
+    _patch_apply_engine_claude(monkeypatch)
     _insert_job(apply_db, "https://jobs.example/quota")
     not_before = (datetime.now(timezone.utc) + timedelta(milliseconds=20)).isoformat()
     calls: list[str] = []
@@ -222,6 +244,7 @@ def test_release_stale_locks_releases_only_old_in_progress_rows(apply_db):
 def test_worker_loop_releases_lock_when_run_job_raises(apply_db, monkeypatch):
     from applypilot.apply import launcher
 
+    _patch_apply_engine_claude(monkeypatch)
     _insert_job(apply_db, "https://jobs.example/raises")
     monkeypatch.setattr(launcher, "launch_chrome", lambda *args, **kwargs: object())
     monkeypatch.setattr(launcher, "cleanup_worker", lambda *args, **kwargs: None)
@@ -244,6 +267,7 @@ def test_worker_loop_releases_lock_when_run_job_raises(apply_db, monkeypatch):
 def test_worker_loop_failed_result_clears_lock_and_increments_attempts(apply_db, monkeypatch):
     from applypilot.apply import launcher
 
+    _patch_apply_engine_claude(monkeypatch)
     _insert_job(apply_db, "https://jobs.example/fails")
     monkeypatch.setattr(launcher, "launch_chrome", lambda *args, **kwargs: object())
     monkeypatch.setattr(launcher, "cleanup_worker", lambda *args, **kwargs: None)
@@ -293,3 +317,435 @@ def test_mark_submitted_unverified_records_submission_time_and_clears_lock(apply
     assert row["apply_attempts"] == 1
     assert row["apply_duration_ms"] == 456
     assert row["agent_id"] is None
+
+
+def test_mark_result_failed_sets_retry_cooldown(apply_db):
+    """A retryable failure parks the job with apply_not_before so the same job
+    is not re-acquired in a tight continuous/overnight loop."""
+    from applypilot.apply import launcher
+
+    _insert_job(apply_db, "https://jobs.example/transient", status="in_progress")
+
+    launcher.mark_result(
+        "https://jobs.example/transient",
+        "failed",
+        error="direct_not_submitted",
+        duration_ms=123,
+    )
+
+    row = apply_db.execute(
+        """
+        SELECT apply_status, apply_error, apply_attempts, apply_not_before, agent_id
+        FROM jobs WHERE url = 'https://jobs.example/transient'
+        """
+    ).fetchone()
+    assert row["apply_status"] == "failed"
+    assert row["apply_error"] == "direct_not_submitted"
+    assert row["apply_attempts"] == 1
+    assert row["agent_id"] is None
+    # Cooldown must be in the future so acquire_job's apply_not_before gate skips it.
+    assert row["apply_not_before"] is not None
+    not_before = datetime.fromisoformat(row["apply_not_before"])
+    assert not_before > datetime.now(timezone.utc) + timedelta(hours=1)
+
+
+def test_failed_job_with_cooldown_is_not_reacquired(apply_db):
+    """After a failure, the same job is not handed out again until cooldown passes."""
+    from applypilot.apply import launcher
+
+    _insert_job(apply_db, "https://jobs.example/cooldown", status="in_progress")
+    launcher.mark_result(
+        "https://jobs.example/cooldown", "failed", error="direct_not_submitted"
+    )
+
+    # No other jobs exist -> queue should be empty (cooldown blocks re-acquire).
+    assert launcher.acquire_job(min_score=7, worker_id=0) is None
+
+
+def test_mark_result_permanent_failure_clears_cooldown(apply_db):
+    """Permanent skips park hard at attempts=99 with no retry window."""
+    from applypilot.apply import launcher
+
+    _insert_job(apply_db, "https://jobs.example/permanent", status="in_progress")
+    launcher.mark_result(
+        "https://jobs.example/permanent",
+        "failed",
+        error="not_eligible_location",
+        permanent=True,
+    )
+
+    row = apply_db.execute(
+        "SELECT apply_attempts, apply_not_before FROM jobs "
+        "WHERE url = 'https://jobs.example/permanent'"
+    ).fetchone()
+    assert row["apply_attempts"] == 99
+    assert row["apply_not_before"] is None
+
+
+def test_acquire_job_prefers_direct_adapter_before_linkedin(apply_db, monkeypatch):
+    from applypilot.apply import launcher
+
+    _insert_job(
+        apply_db,
+        "https://jobs.example/linkedin",
+        title="LinkedIn Role",
+        application_url="https://www.linkedin.com/jobs/view/123",
+        site="linkedin",
+    )
+    _insert_job(
+        apply_db,
+        "https://jobs.example/greenhouse",
+        title="Greenhouse Role",
+        application_url="https://job-boards.greenhouse.io/acme/jobs/1",
+        site="greenhouse:acme",
+    )
+
+    job = launcher.acquire_job(min_score=7, worker_id=0)
+
+    assert job is not None
+    assert job["url"] == "https://jobs.example/greenhouse"
+
+
+def test_wellfound_row_with_embedded_ats_url_is_direct_capable(apply_db):
+    from applypilot.apply import launcher
+
+    job = {
+        "url": "https://wellfound.com/jobs/123",
+        "application_url": "https://wellfound.com/jobs/123",
+        "site": "Wellfound",
+        "full_description": (
+            "Apply through the employer ATS: "
+            "https://boards.greenhouse.io/acme/jobs/123"
+        ),
+    }
+
+    assert launcher.job_has_direct_adapter(job) is True
+    assert job["application_url"] == "https://boards.greenhouse.io/acme/jobs/123"
+
+
+def test_try_direct_apply_uses_recovered_wellfound_ats_url(apply_db, monkeypatch):
+    from applypilot.apply import launcher
+    from applypilot.apply.direct.driver import DriverResult
+
+    _insert_job(
+        apply_db,
+        "https://wellfound.com/jobs/123",
+        application_url="",
+        site="Wellfound",
+        full_description=(
+            "External application: https://boards.greenhouse.io/acme/jobs/123"
+        ),
+    )
+    job = {
+        "url": "https://wellfound.com/jobs/123",
+        "application_url": None,
+        "site": "Wellfound",
+        "full_description": (
+            "External application: https://boards.greenhouse.io/acme/jobs/123"
+        ),
+    }
+    seen: list[str] = []
+
+    fake_dr = DriverResult(
+        result="applied",
+        elapsed_ms=50,
+        escalate=False,
+        ats_family="greenhouse",
+        fingerprint="greenhouse:url",
+    )
+
+    class _ImmediateThread:
+        def __init__(self, target=None, args=(), kwargs=None, daemon=None):
+            self._target = target
+
+        def start(self) -> None:
+            if self._target:
+                self._target()
+
+        def join(self, timeout=None) -> None:
+            return None
+
+        def is_alive(self) -> bool:
+            return False
+
+    def fake_apply(job_arg, *args, **kwargs):
+        seen.append(job_arg["application_url"])
+        return fake_dr
+
+    monkeypatch.setattr(launcher.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr("applypilot.apply.direct.driver.apply_via_direct", fake_apply)
+    monkeypatch.setattr(
+        "applypilot.apply.direct.throttle.check_caps",
+        lambda *args, **kwargs: (True, None),
+    )
+
+    result = launcher._try_direct_apply(
+        job, port=9222, worker_id=0, dry_run=True, defer_claude_rescue=True,
+    )
+
+    assert result is not None
+    assert result[0] == "applied"
+    assert seen == ["https://boards.greenhouse.io/acme/jobs/123"]
+    row = apply_db.execute(
+        "SELECT application_url FROM jobs WHERE url = ?",
+        ("https://wellfound.com/jobs/123",),
+    ).fetchone()
+    assert row["application_url"] == "https://boards.greenhouse.io/acme/jobs/123"
+
+
+def test_try_direct_apply_defers_claude_when_other_direct_jobs_remain(
+    apply_db, monkeypatch,
+):
+    from applypilot.apply.direct.driver import DriverResult
+    from applypilot.apply import launcher
+
+    _insert_job(
+        apply_db,
+        "https://jobs.example/gh-a",
+        application_url="https://job-boards.greenhouse.io/a/jobs/1",
+    )
+    _insert_job(
+        apply_db,
+        "https://jobs.example/gh-b",
+        application_url="https://job-boards.greenhouse.io/b/jobs/2",
+    )
+
+    job = {
+        "url": "https://jobs.example/gh-a",
+        "application_url": "https://job-boards.greenhouse.io/a/jobs/1",
+    }
+
+    fake_dr = DriverResult(
+        result="failed:direct_partial_form",
+        elapsed_ms=50,
+        escalate=True,
+        escalate_reason="partial_form",
+        ats_family="greenhouse",
+        fingerprint="greenhouse:url",
+    )
+
+    class _ImmediateThread:
+        def __init__(self, target=None, args=(), kwargs=None, daemon=None):
+            self._target = target
+
+        def start(self) -> None:
+            if self._target:
+                self._target()
+
+        def join(self, timeout=None) -> None:
+            return None
+
+        def is_alive(self) -> bool:
+            return False
+
+    monkeypatch.setattr(launcher.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(
+        "applypilot.apply.direct.driver.apply_via_direct",
+        lambda *args, **kwargs: fake_dr,
+    )
+    monkeypatch.setattr(
+        "applypilot.apply.direct.throttle.check_caps",
+        lambda *args, **kwargs: (True, None),
+    )
+    monkeypatch.setattr(
+        "applypilot.database.record_apply_outcome",
+        lambda *args, **kwargs: None,
+    )
+
+    result = launcher._try_direct_apply(
+        job, port=9222, worker_id=0, dry_run=True, defer_claude_rescue=True,
+    )
+
+    assert result is not None
+    assert result[0].startswith("deferred:claude_rescue")
+    row = apply_db.execute(
+        "SELECT apply_error FROM jobs WHERE url = ?",
+        (job["url"],),
+    ).fetchone()
+    assert row["apply_error"] is not None
+    assert "pending_claude_rescue" in row["apply_error"]
+
+
+def test_worker_loop_continues_after_each_failure(apply_db, monkeypatch):
+    """One failed job must not stop the worker from processing the rest of the queue."""
+    from applypilot.apply import launcher
+
+    _patch_apply_engine_claude(monkeypatch)
+    for i in range(3):
+        _insert_job(apply_db, f"https://jobs.example/job-{i}")
+
+    outcomes = iter(
+        [
+            ("failed:mock_failure", 1, None),
+            ("applied", 2, None),
+            ("failed:other_failure", 3, None),
+        ]
+    )
+
+    def fake_run_pipeline(*args, **kwargs):
+        return next(outcomes)
+
+    monkeypatch.setattr(launcher, "launch_chrome", lambda *args, **kwargs: object())
+    monkeypatch.setattr(launcher, "cleanup_worker", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        launcher, "_run_job_with_optional_fallback", fake_run_pipeline
+    )
+    monkeypatch.setattr(launcher, "count_acquirable_jobs", lambda **kwargs: 0)
+
+    applied, failed = launcher.worker_loop(worker_id=0, limit=3, min_score=7)
+
+    assert (applied, failed) == (1, 2)
+    with pytest.raises(StopIteration):
+        next(outcomes)
+
+
+def test_should_defer_claude_rescue_false_for_pending_rescue_jobs(apply_db):
+    from applypilot.apply import launcher
+
+    _insert_job(
+        apply_db,
+        "https://jobs.example/gh-peer",
+        application_url="https://job-boards.greenhouse.io/acme/jobs/99",
+    )
+    rescue_job = {
+        "url": "https://jobs.example/needs-claude",
+        "application_url": "https://jobs.example/needs-claude/apply",
+        "apply_error": "pending_claude_rescue:partial_form",
+    }
+    assert launcher._should_defer_claude_rescue(rescue_job, min_score=7) is False
+
+
+def test_should_defer_claude_rescue_false_when_no_direct_adapter(apply_db):
+    from applypilot.apply import launcher
+
+    _insert_job(
+        apply_db,
+        "https://jobs.example/gh-peer",
+        application_url="https://job-boards.greenhouse.io/acme/jobs/99",
+    )
+    no_adapter = {
+        "url": "https://jobs.example/custom-ats",
+        "application_url": "https://careers.example.com/role/1",
+    }
+    assert launcher.job_has_direct_adapter(no_adapter) is False
+    assert launcher._should_defer_claude_rescue(no_adapter, min_score=7) is False
+
+
+def test_park_job_for_retry_preserves_pending_claude_rescue_marker(apply_db):
+    from applypilot.apply import launcher
+
+    url = "https://jobs.example/rescue-quota"
+    _insert_job(apply_db, url, status="in_progress")
+    apply_db.execute(
+        """
+        UPDATE jobs
+        SET apply_status = 'failed',
+            apply_error = 'pending_claude_rescue:escalated'
+        WHERE url = ?
+        """,
+        (url,),
+    )
+    apply_db.commit()
+    not_before = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    launcher._park_job_for_retry(
+        url,
+        not_before=not_before,
+        error=f"claude_quota_exhausted retry_after={not_before}",
+    )
+    row = apply_db.execute(
+        "SELECT apply_error, apply_not_before FROM jobs WHERE url = ?",
+        (url,),
+    ).fetchone()
+    assert row["apply_error"].startswith("pending_claude_rescue:")
+    assert "quota_retry_after=" in row["apply_error"]
+    assert row["apply_not_before"] == not_before
+
+
+def test_pending_claude_rescue_runs_claude_when_other_direct_jobs_exist(
+    apply_db, monkeypatch,
+):
+    """Quota-drained rescue jobs must not be deferred again while direct peers exist."""
+    from applypilot.apply import launcher
+
+    monkeypatch.setattr(
+        "applypilot.apply.apply_settings.apply_engine",
+        lambda **_: "direct",
+    )
+    _insert_job(
+        apply_db,
+        "https://jobs.example/gh-peer",
+        application_url="https://job-boards.greenhouse.io/acme/jobs/99",
+    )
+    rescue = {
+        "url": "https://jobs.example/custom",
+        "title": "Custom ATS",
+        "application_url": "https://careers.custom.example/apply/1",
+        "apply_error": "pending_claude_rescue:partial_form",
+    }
+    claude_calls: list[str] = []
+
+    def fake_run_job(job, **kwargs):
+        claude_calls.append(job["url"])
+        return "applied", 10, None
+
+    monkeypatch.setattr(launcher, "run_job", fake_run_job)
+    monkeypatch.setattr(
+        "applypilot.apply.direct.throttle.check_caps",
+        lambda *args, **kwargs: (True, None),
+    )
+
+    result, _, _ = launcher._run_job_with_optional_fallback(
+        rescue,
+        port=9222,
+        worker_id=0,
+        primary_model="haiku",
+        dry_run=True,
+        pace_seconds=0.0,
+        confirm_submit=False,
+        min_score=7,
+    )
+
+    assert result == "applied"
+    assert claude_calls == [rescue["url"]]
+
+
+def test_worker_retries_pending_claude_rescue_after_quota_window(apply_db, monkeypatch):
+    from applypilot.apply import launcher
+
+    _patch_apply_engine_claude(monkeypatch)
+    url = "https://jobs.example/rescue-after-quota"
+    _insert_job(
+        apply_db,
+        url,
+        application_url="https://careers.custom.example/role/2",
+    )
+    apply_db.execute(
+        """
+        UPDATE jobs
+        SET apply_status = 'failed',
+            apply_error = 'pending_claude_rescue:escalated quota_retry_after=2099-01-01T00:00:00+00:00',
+            apply_not_before = ?
+        WHERE url = ?
+        """,
+        (
+            (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(),
+            url,
+        ),
+    )
+    apply_db.commit()
+
+    calls: list[str] = []
+
+    def fake_run_job(job, **kwargs):
+        calls.append("run")
+        return "applied", 1, None
+
+    monkeypatch.setattr(launcher, "launch_chrome", lambda *args, **kwargs: object())
+    monkeypatch.setattr(launcher, "cleanup_worker", lambda *args, **kwargs: None)
+    monkeypatch.setattr(launcher, "run_job", fake_run_job)
+    monkeypatch.setattr(launcher, "POLL_INTERVAL", 0.01)
+
+    applied, failed = launcher.worker_loop(worker_id=0, limit=1, min_score=7)
+
+    assert (applied, failed) == (1, 0)
+    assert calls == ["run"]

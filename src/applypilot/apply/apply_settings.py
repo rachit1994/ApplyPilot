@@ -44,18 +44,32 @@ def _env_str(name: str, default: str) -> str:
 def apply_engine(cli_override: str | None = None) -> Literal["claude", "direct"]:
     """Apply execution engine.
 
-    'claude' (default) — the existing Claude Code browser agent (~$0.15/apply).
-    'direct'           — deterministic Playwright Direct Apply (~$0 Claude/apply)
-                         for ATS families with an adapter; falls back to the
-                         Claude path as the rescue tier for anything else.
+    'direct' (default) — deterministic Playwright Direct Apply (~$0 Claude/apply)
+                         for Greenhouse/Lever/Ashby; optional Claude rescue tier.
+    'claude'           — Claude Code browser agent (~$0.15/apply) for all jobs.
     """
-    raw = (cli_override or _env_str("APPLYPILOT_APPLY_ENGINE", "claude")).strip().lower()
+    default = str(config.DEFAULTS.get("apply_engine", "direct")).strip().lower()
+    if default not in ("direct", "claude"):
+        default = "direct"
+    raw = (cli_override or _env_str("APPLYPILOT_APPLY_ENGINE", default)).strip().lower()
     return "direct" if raw == "direct" else "claude"
 
 
 def direct_gemini_enabled() -> bool:
     """Allow the Resolver Tier-2 (one cheap Gemini call for novel required fields)."""
     return _env_bool("APPLYPILOT_DIRECT_GEMINI", True)
+
+
+def email_verification_enabled() -> bool:
+    """Read employer verification codes from Gmail during Direct Apply."""
+    return _env_bool("APPLYPILOT_DIRECT_EMAIL_VERIFY", True)
+
+
+def captcha_solving_enabled() -> bool:
+    """Solve visible reCAPTCHA v2 via CapSolver when CAPSOLVER_API_KEY is set."""
+    if not _env_bool("APPLYPILOT_DIRECT_CAPTCHA", True):
+        return False
+    return bool(os.environ.get("CAPSOLVER_API_KEY", "").strip())
 
 
 def direct_escalate_to_claude() -> bool:
@@ -104,6 +118,23 @@ def apply_model_default(cli_override: str | None = None) -> str:
         "APPLYPILOT_APPLY_MODEL",
         str(config.DEFAULTS.get("apply_model_default", "haiku")),
     )
+
+
+def apply_retry_cooldown_hours() -> float:
+    """Hours a failed job is parked (apply_not_before) before it can be re-acquired.
+
+    Keeps a continuous/overnight run from re-applying to the same jobs in a tight
+    loop: each non-permanent failure waits out the cooldown before the next try.
+    """
+    try:
+        return float(
+            _env_str(
+                "APPLYPILOT_APPLY_RETRY_COOLDOWN_HOURS",
+                str(config.DEFAULTS.get("apply_retry_cooldown_hours", 18)),
+            )
+        )
+    except ValueError:
+        return float(config.DEFAULTS.get("apply_retry_cooldown_hours", 18))
 
 
 def apply_fallback_model() -> str:

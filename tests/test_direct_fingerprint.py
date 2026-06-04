@@ -1,6 +1,7 @@
 """Tests for ATS family / provider fingerprint detection."""
 
 from applypilot.apply.direct import fingerprint as fp
+from applypilot.apply.direct.adapters import get_adapter
 
 
 def test_family_from_known_hosts():
@@ -9,6 +10,10 @@ def test_family_from_known_hosts():
     assert fp.ats_family("https://jobs.lever.co/acme/uuid") == "lever"
     assert fp.ats_family("https://jobs.ashbyhq.com/acme/uuid") == "ashby"
     assert fp.ats_family("https://acme.wd5.myworkdayjobs.com/en-US/careers") == "workday"
+    assert (
+        fp.ats_family("https://www.workatastartup.com/application?signup_job_id=123")
+        == "workatastartup"
+    )
     assert fp.ats_family("https://careers.icims.com/jobs/1") == "icims"
 
 
@@ -33,14 +38,72 @@ def test_family_from_query_param_on_custom_domain():
     assert fp.ats_family("https://jobs.example.com/x?lever-source=foo") == "lever"
 
 
+def test_sniff_family_from_embedded_greenhouse_iframe():
+    # Custom career domain whose URL is 'unknown' but whose page embeds the
+    # hosted Greenhouse form -> detect greenhouse from the iframe src.
+    urls = ["https://boards.greenhouse.io/embed/job_app?token=7862086"]
+    assert fp.sniff_ats_family(html="<html></html>", embedded_urls=urls) == "greenhouse"
+
+
+def test_sniff_family_from_greenhouse_named_script():
+    # dropbox.jobs loads a custom-hosted but greenhouse-named apply script; the
+    # filename alone is a definitive tell even though the host isn't greenhouse.
+    urls = ["https://www.dropbox.jobs/scripts/forms/greenhouseApplyForm.js?v=abc"]
+    assert fp.sniff_ats_family(html="", embedded_urls=urls) == "greenhouse"
+
+
+def test_sniff_family_from_content_markers():
+    html = '<div id="grnhse_app"></div><footer>Powered by Greenhouse</footer>'
+    assert fp.sniff_ats_family(html=html, embedded_urls=[]) == "greenhouse"
+    assert fp.sniff_ats_family(html="application--form", embedded_urls=[]) == "greenhouse"
+
+
+def test_sniff_family_unknown_without_markers():
+    html = "<html><body>Apply on our careers site</body></html>"
+    assert fp.sniff_ats_family(html=html, embedded_urls=[]) == "unknown"
+    assert fp.sniff_ats_family(html=None, embedded_urls=[]) == "unknown"
+
+
+def test_sniff_family_embedded_url_wins_over_unknown_host():
+    # A page on a non-ATS host that embeds a Lever widget reads as lever.
+    urls = ["https://jobs.lever.co/acme/uuid", "https://cdn.example.com/app.js"]
+    assert fp.sniff_ats_family(html="", embedded_urls=urls) == "lever"
+
+
+def test_greenhouse_form_url_prefers_job_app_iframe():
+    urls = [
+        "https://boards.greenhouse.io/embed/job_board/js?for=dropbox",
+        "https://boards.greenhouse.io/embed/job_app?token=7862086",
+    ]
+    assert (
+        fp.greenhouse_form_url(urls)
+        == "https://boards.greenhouse.io/embed/job_app?token=7862086"
+    )
+
+
+def test_greenhouse_form_url_from_token_fallback():
+    # No hosted job_app iframe, but a gh_jid token on a custom-domain embed.
+    urls = ["https://stripe.com/jobs/search?gh_jid=7436194"]
+    assert (
+        fp.greenhouse_form_url(urls)
+        == "https://boards.greenhouse.io/embed/job_app?token=7436194"
+    )
+
+
+def test_greenhouse_form_url_none_when_no_token():
+    assert fp.greenhouse_form_url(["https://example.com/app.js"]) is None
+
+
 def test_has_adapter():
     assert fp.has_adapter("greenhouse")
     assert fp.has_adapter("lever")
     assert fp.has_adapter("ashby")
     assert fp.has_adapter("workday")
+    assert fp.has_adapter("workatastartup")
     assert not fp.has_adapter("icims")
     assert not fp.has_adapter("unknown")
     assert not fp.has_adapter(None)
+    assert get_adapter("workatastartup") is not None
 
 
 def test_apex_domain():

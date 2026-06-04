@@ -5,8 +5,10 @@ export function statusbarClass(label: string): string {
     s.includes("fail") ||
     s.includes("manual") ||
     s.includes("error") ||
+    s.includes("reject") ||
     s.includes("warn") ||
-    s.includes("need")
+    s.includes("need") ||
+    s.includes("claude")
   ) {
     return "statusbar statusbar--warn";
   }

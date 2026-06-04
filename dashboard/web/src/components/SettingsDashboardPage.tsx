@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { PageCanvas } from "./layout/PageCanvas";
+import { useAgentSettings, type AgentSaveStatus } from "../hooks/useAgentSettings";
 
 type SettingsSection =
   | "agent"
@@ -51,27 +52,143 @@ export function SettingsDashboardPage() {
 }
 
 function AgentSettings() {
+  const { settings, status, error, update } = useAgentSettings();
+
+  if (!settings) {
+    return (
+      <div>
+        <div className="set-section-title">Agent behavior</div>
+        <p className="panel__sub">
+          {status === "loading" ? "Loading settings…" : error ?? "Could not load settings."}
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div>
-      <div className="set-section-title">Agent behavior</div>
+      <div className="set-section-header">
+        <div className="set-section-title">Agent behavior</div>
+        <SaveIndicator status={status} error={error} />
+      </div>
       <div className="set-group">
         <SetRow
           title="Auto-apply"
           sub="Submit applications without asking when score is high enough"
-          right={<div className="toggle toggle--on" />}
+          right={
+            <SettingsToggle
+              on={settings.auto_apply_enabled}
+              onChange={(on) => update({ auto_apply_enabled: on })}
+              label="Auto-apply"
+            />
+          }
         />
-        <SetRow title="Minimum score to auto-apply" sub="Below this, the job goes to your manual queue" right={<div className="select-val">7.0</div>} />
-        <SetRow title="Tailor resume per job" sub="Rewrites your resume to match each role" right={<div className="toggle toggle--on" />} />
-        <SetRow title="Write cover letter" sub="One-paragraph cover for every application" right={<div className="toggle toggle--on" />} />
-        <SetRow title="Cross-source dedup" sub="Same role on multiple boards counts once" right={<div className="toggle toggle--on" />} />
+        <SetRow
+          title="Minimum score to auto-apply"
+          sub="Below this, the job goes to your manual queue"
+          right={
+            <label className="select-val select-val--input">
+              <span className="visually-hidden">Minimum score to auto-apply</span>
+              <input
+                type="number"
+                className="select-val__field"
+                min={0}
+                max={10}
+                step={0.5}
+                value={settings.apply_min_score}
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  if (raw === "") return;
+                  const n = Number(raw);
+                  if (Number.isNaN(n)) return;
+                  update({ apply_min_score: Math.max(0, Math.min(10, n)) });
+                }}
+              />
+            </label>
+          }
+        />
+        <SetRow
+          title="Tailor resume per job"
+          sub="Rewrites your resume to match each role"
+          right={
+            <SettingsToggle
+              on={settings.tailor_per_job}
+              onChange={(on) => update({ tailor_per_job: on })}
+              label="Tailor resume per job"
+            />
+          }
+        />
+        <SetRow
+          title="Write cover letter"
+          sub="One-paragraph cover for every application"
+          right={
+            <SettingsToggle
+              on={settings.cover_letter}
+              onChange={(on) => update({ cover_letter: on })}
+              label="Write cover letter"
+            />
+          }
+        />
+        <SetRow
+          title="Cross-source dedup"
+          sub="Same role on multiple boards counts once"
+          right={
+            <SettingsToggle
+              on={settings.cross_source_dedup}
+              onChange={(on) => update({ cross_source_dedup: on })}
+              label="Cross-source dedup"
+            />
+          }
+        />
       </div>
 
       <p className="panel__sub" style={{ marginTop: 24 }}>
-        Live settings are edited in <code>~/.applypilot/profile.json</code>,{" "}
-        <code>searches.yaml</code>, and <code>sites.yaml</code>. This screen mirrors the finalized layout;
-        wire-up to read/write those files is coming next.
+        Changes save automatically to{" "}
+        <code>~/.applypilot/dashboard_settings.json</code> and update the apply queue
+        minimum score for new runs. Profile, search, and site lists still live in{" "}
+        <code>profile.json</code>, <code>searches.yaml</code>, and <code>sites.yaml</code>.
       </p>
     </div>
+  );
+}
+
+function SaveIndicator({
+  status,
+  error,
+}: {
+  status: AgentSaveStatus;
+  error: string | null;
+}) {
+  if (status === "saving") {
+    return <span className="set-save-status set-save-status--saving">Saving…</span>;
+  }
+  if (status === "saved") {
+    return <span className="set-save-status set-save-status--saved">Saved</span>;
+  }
+  if (status === "error" && error) {
+    return <span className="set-save-status set-save-status--error">{error}</span>;
+  }
+  return null;
+}
+
+function SettingsToggle({
+  on,
+  onChange,
+  label,
+}: {
+  on: boolean;
+  onChange: (on: boolean) => void;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      aria-label={label}
+      className={on ? "toggle toggle--on" : "toggle"}
+      onClick={() => onChange(!on)}
+    />
   );
 }
 

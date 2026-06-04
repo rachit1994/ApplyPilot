@@ -1,0 +1,693 @@
+{
+  "role": {
+    "key": "tech-lead",
+    "title": "Tech Lead",
+    "aliases": [
+      "tech lead",
+      "technical lead",
+      "engineering lead",
+      "lead engineer",
+      "team lead engineer"
+    ],
+    "keywords": [
+      "tech lead",
+      "technical lead",
+      "leadership",
+      "mentoring",
+      "architecture",
+      "delivery",
+      "code review",
+      "roadmap"
+    ],
+    "summary": "Technical lead with 10+ years leading delivery teams, mentoring engineers, driving architecture decisions, and shipping React, Node.js, Python, and AWS platforms.",
+    "skills": [
+      [
+        "Technical Leadership",
+        "Team delivery, mentoring, code review, technical planning, cross-functional execution"
+      ],
+      [
+        "Engineering",
+        "React, Node.js, Python, TypeScript, REST, GraphQL, distributed systems"
+      ],
+      [
+        "Platform Quality",
+        "Technical debt reduction, performance, reliability, CI/CD"
+      ],
+      [
+        "AI Delivery",
+        "RAG, LangChain, LangGraph, production monitoring"
+      ]
+    ]
+  },
+  "benchmark_job": {
+    "source": "jobicy_research_only",
+    "url": "https://jobicy.com/jobs/145053-team-lead-engineering",
+    "title": "Team Lead, Engineering",
+    "company": "Deel",
+    "salary": "",
+    "salary_usd_max": 80000,
+    "location": "Spain",
+    "description": "Who we are is what we do.\nDeel is the all-in-one payroll and HR platform for global teams. Our vision is to unlock global opportunity for every person, team, and business. Built for the way the world works today, Deel combines HRIS, payroll, compliance, benefits, performance, and equipment management into one seamless platform. With AI-powered tools and a fully owned payroll infrastructure, Deel supports every worker type in 150+ countries—helping businesses scale smarter, faster, and more compliantly.\nAmong the largest globally distributed companies in the world, our team of 7,000 spans more than 100 countries, speaks 74 languages, and brings a connected and dynamic culture that drives continuous learning and innovation for our customers.\nWhy should you be part of our success story?\nAs the fastest-growing Software as a Service (SaaS) company in history, Deel is transforming how global talent connects with world-class companies – breaking down borders that have traditionally limited both hiring and career opportunities. We're not just building software; we're creating the infrastructure for the future of work, enabling a more diverse and inclusive global economy. In 2024 alone, we paid $11.2 billion to workers in nearly 100 currencies and provided healthcare and benefits to workers in 109 countries—ensuring people get paid and protected, no matter where they are.\nOur momentum is reflected in our achievements and customer satisfaction: CNBC Disruptor 50, Forbes Cloud 100, Deloitte Fast 500, and repeated recognition on Y Combinator’s top companies list – all while maintaining a 4.83 average rating from 15,000 reviews across G2, Trustpilot, Captera, Apple and Google.\nYour experience at Deel will be a career accelerator. At the forefront of the global work revolution, you'll tackle complex challenges that impact millions of people's working lives. With our momentum—backed by a $17.3 billion valuation and $1 B in Annual Recurring Revenue (ARR) in just over five years—you'll drive meaningful impact while building expertise that makes you a sought-after leader in the transformation of global work.\nThe Impact You’ll Have:\nAs a Team Lead, Engineering at Deel, you will lead a cross-functional team of 6-10 professionals, with a balance of leadership (50%) and hands-on technical work (50%). You will drive technical excellence, mentor your team, and deliver scalable, innovative solutions in a fast-paced, startup-like environment. By fostering collaboration and adopting best practices, you will ensure the team meets organizational goals and delivers exceptional user experiences. user experiences.\nGet Ready To:\nLead with Technical and Team Excellence:\nServe as a technical leader, combining hands-on development with strategic oversight.\nDesign, code, and deliver high-quality, scalable applications with Node.js\nProvide mentorship and technical guidance, fostering growth and skill development within the team.\nEnsure best practices in development, testing, and deployment, driving innovation and excellence.\nConduct thorough code reviews to maintain high coding standards and technical quality.\nElevate Team Effectiveness:\nCollaborate closely with product and design teams to create extraordinary user experiences.\nDrive technical planning and execution, balancing short-term objectives with long-term system health.\nPromote Agile methodologies to enhance team productivity and effectiveness.\nFacilitate knowledge sharing, cross-team collaboration, and continuous improvement.\nStrategize and Execute for Impact:\nDefine and implement technical strategies in alignment with organizational goals.\nLead innovation through rapid prototyping, iterative development, and problem-solving.\nIdentify technical risks and implement mitigation strategies to ensure successful delivery.\nRepresent your teams in cross-functional discussions, aligning technical requirements with business objectives.\nBuild Teams and Foster Culture:\nPlay an active role in hiring and scaling the teams, ensuring alignment with company values.\nManage performance cycles, provide structured feedback, and support the professional growth of team members.\nCultivate a culture of collaboration, inclusion, continuous learning, and engineering excellence.\nChampion diversity and foster an environment where all team members thrive.\nLead Cross-Functional Collaboration:\nPartner with product, design, and other engineering teams to ensure seamless alignment on goals.\nCoordinate efforts across teams to drive complex projects and ensure shared objectives are met.\nCommunicate technical challenges, opportunities, and solutions effectively to stakeholders.\nPush back on product decisions when necessary, presenting well-reasoned arguments to prioritize technical health, scalability, and long-term success.\nResolve complex, multi-team technical challenges by fostering collaboration across disciplines.\nMust-have (non-negotiable technical bar)\nStrong software engineering fundamentals:\nSolid understanding of object-oriented programming (OOP) principles\nExperience designing maintainable, scalable systems\nAbility to write clean, structured, and testable code\nStrong SQL skills:\nAbility to write complex queries from scratch\nDeep understanding of data structures and query performance/impact\nExperience working with APIs and distributed systems:\nDebugging integrations and system interactions\nUnderstanding data flow across services\nStrong problem-solving ability:\nRoot cause analysis across code, data, and systems\nExperience working in\nproduction environments\n:\nHandling incidents, debugging issues, and managing escalations\nYou’re the Leader We’re Looking For if You:\nThrive in environments requiring both technical expertise and leadership.\nCombine strategic vision with attention to detail in decision-making.\nDemonstrate a commitment to collaboration, continuous learning, and team success.\nDrive innovation while balancing immediate goals with long-term technical health.\nBonus Points:\nExperience navigating cross-browser and cross-platform development challenges.\nKnowledge with Nodejs, JS\nContributions to open-source projects or technical communities.\nKnowledge of additional tech stacks or expertise across multiple technical domains.\nTotal Rewards\nOur workforce deserves fair and competitive pay that meets them where they are. With scalable benefits, rewards, and perks, our total rewards programs reflect our commitment to inclusivity and access for all.\nSome things you’ll enjoy\nStock grant opportunities dependent on your role, employment status and location\nAdditional perks and benefits based on your employment status and country\nThe flexibility of remote work, including optional WeWork access\nAt Deel, we’re an equal-opportunity employer that values diversity and positively encourage applications from suitably qualified and eligible candidates regardless of race, religion, sex, national origin, gender, sexual orientation, age, marital status, veteran status, disability status, pregnancy or maternity or other applicable legally protected characteristics.\nUnless otherwise agreed, we will communicate with job applicants using Deel-specific emails, which include @\ndeel.com\nand other acquired company emails like @\npayspace.com\nand @\npaygroup.com\n. You can view the most up-to-date job listings at Deel by visiting\nour careers page\n.\nDeel is an equal-opportunity employer and is committed to cultivating a diverse and inclusive workplace that reflects different abilities, backgrounds, beliefs, experiences, identities and perspectives.\nDeel will provide accommodations on request throughout the recruitment, selection and assessment process for applicants with disabilities. If you require accommodations, please inform our Talent Acquisition Team\nvia this link\nand a team member will be in touch to ensure your equal participation. If you have difficulty accessing the form, please email at recruiting@deel.com.\nAs part of our hiring process, we primarily rely on interviews and role-related assessments. In limited cases, we may also consider informal background information relevant to the role, in line with our privacy and fairness obligations.\nThis application process does utilise Automated Employment Decision Tools (AEDT) and AI systems to assist in evaluating candidates based on experience level, technical skills and qualifications. As a fully remote company, we also utilise AI-powered deepfake and fraud detection technologies to verify the authenticity of candidate identities and interactions during assessments and interviews. This processing is conducted in compliance with applicable Data Protection, AI Governance and Labour Laws. We ensure human oversight is maintained in all final hiring decisions. Your personal data is not used to train AI models. For more information on how we process your personal data, please see our\nPrivacy Policy\n.\nFor NYC Residents:\nIn accordance with NYC Local Law 144, an independent bias audit has been conducted on AEDT; results are available at\nAshby\n,\nCovey\n.",
+    "eligibility_reason": "research_only: high-paying market JD, not eligible under current location/sponsorship filter"
+  },
+  "jd_analysis": {
+    "hard_requirements": [
+      "Your experience at Deel will be a career accelerator.",
+      "With our momentum—backed by a $17.3 billion valuation and $1 B in Annual Recurring Revenue (ARR) in just over five years—you'll drive meaningful impact while building expertise that makes you a sought-after leader in the transformation of global work.",
+      "By fostering collaboration and adopting best practices, you will ensure the team meets organizational goals and delivers exceptional user experiences.",
+      "Collaborate closely with product and design teams to create extraordinary user experiences.",
+      "Must-have (non-negotiable technical bar)",
+      "Strong software engineering fundamentals:",
+      "Experience designing maintainable, scalable systems",
+      "Experience working with APIs and distributed systems:",
+      "Strong problem-solving ability:",
+      "Experience working in",
+      "Experience navigating cross-browser and cross-platform development challenges.",
+      "Deel is an equal-opportunity employer and is committed to cultivating a diverse and inclusive workplace that reflects different abilities, backgrounds, beliefs, experiences, identities and perspectives."
+    ],
+    "nice_to_haves": [],
+    "keywords": [
+      "technical lead",
+      "leadership",
+      "delivery",
+      "code review"
+    ],
+    "missing_role_keywords": [
+      "tech lead",
+      "mentoring",
+      "architecture",
+      "roadmap"
+    ],
+    "domain_problem_signals": [
+      "scale",
+      "performance",
+      "customer",
+      "platform",
+      "data",
+      "ai",
+      "integration",
+      "product",
+      "team"
+    ]
+  },
+  "company_problem_hypothesis": {
+    "benchmark_company_problem": "Deel is hiring a Team Lead, Engineering to solve problems around scale, performance, customer, platform, data, ai.",
+    "candidate_company_problem_map": [
+      {
+        "company": "Happening Today",
+        "domain": "event discovery and AI platform",
+        "problems": [
+          "retrieval quality and latency for event discovery",
+          "agentic workflow reliability",
+          "streaming inference, token budgets, and hallucination controls"
+        ],
+        "evidence": [
+          "RAG pipeline for event discovery with pgvector and semantic reranking",
+          "LangGraph planner/tool/critic orchestration",
+          "LLMOps evals, latency/cost dashboards, and hallucination alerts"
+        ]
+      },
+      {
+        "company": "MIRA",
+        "domain": "consumer-scale generative AI",
+        "problems": [
+          "serving GenAI to large user bases",
+          "personalization and fine-tuning quality",
+          "inference cost control and regression evaluation"
+        ],
+        "evidence": [
+          "GenAI features for 50M+ users",
+          "LoRA/QLoRA fine-tuning pipeline",
+          "35% cost reduction through compression, caching, and model routing"
+        ]
+      },
+      {
+        "company": "Delta Exchange",
+        "domain": "real-time fintech and trading",
+        "problems": [
+          "low-latency trading workflows",
+          "real-time UI reliability",
+          "technical debt and conversion improvements"
+        ],
+        "evidence": [
+          "real-time derivatives platform serving 5M+ users",
+          "60% system performance improvement",
+          "React component library and 25% conversion lift"
+        ]
+      },
+      {
+        "company": "BetterPlace",
+        "domain": "enterprise workforce SaaS",
+        "problems": [
+          "large-scale data ingestion",
+          "enterprise workflow scalability",
+          "frontend performance and microservice migration"
+        ],
+        "evidence": [
+          "3x ingestion throughput improvement",
+          "50% UI render time reduction",
+          "monolith-to-microservices migration"
+        ]
+      }
+    ]
+  },
+  "fact_support_map": [
+    {
+      "claim": "Implementing a streaming API layer (Server-Sent Events + Node.js) for high-volume product responses — Handling backpressure, request budget management, and graceful fallback on payload limit overflow.",
+      "support_ratio": 0.71,
+      "supporting_terms": [
+        "backpressure",
+        "budget",
+        "events",
+        "fallback",
+        "graceful",
+        "handling",
+        "high",
+        "implementing",
+        "layer",
+        "management",
+        "node.js",
+        "overflow."
+      ]
+    },
+    {
+      "claim": "Owning the production platform operations stack: structured configuration versioning in Git, automated quality checks (automated regression checks + release regression suite), latency/cost dashboards in CloudWatch, and quality regression rate alerting.",
+      "support_ratio": 0.95,
+      "supporting_terms": [
+        "alerting.",
+        "automated",
+        "cloudwatch",
+        "cost",
+        "dashboards",
+        "latency",
+        "owning",
+        "platform",
+        "production",
+        "quality",
+        "rate",
+        "regression"
+      ]
+    },
+    {
+      "claim": "Integrated regression gates into CI/CD to catch deployment regressions before release.",
+      "support_ratio": 0.78,
+      "supporting_terms": [
+        "before",
+        "catch",
+        "deployment",
+        "gates",
+        "integrated",
+        "into",
+        "regression"
+      ]
+    },
+    {
+      "claim": "Built and scaled backend services powering high-scale product features for 50M+ users — Including a production search and content system over proprietary content using search indexing, service orchestration, and managed APIs for responses.",
+      "support_ratio": 0.96,
+      "supporting_terms": [
+        "50m+",
+        "apis",
+        "backend",
+        "built",
+        "content",
+        "features",
+        "high",
+        "including",
+        "indexing",
+        "orchestration",
+        "over",
+        "powering"
+      ]
+    },
+    {
+      "claim": "Refactored legacy service architecture to reduce inter-service latency, achieving a 60% system performance improvement measured end-to-end.",
+      "support_ratio": 1.08,
+      "supporting_terms": [
+        "achieving",
+        "architecture",
+        "end.",
+        "improvement",
+        "inter",
+        "latency",
+        "legacy",
+        "measured",
+        "performance",
+        "reduce",
+        "refactored",
+        "service"
+      ]
+    },
+    {
+      "claim": "Designed and built core trading engine features for a real-time derivatives platform serving 5M+ users — Order book rendering, WebSocket feed management, and margin calculation APIs.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "apis.",
+        "book",
+        "built",
+        "calculation",
+        "core",
+        "derivatives",
+        "designed",
+        "engine",
+        "features",
+        "feed",
+        "management",
+        "margin"
+      ]
+    },
+    {
+      "claim": "Built a React component library and shared state management layer, cutting UI feature development time significantly and boosting conversion by 25%.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "boosting",
+        "built",
+        "component",
+        "conversion",
+        "cutting",
+        "development",
+        "feature",
+        "layer",
+        "library",
+        "management",
+        "react",
+        "shared"
+      ]
+    },
+    {
+      "claim": "Led technical debt reduction initiative: migrated critical services from callback-heavy Node to async/await patterns, reducing bug rate by 40%.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "async",
+        "await",
+        "callback",
+        "critical",
+        "debt",
+        "from",
+        "heavy",
+        "initiative",
+        "migrated",
+        "node",
+        "patterns",
+        "rate"
+      ]
+    },
+    {
+      "claim": "Built scalable SaaS modules (workforce management, compliance workflows) using React, Python (Django/Flask), and Node.js.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "built",
+        "compliance",
+        "django",
+        "flask",
+        "management",
+        "modules",
+        "node.js.",
+        "python",
+        "react",
+        "saas",
+        "scalable",
+        "using"
+      ]
+    },
+    {
+      "claim": "Designed a batched data ingestion pipeline that increased system throughput by 3x, enabling the platform to onboard enterprise clients with large worker datasets.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "batched",
+        "clients",
+        "data",
+        "datasets.",
+        "designed",
+        "enabling",
+        "enterprise",
+        "increased",
+        "ingestion",
+        "large",
+        "onboard",
+        "pipeline"
+      ]
+    },
+    {
+      "claim": "Introduced frontend performance patterns (lazy loading, memoisation, pagination) that reduced UI render times by 50%.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "frontend",
+        "introduced",
+        "lazy",
+        "loading",
+        "memoisation",
+        "pagination",
+        "patterns",
+        "performance",
+        "reduced",
+        "render",
+        "that",
+        "times"
+      ]
+    },
+    {
+      "claim": "Migrated monolith features to independently deployable microservices, improving deployment frequency and reducing rollback risk.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "deployable",
+        "deployment",
+        "features",
+        "frequency",
+        "improving",
+        "independently",
+        "microservices",
+        "migrated",
+        "monolith",
+        "reducing",
+        "risk.",
+        "rollback"
+      ]
+    },
+    {
+      "claim": "Delivered full stack features across web applications in early-career roles.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "across",
+        "applications",
+        "career",
+        "delivered",
+        "early",
+        "features",
+        "full",
+        "roles.",
+        "stack"
+      ]
+    },
+    {
+      "claim": "Built REST APIs.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "apis.",
+        "built",
+        "rest"
+      ]
+    },
+    {
+      "claim": "Integrated third-party services, and shipped React/Angular frontend modules.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "angular",
+        "frontend",
+        "integrated",
+        "modules.",
+        "party",
+        "react",
+        "services",
+        "shipped",
+        "third"
+      ]
+    }
+  ],
+  "rewrite_notes": [
+    "benchmark: jobicy_research_only — Deel (Team Lead, Engineering)",
+    "deterministic rewrite: top-two employers tailored to benchmark JD; AI terms reframed or dropped"
+  ],
+  "audit": {
+    "score": 95,
+    "pass": true,
+    "keyword_coverage_score": 100,
+    "recruiter_rejection_risk_score": 5,
+    "evidence_support_score": 100,
+    "role_problem_fit_score": 95,
+    "critical_rejection_flags": [],
+    "benchmark_warnings": [],
+    "unsupported_claims": [],
+    "missing_experience_companies": [],
+    "missing_experience_title_lines": [],
+    "thin_experience_sections": [
+      {
+        "company": "Happening Today",
+        "required_bullets": 4,
+        "actual_bullets": 2
+      },
+      {
+        "company": "MIRA",
+        "required_bullets": 4,
+        "actual_bullets": 2
+      }
+    ],
+    "public_resume_quality_issues": [],
+    "tech_mismatches": [],
+    "rejection_risks": [],
+    "experience_role_lens_issues": [],
+    "improvement_instructions": [],
+    "fact_support_map": [
+      {
+        "claim": "Implementing a streaming API layer (Server-Sent Events + Node.js) for high-volume product responses — Handling backpressure, request budget management, and graceful fallback on payload limit overflow.",
+        "support_ratio": 0.71,
+        "supporting_terms": [
+          "backpressure",
+          "budget",
+          "events",
+          "fallback",
+          "graceful",
+          "handling",
+          "high",
+          "implementing",
+          "layer",
+          "management",
+          "node.js",
+          "overflow."
+        ]
+      },
+      {
+        "claim": "Owning the production platform operations stack: structured configuration versioning in Git, automated quality checks (automated regression checks + release regression suite), latency/cost dashboards in CloudWatch, and quality regression rate alerting.",
+        "support_ratio": 0.95,
+        "supporting_terms": [
+          "alerting.",
+          "automated",
+          "cloudwatch",
+          "cost",
+          "dashboards",
+          "latency",
+          "owning",
+          "platform",
+          "production",
+          "quality",
+          "rate",
+          "regression"
+        ]
+      },
+      {
+        "claim": "Integrated regression gates into CI/CD to catch deployment regressions before release.",
+        "support_ratio": 0.78,
+        "supporting_terms": [
+          "before",
+          "catch",
+          "deployment",
+          "gates",
+          "integrated",
+          "into",
+          "regression"
+        ]
+      },
+      {
+        "claim": "Built and scaled backend services powering high-scale product features for 50M+ users — Including a production search and content system over proprietary content using search indexing, service orchestration, and managed APIs for responses.",
+        "support_ratio": 0.96,
+        "supporting_terms": [
+          "50m+",
+          "apis",
+          "backend",
+          "built",
+          "content",
+          "features",
+          "high",
+          "including",
+          "indexing",
+          "orchestration",
+          "over",
+          "powering"
+        ]
+      },
+      {
+        "claim": "Refactored legacy service architecture to reduce inter-service latency, achieving a 60% system performance improvement measured end-to-end.",
+        "support_ratio": 1.08,
+        "supporting_terms": [
+          "achieving",
+          "architecture",
+          "end.",
+          "improvement",
+          "inter",
+          "latency",
+          "legacy",
+          "measured",
+          "performance",
+          "reduce",
+          "refactored",
+          "service"
+        ]
+      },
+      {
+        "claim": "Designed and built core trading engine features for a real-time derivatives platform serving 5M+ users — Order book rendering, WebSocket feed management, and margin calculation APIs.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "apis.",
+          "book",
+          "built",
+          "calculation",
+          "core",
+          "derivatives",
+          "designed",
+          "engine",
+          "features",
+          "feed",
+          "management",
+          "margin"
+        ]
+      },
+      {
+        "claim": "Built a React component library and shared state management layer, cutting UI feature development time significantly and boosting conversion by 25%.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "boosting",
+          "built",
+          "component",
+          "conversion",
+          "cutting",
+          "development",
+          "feature",
+          "layer",
+          "library",
+          "management",
+          "react",
+          "shared"
+        ]
+      },
+      {
+        "claim": "Led technical debt reduction initiative: migrated critical services from callback-heavy Node to async/await patterns, reducing bug rate by 40%.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "async",
+          "await",
+          "callback",
+          "critical",
+          "debt",
+          "from",
+          "heavy",
+          "initiative",
+          "migrated",
+          "node",
+          "patterns",
+          "rate"
+        ]
+      },
+      {
+        "claim": "Built scalable SaaS modules (workforce management, compliance workflows) using React, Python (Django/Flask), and Node.js.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "built",
+          "compliance",
+          "django",
+          "flask",
+          "management",
+          "modules",
+          "node.js.",
+          "python",
+          "react",
+          "saas",
+          "scalable",
+          "using"
+        ]
+      },
+      {
+        "claim": "Designed a batched data ingestion pipeline that increased system throughput by 3x, enabling the platform to onboard enterprise clients with large worker datasets.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "batched",
+          "clients",
+          "data",
+          "datasets.",
+          "designed",
+          "enabling",
+          "enterprise",
+          "increased",
+          "ingestion",
+          "large",
+          "onboard",
+          "pipeline"
+        ]
+      },
+      {
+        "claim": "Introduced frontend performance patterns (lazy loading, memoisation, pagination) that reduced UI render times by 50%.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "frontend",
+          "introduced",
+          "lazy",
+          "loading",
+          "memoisation",
+          "pagination",
+          "patterns",
+          "performance",
+          "reduced",
+          "render",
+          "that",
+          "times"
+        ]
+      },
+      {
+        "claim": "Migrated monolith features to independently deployable microservices, improving deployment frequency and reducing rollback risk.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "deployable",
+          "deployment",
+          "features",
+          "frequency",
+          "improving",
+          "independently",
+          "microservices",
+          "migrated",
+          "monolith",
+          "reducing",
+          "risk.",
+          "rollback"
+        ]
+      },
+      {
+        "claim": "Delivered full stack features across web applications in early-career roles.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "across",
+          "applications",
+          "career",
+          "delivered",
+          "early",
+          "features",
+          "full",
+          "roles.",
+          "stack"
+        ]
+      },
+      {
+        "claim": "Built REST APIs.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "apis.",
+          "built",
+          "rest"
+        ]
+      },
+      {
+        "claim": "Integrated third-party services, and shipped React/Angular frontend modules.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "angular",
+          "frontend",
+          "integrated",
+          "modules.",
+          "party",
+          "react",
+          "services",
+          "shipped",
+          "third"
+        ]
+      }
+    ],
+    "auditor": "deterministic"
+  }
+}

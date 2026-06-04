@@ -11,6 +11,11 @@ export function stagePendingCount(
   switch (stage) {
     case "discover":
       return null;
+    case "filter": {
+      const kept = p.pre_filter_kept ?? 0;
+      const rejected = p.pre_filter_rejected ?? 0;
+      return Math.max(0, (stats.total ?? 0) - kept - rejected);
+    }
     case "enrich":
       return p.pending_detail ?? null;
     case "score":

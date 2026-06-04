@@ -448,7 +448,9 @@ def search_jobs(
     log.info("Stored: %d new, %d already in DB", new, existing)
 
     db_total = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
-    pending = conn.execute("SELECT COUNT(*) FROM jobs WHERE detail_scraped_at IS NULL").fetchone()[0]
+    from applypilot.enrichment.pending import count_pending_detail
+
+    pending = count_pending_detail(conn)
     log.info("DB total: %d jobs, %d pending detail scrape", db_total, pending)
 
     return {"total": total, "new": new, "existing": existing}

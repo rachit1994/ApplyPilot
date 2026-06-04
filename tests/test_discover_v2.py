@@ -141,6 +141,35 @@ def test_smartextract_zero_job_agent_fallback(mock_agent, mock_one):
     mock_agent.assert_called_once()
 
 
+def test_smartextract_captcha_page_skips_llm(monkeypatch):
+    import applypilot.discovery.smartextract as sx
+
+    html = "<html><body>Please enable JS and disable any ad blocker captcha</body></html>"
+    monkeypatch.setattr(
+        sx,
+        "collect_page_intelligence",
+        lambda *args, **kwargs: {
+            "json_ld": [],
+            "api_responses": [],
+            "data_testids": [],
+            "card_candidates": [],
+            "full_html": html,
+            "page_title": "wellfound.com",
+        },
+    )
+
+    def fail_ask_llm(_prompt):
+        raise AssertionError("captcha pages should not call the LLM")
+
+    monkeypatch.setattr(sx, "ask_llm", fail_ask_llm)
+
+    result = sx._run_one_site("Wellfound", "https://wellfound.com/jobs")
+
+    assert result["status"] == "FAIL"
+    assert result["strategy"] == "blocked_or_empty"
+    assert result["total"] == 0
+
+
 @patch("applypilot.discovery.runner._run_source")
 def test_run_discover_respects_disabled_sources(mock_run):
     mock_run.return_value = {"status": "ok", "result": {}}
@@ -161,6 +190,194 @@ def test_run_discover_respects_disabled_sources(mock_run):
         stats = run_discover(workers=1)
     assert stats == {}
     mock_run.assert_not_called()
+
+
+@patch("applypilot.discovery.runner._record_source_stats")
+@patch("applypilot.discovery.runner.run_smart_extract")
+@patch("applypilot.discovery.runner.load_sites")
+def test_run_discover_wellfound_source_targets_only_wellfound(
+    mock_load_sites,
+    mock_smart_extract,
+    _mock_record_stats,
+):
+    from applypilot.discovery.discover_config import load_discover_config
+    from applypilot.discovery.runner import run_discover
+
+    mock_load_sites.return_value = [
+        {"name": "Wellfound", "url": "https://wellfound.com/role/l/software-engineer", "type": "static"},
+        {"name": "Startup.jobs", "url": "https://startup.jobs/?q={query_encoded}", "type": "search"},
+    ]
+    mock_smart_extract.return_value = {
+        "total_new": 0,
+        "total_existing": 0,
+        "passed": 0,
+        "total": 1,
+    }
+
+    def fake_config():
+        cfg = load_discover_config()
+        cfg["sources"] = {key: False for key in cfg["sources"]}
+        cfg["sources"]["wellfound"] = True
+        cfg["agent_discover"] = {"enabled": False, "max_pages": 1, "headless": True}
+        cfg["company_first"] = {"enabled": False}
+        return cfg
+
+    with patch("applypilot.discovery.runner.load_discover_config", fake_config):
+        stats = run_discover(workers=3)
+
+    assert stats["wellfound"]["status"] == "ok"
+    kwargs = mock_smart_extract.call_args.kwargs
+    assert kwargs["workers"] == 1
+    assert kwargs["agent_fallback_enabled"] is False
+    assert kwargs["sites"] == [
+        {"name": "Wellfound", "url": "https://wellfound.com/role/l/software-engineer", "type": "static"}
+    ]
+
+
+def test_wellfound_indexed_records_keep_only_direct_ats_links():
+    from applypilot.discovery.feeds.wellfound import jobs_from_indexed_records
+
+    jobs = jobs_from_indexed_records(
+        [
+            {
+                "title": "Senior Software Engineer at Acme | Wellfound",
+                "url": "https://wellfound.com/jobs/1-senior-software-engineer",
+                "snippet": (
+                    "Apply here: https://boards.greenhouse.io/acme/jobs/123 "
+                    "Remote role."
+                ),
+            },
+            {
+                "title": "Frontend Engineer at Beta | Wellfound",
+                "href": "https://wellfound.com/jobs/2-frontend-engineer",
+                "text": "Employer ATS https://jobs.lever.co/beta/abc",
+            },
+            {
+                "title": "No ATS at Gamma | Wellfound",
+                "url": "https://wellfound.com/jobs/3-no-ats",
+                "snippet": "Apply on Wellfound only.",
+            },
+        ]
+    )
+
+    assert [job["site"] for job in jobs if "site" in job] == []
+    assert [job["title"] for job in jobs] == [
+        "Senior Software Engineer",
+        "Frontend Engineer",
+    ]
+    assert [job["company"] for job in jobs] == ["Acme", "Beta"]
+    assert jobs[0]["url"] == "https://wellfound.com/jobs/1-senior-software-engineer"
+    assert jobs[0]["application_url"] == "https://boards.greenhouse.io/acme/jobs/123"
+    assert jobs[1]["application_url"] == "https://jobs.lever.co/beta/abc"
+
+
+def test_startupjobs_indexed_records_keep_only_direct_ats_links():
+    from applypilot.discovery.feeds.startupjobs import jobs_from_indexed_records
+
+    records = [
+        {
+            "title": f"Senior Software Engineer at Company {i} | Startup Jobs",
+            "url": f"https://startup.jobs/senior-software-engineer-company-{i}",
+            "snippet": f"Apply at https://boards.greenhouse.io/company{i}/jobs/{1000+i}",
+        }
+        for i in range(10)
+    ]
+    records.append(
+        {
+            "title": "No ATS at Gamma | Startup Jobs",
+            "url": "https://startup.jobs/no-ats-gamma",
+            "snippet": "Apply on StartupJobs only.",
+        }
+    )
+
+    jobs = jobs_from_indexed_records(records)
+
+    assert len(jobs) == 10
+    assert jobs[0]["title"] == "Senior Software Engineer"
+    assert jobs[0]["company"] == "Company 0"
+    assert jobs[0]["url"] == "https://startup.jobs/senior-software-engineer-company-0"
+    assert jobs[0]["application_url"] == "https://boards.greenhouse.io/company0/jobs/1000"
+    assert all(job["application_url"] for job in jobs)
+
+
+@patch("applypilot.discovery.runner._record_source_stats")
+@patch("applypilot.discovery.feeds.wellfound.run_wellfound_indexed_discovery")
+@patch("applypilot.discovery.runner.run_smart_extract")
+@patch("applypilot.discovery.runner.load_sites")
+def test_run_discover_wellfound_indexed_file_skips_live_scrape(
+    mock_load_sites,
+    mock_smart_extract,
+    mock_indexed,
+    _mock_record_stats,
+):
+    from applypilot.discovery.discover_config import load_discover_config
+    from applypilot.discovery.runner import run_discover
+
+    mock_load_sites.return_value = [
+        {"name": "Wellfound", "url": "https://wellfound.com/role/l/software-engineer", "type": "static"},
+    ]
+    mock_indexed.return_value = {
+        "records": 10,
+        "direct_jobs": 10,
+        "new": 10,
+        "duplicate": 0,
+    }
+
+    def fake_config():
+        cfg = load_discover_config()
+        cfg["sources"] = {key: False for key in cfg["sources"]}
+        cfg["sources"]["wellfound"] = True
+        cfg["agent_discover"] = {"enabled": False, "max_pages": 1, "headless": True}
+        cfg["company_first"] = {"enabled": False}
+        cfg["wellfound"] = {"indexed_results_file": "/tmp/wellfound-index.yaml"}
+        return cfg
+
+    with patch("applypilot.discovery.runner.load_discover_config", fake_config):
+        stats = run_discover(workers=1)
+
+    assert stats["wellfound"]["result"]["direct_jobs"] == 10
+    mock_indexed.assert_called_once_with(index_path="/tmp/wellfound-index.yaml")
+    mock_smart_extract.assert_not_called()
+
+
+@patch("applypilot.discovery.runner._record_source_stats")
+@patch("applypilot.discovery.feeds.startupjobs.run_startupjobs_indexed_discovery")
+@patch("applypilot.discovery.runner.run_smart_extract")
+@patch("applypilot.discovery.runner.load_sites")
+def test_run_discover_startupjobs_indexed_file_skips_live_scrape(
+    mock_load_sites,
+    mock_smart_extract,
+    mock_indexed,
+    _mock_record_stats,
+):
+    from applypilot.discovery.discover_config import load_discover_config
+    from applypilot.discovery.runner import run_discover
+
+    mock_load_sites.return_value = [
+        {"name": "Startup.jobs", "url": "https://startup.jobs/?q={query_encoded}", "type": "search"},
+    ]
+    mock_indexed.return_value = {
+        "records": 10,
+        "direct_jobs": 10,
+        "new": 10,
+        "duplicate": 0,
+    }
+
+    def fake_config():
+        cfg = load_discover_config()
+        cfg["sources"] = {key: False for key in cfg["sources"]}
+        cfg["sources"]["startupjobs"] = True
+        cfg["agent_discover"] = {"enabled": False, "max_pages": 1, "headless": True}
+        cfg["company_first"] = {"enabled": False}
+        cfg["startupjobs"] = {"indexed_results_file": "/tmp/startupjobs-index.yaml"}
+        return cfg
+
+    with patch("applypilot.discovery.runner.load_discover_config", fake_config):
+        stats = run_discover(workers=1)
+
+    assert stats["startupjobs"]["result"]["direct_jobs"] == 10
+    mock_indexed.assert_called_once_with(index_path="/tmp/startupjobs-index.yaml")
+    mock_smart_extract.assert_not_called()
 
 
 def test_jobspy_search_applies_excluded_title_filter(monkeypatch):

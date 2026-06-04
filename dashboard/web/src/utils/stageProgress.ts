@@ -30,6 +30,22 @@ function snapshotFromStats(stage: string, stats: Stats, minScore: number): Stage
   switch (stage) {
     case "discover":
       return { stage, total, detail: `${total} jobs in database` };
+    case "filter": {
+      const kept = p.pre_filter_kept ?? 0;
+      const rejected = p.pre_filter_rejected ?? 0;
+      const done = kept + rejected;
+      const pending = Math.max(0, total - done);
+      const denom = done + pending;
+      const percent = denom > 0 ? Math.round((100 * done) / denom) : null;
+      return {
+        stage,
+        done,
+        pending,
+        total: denom,
+        percent,
+        detail: `${kept} kept · ${rejected} rejected · ${pending} waiting`,
+      };
+    }
     case "enrich": {
       const done = p.with_description ?? stats.with_description ?? 0;
       const pending = p.pending_detail ?? 0;

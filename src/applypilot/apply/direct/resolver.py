@@ -68,6 +68,31 @@ def _field_key(field: Field) -> str:
     return f"{profile_binding._norm(field.label)}|{profile_binding._norm(field.name_attr)}"
 
 
+# Labels that carry no disambiguating signal. Their qa_bank key collapses onto
+# every other nameless field, so one stored answer leaks everywhere (this is how
+# a phone number got served to random "text" inputs). Never cache or serve them.
+_WEAK_LABELS: frozenset[str] = frozenset(
+    {"", "text", "field", "search", "select", "select...", "untitled"}
+)
+_DIAL_CODE_RE = __import__("re").compile(r"\+\d")
+
+
+def _weak_label(field: Field) -> bool:
+    from applypilot.apply.direct.qa_bank import normalize_text
+
+    return normalize_text(field.label) in _WEAK_LABELS
+
+
+def _cacheable(field: Field, answer: str) -> bool:
+    """A select answer that is a phone dial code (e.g. 'Norfolk Island +672') is
+    a country-picker artifact, never a real screening answer — don't cache it."""
+    if _weak_label(field):
+        return False
+    if _answer_type(field) == "select" and _DIAL_CODE_RE.search(answer or ""):
+        return False
+    return True
+
+
 def _snap_to_option(field: Field, answer: str) -> str | None:
     """For select/radio fields, map the answer to a real option (or None)."""
     if field.options:
@@ -107,14 +132,17 @@ def resolve(
                 out.add(key, snapped, 0, f"t0:{r.via}")
                 continue
 
-        # Tier 1 — Q&A bank cache.
-        cached = qa_bank.lookup(
-            f.label,
-            section_header=f.section_header,
-            name_attr=f.name_attr,
-            answer_type=_answer_type(f),
-            conn=conn,
-        )
+        # Tier 1 — Q&A bank cache. Skip weak/anonymous labels: their key
+        # collapses onto unrelated fields and would serve a stale wrong answer.
+        cached = None
+        if not _weak_label(f):
+            cached = qa_bank.lookup(
+                f.label,
+                section_header=f.section_header,
+                name_attr=f.name_attr,
+                answer_type=_answer_type(f),
+                conn=conn,
+            )
         if cached is not None:
             snapped = _snap_to_option(f, cached)
             if snapped is not None:
@@ -174,6 +202,8 @@ def _answer_type(f: Field) -> str:
 
 
 def _writeback(f: Field, answer: str, conn) -> None:
+    if not _cacheable(f, answer):
+        return
     try:
         qa_bank.store(
             f.label,

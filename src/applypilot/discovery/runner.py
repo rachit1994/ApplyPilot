@@ -261,6 +261,68 @@ def run_discover(*, workers: int = 1) -> dict[str, Any]:
     extra_smart_sites: list[dict] = list(yaml_smart)
     agent_sites: list[dict] = list(yaml_agent)
 
+    if sources.get("wellfound"):
+        wellfound_sites = [
+            site for site in extra_smart_sites
+            if str(site.get("name") or "").strip().lower() == "wellfound"
+        ]
+        extra_smart_sites = [
+            site for site in extra_smart_sites
+            if str(site.get("name") or "").strip().lower() != "wellfound"
+        ]
+        wellfound_cfg = cfg.get("wellfound") or {}
+        indexed_file = str(wellfound_cfg.get("indexed_results_file") or "").strip()
+        if indexed_file:
+            from applypilot.discovery.feeds.wellfound import (
+                run_wellfound_indexed_discovery,
+            )
+
+            stats["wellfound"] = _run_source(
+                "wellfound",
+                run_wellfound_indexed_discovery,
+                index_path=indexed_file,
+            )
+        else:
+            stats["wellfound"] = _run_source(
+                "wellfound",
+                run_smart_extract,
+                sites=wellfound_sites,
+                workers=1,
+                agent_fallback_enabled=False,
+                agent_max_pages=1,
+                agent_headless=True,
+            )
+
+    if sources.get("startupjobs"):
+        startupjobs_sites = [
+            site for site in extra_smart_sites
+            if str(site.get("name") or "").strip().lower() in {"startup.jobs", "startupjobs"}
+        ]
+        extra_smart_sites = [
+            site for site in extra_smart_sites
+            if str(site.get("name") or "").strip().lower() not in {"startup.jobs", "startupjobs"}
+        ]
+        startupjobs_cfg = cfg.get("startupjobs") or {}
+        indexed_file = str(startupjobs_cfg.get("indexed_results_file") or "").strip()
+        if indexed_file:
+            from applypilot.discovery.feeds.startupjobs import (
+                run_startupjobs_indexed_discovery,
+            )
+
+            stats["startupjobs"] = _run_source(
+                "startupjobs",
+                run_startupjobs_indexed_discovery,
+                index_path=indexed_file,
+            )
+        else:
+            stats["startupjobs"] = {
+                "status": "blocked",
+                "result": {
+                    "reason": "startupjobs_live_blocked_without_indexed_results_file",
+                    "smartextract_sites": len(startupjobs_sites),
+                },
+            }
+
     if sources.get("career_targets"):
         career_targets = load_career_targets()
         if company_first_enabled:

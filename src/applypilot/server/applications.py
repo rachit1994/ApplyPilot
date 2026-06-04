@@ -9,7 +9,7 @@ from applypilot.apply.apply_log_parser import (
     form_filled_from_stored_json,
     load_apply_log_detail,
 )
-from applypilot.database import get_connection, init_db
+from applypilot.database import ensure_apply_outcomes_table, get_connection, init_db
 
 
 _APPLY_LEDGER_STATUSES = (
@@ -18,6 +18,47 @@ _APPLY_LEDGER_STATUSES = (
     "failed",
     "manual",
 )
+
+_CLAUDE_ESCALATED_SQL = """(
+    COALESCE(apply_error, '') LIKE 'pending_claude_rescue%'
+    OR url IN (SELECT DISTINCT url FROM apply_outcomes WHERE escalated = 1)
+)"""
+
+_NEEDS_HUMAN_ERROR_SUBSTRINGS: tuple[str, ...] = (
+    "sso_login_needed",
+    "email verification",
+    "verify your email",
+    "verification needed",
+    "pause_for_human",
+)
+
+
+def _apply_ledger_scope_sql(*, include_failed: bool) -> tuple[str, list[Any]]:
+    if include_failed:
+        placeholders = ", ".join("?" for _ in _APPLY_LEDGER_STATUSES)
+        return (
+            f"(apply_status IN ({placeholders}) OR applied_at IS NOT NULL)",
+            list(_APPLY_LEDGER_STATUSES),
+        )
+    return ("apply_status IN ('applied', 'submitted_unverified')", [])
+
+
+def _needs_attention_where() -> tuple[str, list[Any]]:
+    like_parts = " OR ".join(
+        "LOWER(COALESCE(apply_error,'')) LIKE ?" for _ in _NEEDS_HUMAN_ERROR_SUBSTRINGS
+    )
+    like_params = [f"%{s.lower()}%" for s in _NEEDS_HUMAN_ERROR_SUBSTRINGS]
+    where = f"""
+      (
+        apply_status IN ('submitted_unverified', 'manual')
+        OR (
+          apply_status = 'failed'
+          AND (apply_attempts IS NULL OR apply_attempts < 99)
+          AND ({like_parts})
+        )
+      )
+    """
+    return where, like_params
 
 
 def query_applied_jobs(
@@ -28,34 +69,50 @@ def query_applied_jobs(
     status: str | None = None,
     site: str | None = None,
     search: str | None = None,
+    claude_escalated: bool = False,
+    needs_attention: bool = False,
 ) -> tuple[list[dict[str, Any]], int]:
     init_db()
     conn = get_connection()
+    if claude_escalated:
+        ensure_apply_outcomes_table(conn)
 
     clauses: list[str] = []
     params: list[Any] = []
 
-    if status:
+    if needs_attention:
+        scope_sql, scope_params = _needs_attention_where()
+        clauses.append(scope_sql)
+        params.extend(scope_params)
+    elif claude_escalated:
+        clauses.append(_CLAUDE_ESCALATED_SQL)
+        scope_sql, scope_params = _apply_ledger_scope_sql(
+            include_failed=include_failed or True,
+        )
+        clauses.append(scope_sql)
+        params.extend(scope_params)
+    elif status:
         if status not in _APPLY_LEDGER_STATUSES:
             return [], 0
         clauses.append("apply_status = ?")
         params.append(status)
     elif include_failed:
-        placeholders = ", ".join("?" for _ in _APPLY_LEDGER_STATUSES)
-        clauses.append(
-            f"(apply_status IN ({placeholders}) OR applied_at IS NOT NULL)"
-        )
-        params.extend(_APPLY_LEDGER_STATUSES)
+        scope_sql, scope_params = _apply_ledger_scope_sql(include_failed=True)
+        clauses.append(scope_sql)
+        params.extend(scope_params)
     else:
-        clauses.append("apply_status IN ('applied', 'submitted_unverified')")
+        scope_sql, scope_params = _apply_ledger_scope_sql(include_failed=False)
+        clauses.append(scope_sql)
+        params.extend(scope_params)
 
     if site:
         clauses.append("site = ?")
         params.append(site)
 
     if search:
-        clauses.append("title LIKE ?")
-        params.append(f"%{search}%")
+        needle = f"%{search}%"
+        clauses.append("(title LIKE ? OR site LIKE ?)")
+        params.extend([needle, needle])
 
     where = "WHERE " + " AND ".join(clauses) if clauses else ""
 
@@ -206,15 +263,6 @@ def query_apply_error_summary() -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
-_NEEDS_HUMAN_ERROR_SUBSTRINGS: tuple[str, ...] = (
-    "sso_login_needed",
-    "email verification",
-    "verify your email",
-    "verification needed",
-    "pause_for_human",
-)
-
-
 def query_attention_jobs(
     *,
     limit: int = 200,
@@ -231,21 +279,10 @@ def query_attention_jobs(
     init_db()
     conn = get_connection()
 
-    like_parts = " OR ".join("LOWER(COALESCE(apply_error,'')) LIKE ?" for _ in _NEEDS_HUMAN_ERROR_SUBSTRINGS)
-    like_params = [f"%{s.lower()}%" for s in _NEEDS_HUMAN_ERROR_SUBSTRINGS]
+    scope_sql, scope_params = _needs_attention_where()
+    where = f"WHERE {scope_sql}"
 
-    where = f"""
-      WHERE (
-        apply_status IN ('submitted_unverified', 'manual')
-        OR (
-          apply_status = 'failed'
-          AND (apply_attempts IS NULL OR apply_attempts < 99)
-          AND ({like_parts})
-        )
-      )
-    """
-
-    total = int(conn.execute(f"SELECT COUNT(*) FROM jobs {where}", like_params).fetchone()[0])
+    total = int(conn.execute(f"SELECT COUNT(*) FROM jobs {where}", scope_params).fetchone()[0])
     rows = conn.execute(
         f"""
         SELECT url, title, site, location, salary, fit_score,
@@ -257,7 +294,7 @@ def query_attention_jobs(
         ORDER BY datetime(COALESCE(last_attempted_at, applied_at)) DESC
         LIMIT ? OFFSET ?
         """,
-        (*like_params, limit, offset),
+        (*scope_params, limit, offset),
     ).fetchall()
 
     apps = []
