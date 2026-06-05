@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import re
+import time
 
 from applypilot.apply.direct import extractor
 
@@ -281,13 +282,40 @@ def _execute(page, action: dict) -> str:
     try:
         if tool == "click":
             return "clicked" if _click_text(page, args.get("text", "")) else "click_miss"
-        if tool == "login_google":
-            return "google" if _click_any(page, _GOOGLE_TEXTS) else "google_miss"
+        if tool in {"login_google", "login_provider"}:
+            name = str(args.get("name") or "google").strip().lower()
+            if name in {"", "google", "existing_session"}:
+                return "google" if _click_any(page, _GOOGLE_TEXTS) else "google_miss"
+            return "provider" if (_click_text(page, name) or _click_any(page, (name,))) else "provider_miss"
         if tool == "accept_cookies":
             return "cookies" if _dismiss_cookies(page) else "cookies_miss"
         if tool == "wait":
             page.wait_for_timeout(2_500)
             return "waited"
+        if tool == "wait_for_form":
+            timeout_ms = int(args.get("timeout") or args.get("timeout_ms") or 8_000)
+            until = time.monotonic() + max(0.5, timeout_ms / 1000)
+            while time.monotonic() < until:
+                if _has_identity_form(extractor.extract_fields(page)):
+                    return "form_ready"
+                page.wait_for_timeout(500)
+            return "wait_for_form_timeout"
+        if tool == "next_page":
+            texts = args.get("texts") or (
+                "Next",
+                "Continue",
+                "Save and continue",
+                "Save & continue",
+                "Next step",
+                "Proceed",
+                "Review",
+            )
+            if isinstance(texts, str):
+                texts = (texts,)
+            for text in texts:
+                if _click_text(page, str(text)):
+                    return "next_page"
+            return "next_page_miss"
         if tool == "goto":
             url = (args.get("url") or "").strip()
             if url.startswith("http"):

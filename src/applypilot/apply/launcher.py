@@ -1931,6 +1931,21 @@ def _try_direct_apply(
     else:
         dr = _holder["dr"]
 
+    if dr.result == "applied" and apply_settings.require_gmail_confirmation():
+        from applypilot.apply.gmail_auth import wait_for_application_receipt
+
+        receipt = wait_for_application_receipt(job)
+        if receipt.confirmed:
+            if receipt.message:
+                logger.info(
+                    "Gmail receipt confirmed for %s via %s (%s)",
+                    job.get("title"),
+                    receipt.message.from_,
+                    receipt.message.subject,
+                )
+        else:
+            dr.result = f"submitted_unverified:{receipt.reason}"
+
     would_claude_rescue = bool(dr.escalate)
     inline_claude = would_claude_rescue and apply_settings.direct_escalate_to_claude()
     if is_cap_defer(dr.result):

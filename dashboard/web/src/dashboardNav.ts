@@ -21,6 +21,7 @@ export type DashboardPage =
   | "applications"
   | "outreach"
   | "pipeline"
+  | "learning"
   | "settings";
 
 export const STAGE_LABELS: Record<PipelineStageId, string> = {
@@ -55,6 +56,7 @@ export function isDashboardPage(value: string): value is DashboardPage {
     value === "applications" ||
     value === "outreach" ||
     value === "pipeline" ||
+    value === "learning" ||
     value === "settings"
   );
 }
@@ -99,6 +101,7 @@ export function pageTitle(page: DashboardPage): string {
   if (page === "jobs") return "Jobs";
   if (page === "outreach") return "Outreach";
   if (page === "pipeline") return "Pipeline";
+  if (page === "learning") return "Learning";
   if (page === "settings") return "Settings";
   return "Today";
 }
@@ -118,6 +121,9 @@ export function pageSubtitle(page: DashboardPage): string {
   }
   if (page === "pipeline") {
     return "What the agent's doing right now and how well";
+  }
+  if (page === "learning") {
+    return "Playbook cache hits, review timeline, and promote/ban controls.";
   }
   if (page === "settings") {
     return "Tune the agent · sources, queries, limits, profile";

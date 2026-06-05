@@ -1,0 +1,110 @@
+"""Tests for apply/direct/review_log.py."""
+
+from __future__ import annotations
+
+import sqlite3
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from applypilot.apply.direct import review_log as rl
+
+
+@pytest.fixture
+def conn():
+    c = sqlite3.connect(":memory:")
+    c.row_factory = sqlite3.Row
+    yield c
+    c.close()
+
+
+def test_ensure_review_log_table_creates_schema(conn):
+    rl.ensure_review_log_table(conn)
+    tables = {
+        r[0]
+        for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    assert "review_log" in tables
+    cols = {
+        r[1]
+        for r in conn.execute("PRAGMA table_info(review_log)").fetchall()
+    }
+    assert "state_sig" in cols
+    assert "tier" in cols
+    assert "cost_usd" in cols
+
+
+def test_log_event_inserts_row(conn):
+    row_id = rl.log_event(
+        conn,
+        job_url="https://jobs.example.com/1",
+        ats_family="greenhouse",
+        apex_host="boards.greenhouse.io",
+        state_sig="sig-abc",
+        tier="gemini",
+        action_type="click",
+        action_args={"text": "Apply"},
+        outcome="advanced",
+        postcondition_met=True,
+        cost_usd=0.01,
+    )
+    assert row_id == 1
+    row = conn.execute("SELECT * FROM review_log WHERE id = 1").fetchone()
+    assert row["job_url"] == "https://jobs.example.com/1"
+    assert row["action_args"] == '{"text": "Apply"}'
+    assert row["postcondition_met"] == 1
+    assert row["cost_usd"] == pytest.approx(0.01)
+
+
+def test_dedupe_clusters_groups_by_state_sig(conn):
+    rl.ensure_review_log_table(conn)
+    for _ in range(3):
+        rl.log_event(conn, state_sig="sig-a", tier="gemini", action_type="click")
+    for _ in range(2):
+        rl.log_event(conn, state_sig="sig-b", tier="replay", action_type="accept_cookies")
+    rl.log_event(conn, state_sig="sig-c", tier="claude", action_type="wait")
+
+    clusters = rl.dedupe_clusters(conn, limit=10)
+    assert len(clusters) == 3
+    assert clusters[0]["state_sig"] == "sig-a"
+    assert clusters[0]["count"] == 3
+    assert clusters[1]["state_sig"] == "sig-b"
+    assert clusters[1]["count"] == 2
+
+
+def test_dedupe_clusters_ignores_empty_sig(conn):
+    rl.log_event(conn, state_sig="", tier="gemini")
+    rl.log_event(conn, state_sig=None, tier="gemini")
+    rl.log_event(conn, state_sig="sig-real", tier="replay")
+    clusters = rl.dedupe_clusters(conn)
+    assert len(clusters) == 1
+    assert clusters[0]["state_sig"] == "sig-real"
+
+
+def test_cache_hit_rate_math(conn):
+    now = datetime.now(timezone.utc)
+    old_ts = (now - timedelta(hours=48)).isoformat()
+    recent_ts = (now - timedelta(hours=1)).isoformat()
+
+    rl.log_event(conn, state_sig="s1", tier="replay", ts=recent_ts)
+    rl.log_event(conn, state_sig="s2", tier="replay", ts=recent_ts)
+    rl.log_event(conn, state_sig="s3", tier="gemini", ts=recent_ts)
+    rl.log_event(conn, state_sig="s4", tier="claude", ts=recent_ts)
+    # Outside window — should not count
+    rl.log_event(conn, state_sig="s5", tier="replay", ts=old_ts)
+    # Deterministic tier — not replay or LLM
+    rl.log_event(conn, state_sig="s6", tier="deterministic", ts=recent_ts)
+
+    stats = rl.cache_hit_rate(conn, since_hours=24)
+    assert stats["replay_count"] == 2
+    assert stats["llm_count"] == 2
+    assert stats["replay_pct"] == 50.0
+
+
+def test_cache_hit_rate_empty_window(conn):
+    stats = rl.cache_hit_rate(conn, since_hours=24)
+    assert stats["replay_count"] == 0
+    assert stats["llm_count"] == 0
+    assert stats["replay_pct"] == 0.0

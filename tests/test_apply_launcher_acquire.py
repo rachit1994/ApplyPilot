@@ -502,6 +502,11 @@ def test_try_direct_apply_uses_recovered_wellfound_ats_url(apply_db, monkeypatch
         "applypilot.apply.direct.throttle.check_caps",
         lambda *args, **kwargs: (True, None),
     )
+    monkeypatch.setattr(
+        launcher.apply_settings,
+        "require_gmail_confirmation",
+        lambda: False,
+    )
 
     result = launcher._try_direct_apply(
         job, port=9222, worker_id=0, dry_run=True, defer_claude_rescue=True,
@@ -515,6 +520,85 @@ def test_try_direct_apply_uses_recovered_wellfound_ats_url(apply_db, monkeypatch
         ("https://wellfound.com/jobs/123",),
     ).fetchone()
     assert row["application_url"] == "https://jobs.lever.co/acme/uuid-123"
+
+
+def test_try_direct_apply_requires_gmail_receipt_for_applied(
+    apply_db,
+    monkeypatch,
+):
+    from types import SimpleNamespace
+
+    from applypilot.apply import launcher
+    from applypilot.apply.direct.driver import DriverResult
+
+    _insert_job(
+        apply_db,
+        "https://jobs.example/lever",
+        application_url="https://jobs.lever.co/acme/uuid-1",
+    )
+    job = {
+        "url": "https://jobs.example/lever",
+        "application_url": "https://jobs.lever.co/acme/uuid-1",
+        "title": "Senior Engineer",
+        "site": "ExampleCo",
+    }
+    fake_dr = DriverResult(
+        result="applied",
+        elapsed_ms=50,
+        escalate=False,
+        ats_family="lever",
+        fingerprint="lever:url",
+    )
+
+    class _ImmediateThread:
+        def __init__(self, target=None, args=(), kwargs=None, daemon=None):
+            self._target = target
+
+        def start(self) -> None:
+            if self._target:
+                self._target()
+
+        def join(self, timeout=None) -> None:
+            return None
+
+        def is_alive(self) -> bool:
+            return False
+
+    recorded: list[str] = []
+    monkeypatch.setattr(launcher.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(
+        "applypilot.apply.direct.driver.apply_via_direct",
+        lambda *args, **kwargs: fake_dr,
+    )
+    monkeypatch.setattr(
+        "applypilot.apply.direct.throttle.check_caps",
+        lambda *args, **kwargs: (True, None),
+    )
+    monkeypatch.setattr(
+        launcher.apply_settings,
+        "require_gmail_confirmation",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "applypilot.apply.gmail_auth.wait_for_application_receipt",
+        lambda _job: SimpleNamespace(
+            confirmed=False,
+            reason="gmail_receipt_not_found",
+            message=None,
+        ),
+    )
+    monkeypatch.setattr(
+        "applypilot.database.record_apply_outcome",
+        lambda **kwargs: recorded.append(kwargs["result"]),
+    )
+
+    result = launcher._try_direct_apply(
+        job, port=9222, worker_id=0, dry_run=True, defer_claude_rescue=True,
+    )
+
+    assert result is not None
+    assert result[0] == "submitted_unverified:gmail_receipt_not_found"
+    assert recorded == ["submitted_unverified:gmail_receipt_not_found"]
 
 
 def test_try_direct_apply_defers_claude_when_other_direct_jobs_remain(

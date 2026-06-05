@@ -386,8 +386,8 @@ def _ashby_visible_option_field(field) -> bool:
     )
 
 
-def _fill_field(page, field, answer: str, *, family: str = "") -> bool:
-    """Fill one resolved field. Returns True on success."""
+def _fill_field_legacy(page, field, answer: str, *, family: str = "") -> bool:
+    """Legacy fill path (used when field_strategy has no cached method)."""
     try:
         loc = _locator(page, field)
         if loc.count() == 0:
@@ -463,6 +463,30 @@ def _fill_field(page, field, answer: str, *, family: str = "") -> bool:
     except Exception:  # noqa: BLE001
         logger.debug("fill failed for %r", field.label, exc_info=True)
         return False
+
+
+def _fill_field(page, field, answer: str, *, family: str = "") -> bool:
+    """Fill one resolved field; replay learned field_strategy when present."""
+    from applypilot.apply.direct import field_strategy_fill
+    from applypilot.apply.direct.playbook import lookup_field_strategy
+
+    cached = lookup_field_strategy(field_strategy_fill.field_sig(field), family)
+    if cached:
+        ok = field_strategy_fill.fill_field_with_strategy(
+            page, field, answer, family=family,
+        )
+        field_strategy_fill.record_fill_outcome(field, family, cached, ok)
+        return ok
+    ok = _fill_field_legacy(page, field, answer, family=family)
+    if ok:
+        method = field_strategy_fill.infer_fill_method(
+            field,
+            family,
+            succeeded=True,
+            used_click_label=field.type == "checkbox",
+        )
+        field_strategy_fill.record_fill_outcome(field, family, method, True)
+    return ok
 
 
 def _resolve_checkbox_group_pick(
@@ -1057,6 +1081,7 @@ def apply_via_direct(
     url = _job_url(job)
     family = fingerprint.ats_family(url)
     fp = fingerprint.provider_fingerprint(url)
+    used_nav_sigs: list[str] = []
 
     def done(result: str, *, escalate=False, reason=None, outcome=None,
              fields_total=0) -> DriverResult:
@@ -1251,9 +1276,15 @@ def apply_via_direct(
                 else "no_application_form"
             )
             try:
-                if unblock.gemini_unblock(
-                    page, job, family=family, worker_id=worker_id,
+                from applypilot.apply.direct import unblock_learning
+
+                if unblock_learning.run_unblock_with_learning(
+                    page,
+                    job,
+                    family=family,
+                    worker_id=worker_id,
                     reason=block_reason,
+                    used_state_sigs=used_nav_sigs,
                 ):
                     _reveal_form(page, adapter)
                     form = extractor.extract_fields(page)
@@ -1607,6 +1638,13 @@ def apply_via_direct(
 
         if success:
             result_dr.result = "applied"
+            if used_nav_sigs:
+                try:
+                    from applypilot.apply.direct.playbook import stamp_verified
+
+                    stamp_verified(used_nav_sigs, scope="host")
+                except Exception:  # noqa: BLE001
+                    logger.debug("stamp_verified failed", exc_info=True)
             logger.info("[W%d] Direct APPLIED %s (shot=%s)", worker_id, url[:70], shot)
         elif after.visible_errors:
             result_dr.result = "failed:direct_submit_rejected"

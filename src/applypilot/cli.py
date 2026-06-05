@@ -206,6 +206,167 @@ def seed_qa_bank(
     console.print(f"[bold]{verb} {written} Q&A bank rows.[/bold]")
 
 
+playbook_app = typer.Typer(
+    help="Self-learning navigation playbook cache (nav_playbook seeds and stats).",
+    no_args_is_help=True,
+)
+app.add_typer(playbook_app, name="playbook")
+
+
+@playbook_app.command("seed")
+def playbook_seed_cmd(
+    family: Optional[list[str]] = typer.Option(
+        None,
+        "--family",
+        help="ATS family to seed (repeatable). Default: all families in nav_playbooks.yaml.",
+    ),
+) -> None:
+    """Pre-seed nav_playbook from config/nav_playbooks.yaml (status=trusted, source=seed)."""
+    _bootstrap()
+
+    from applypilot.apply.direct.playbook_seed import seed_nav_playbooks
+
+    written = seed_nav_playbooks(families=family)
+    console.print(f"[bold green]Seeded {written} nav_playbook rows.[/bold green]")
+
+
+@playbook_app.command("list")
+def playbook_list_cmd(
+    status: Optional[str] = typer.Option(
+        None,
+        "--status",
+        help="Filter by status (trial, trusted, retired, banned, pinned).",
+    ),
+) -> None:
+    """List nav_playbook rows."""
+    _bootstrap()
+
+    from applypilot.apply.direct.playbook_seed import list_nav_playbooks
+
+    rows = list_nav_playbooks(status=status)
+    if not rows:
+        console.print("[dim]No nav_playbook rows match.[/dim]")
+        return
+
+    table = Table(title="nav_playbook")
+    table.add_column("ats_family")
+    table.add_column("step")
+    table.add_column("action")
+    table.add_column("status")
+    table.add_column("source")
+    table.add_column("scope")
+    for entry in rows:
+        table.add_row(
+            entry.ats_family or "",
+            entry.step_name or "",
+            entry.action_type,
+            entry.status,
+            entry.source or "",
+            entry.scope,
+        )
+    console.print(table)
+
+
+@playbook_app.command("stats")
+def playbook_stats_cmd() -> None:
+    """Show nav_playbook counts by status, source, and ATS family."""
+    _bootstrap()
+
+    from applypilot.apply.direct.playbook_seed import playbook_stats
+
+    stats = playbook_stats()
+    console.print(f"[bold]nav_playbook total:[/bold] {stats['total']}")
+
+    for label, key in (
+        ("By status", "by_status"),
+        ("By source", "by_source"),
+        ("By ATS family", "by_ats_family"),
+    ):
+        groups = stats.get(key) or {}
+        if not groups:
+            console.print(f"[dim]{label}: (none)[/dim]")
+            continue
+        table = Table(title=label)
+        table.add_column("key")
+        table.add_column("count", justify="right")
+        for group_key, count in groups.items():
+            table.add_row(group_key or "(empty)", str(count))
+        console.print(table)
+
+
+@playbook_app.command("promote")
+def playbook_promote_cmd(
+    state_sig: str = typer.Argument(..., help="nav_playbook state_sig to promote."),
+    scope: str = typer.Option("host", "--scope", help="Playbook scope (host or family)."),
+) -> None:
+    """Mark a nav_playbook entry as trusted (owner action)."""
+    _bootstrap()
+
+    from applypilot.apply.direct import playbook
+
+    entry = playbook.promote(state_sig, scope=scope, status="trusted")
+    if entry is None:
+        console.print("[red]No nav_playbook row found for that state_sig.[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[bold green]Promoted[/bold green] {state_sig[:40]}… → status={entry.status}"
+    )
+
+
+@playbook_app.command("ban")
+def playbook_ban_cmd(
+    state_sig: str = typer.Argument(..., help="nav_playbook state_sig to ban."),
+    scope: str = typer.Option("host", "--scope", help="Playbook scope (host or family)."),
+) -> None:
+    """Ban a nav_playbook entry from Tier-1 replay."""
+    _bootstrap()
+
+    from applypilot.apply.direct import playbook
+
+    entry = playbook.promote(state_sig, scope=scope, status="banned")
+    if entry is None:
+        console.print("[red]No nav_playbook row found for that state_sig.[/red]")
+        raise typer.Exit(1)
+    console.print(f"[bold yellow]Banned[/bold yellow] {state_sig[:40]}…")
+
+
+@playbook_app.command("review")
+def playbook_review_cmd(
+    limit: int = typer.Option(30, "--limit", help="Max review_log rows to show."),
+) -> None:
+    """Show recent self-learning review_log events."""
+    _bootstrap()
+
+    from applypilot.apply.direct.review_log import list_recent
+    from applypilot.database import get_connection, init_db
+
+    init_db()
+    conn = get_connection()
+    rows = list_recent(conn, limit=max(1, min(limit, 200)))
+    if not rows:
+        console.print("[dim]No review_log events yet.[/dim]")
+        return
+
+    table = Table(title="review_log")
+    table.add_column("ts")
+    table.add_column("tier")
+    table.add_column("action")
+    table.add_column("outcome")
+    table.add_column("family")
+    table.add_column("state_sig")
+    for row in rows:
+        sig = (row.get("state_sig") or "")[:28]
+        table.add_row(
+            (row.get("ts") or "")[:19],
+            row.get("tier") or "",
+            row.get("action_type") or "",
+            row.get("outcome") or "",
+            row.get("ats_family") or "",
+            sig,
+        )
+    console.print(table)
+
+
 @app.command("correct-field")
 def correct_field(
     label: Optional[str] = typer.Argument(None, help="Field label to correct, e.g. \"Phone\"."),
@@ -432,13 +593,17 @@ def apply(
     if prompt_mode:
         apply_settings.set_apply_prompt_mode_override(prompt_mode)
 
-    # Check 1: Full auto-apply needs Claude rescue; deterministic-only does not.
-    if deterministic_only:
-        check_tier(2, "deterministic auto-apply")
+    # Check 1: Full auto-apply needs Claude rescue; direct-only does not.
+    direct_without_claude = (
+        apply_settings.apply_engine() == "direct"
+        and not apply_settings.direct_escalate_to_claude()
+    )
+    if deterministic_only or direct_without_claude:
+        check_tier(2, "direct auto-apply")
         try:
             get_chrome_path()
         except FileNotFoundError:
-            console.print("[red]Chrome/Chromium is required for deterministic auto-apply.[/red]")
+            console.print("[red]Chrome/Chromium is required for direct auto-apply.[/red]")
             console.print("Install Chrome or set CHROME_PATH.")
             raise typer.Exit(code=1)
     else:

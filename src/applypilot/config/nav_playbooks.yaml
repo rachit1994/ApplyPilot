@@ -1,0 +1,67 @@
+# Hand-seeded navigation recipes for high-volume ATS families.
+#
+# TWO TIERS, do not confuse them:
+#   * Reveal navigation (click Apply / accept cookies / goto) — THIS file. These
+#     are the only tools the unblock loop can replay, so only the FIRST
+#     unblock-executable action of each step is seeded (status=trusted,
+#     source=seed, scope=family). They replay via the family-scope fallback.
+#   * Form fill + submit (fill_all_known / upload / next_page / submit) — these
+#     describe the Tier-0 ATS ADAPTER's multi-step flow and are NOT executable by
+#     the nav cache. They are kept here as documentation only and are SKIPPED by
+#     the seed loader. Implement them as adapters (e.g. adapters/workday.py, T9).
+#
+# NOTE: the nav signature includes the page's full clickable set, so a hand
+# seed only fires when its `preconditions.clickables` match a real page exactly.
+# Durable coverage comes from LEARNED family entries captured in review_log and
+# promoted/generalized, plus the Tier-0 adapters. Seeds are a best-effort prior.
+
+workday:
+  steps:
+    - name: apply_reveal
+      preconditions:
+        clickables: ["apply", "apply now"]
+      actions:
+        - tool: click
+          args: {text: Apply}
+    # --- adapter-level (skipped by the nav seed loader) ---
+    - name: my_information   # Tier-0 adapter: fill identity + upload resume + Next
+      actions:
+        - tool: fill_all_known
+        - tool: upload
+          args: {doc: resume}
+        - tool: next_page
+    - name: review           # Tier-0 adapter: final submit
+      actions:
+        - tool: submit
+
+greenhouse:
+  steps:
+    - name: apply_reveal
+      preconditions:
+        clickables: ["apply", "apply for this job"]
+      actions:
+        - tool: click
+          args: {text: Apply}
+    # --- adapter-level (skipped) ---
+    - name: application_form
+      actions:
+        - tool: fill_all_known
+        - tool: upload
+          args: {doc: resume}
+        - tool: submit
+
+ashby:
+  steps:
+    - name: apply_reveal
+      preconditions:
+        clickables: ["apply", "apply for this job"]
+      actions:
+        - tool: click
+          args: {text: Apply}
+    # --- adapter-level (skipped) ---
+    - name: application_form
+      actions:
+        - tool: fill_all_known
+        - tool: upload
+          args: {doc: resume}
+        - tool: submit

@@ -14,6 +14,7 @@ import { AppliedApplicationsPage } from "./components/AppliedApplicationsPage";
 import { OutreachDashboardPage } from "./components/OutreachDashboardPage";
 import { PipelineDashboardPage } from "./components/PipelineDashboardPage";
 import { SettingsDashboardPage } from "./components/SettingsDashboardPage";
+import { LearningDashboardPage } from "./components/LearningDashboardPage";
 import type { DashboardPage } from "./dashboardNav";
 import { isDashboardPage, pageSubtitleWithStats } from "./dashboardNav";
 import { useRunLiveRefresh } from "./hooks/useRunLiveRefresh";
@@ -38,6 +39,7 @@ const PAGE_PATH: Record<DashboardPage, string> = {
   applications: "/applications",
   outreach: "/outreach",
   pipeline: "/pipeline",
+  learning: "/learning",
   settings: "/settings",
 };
 
@@ -48,6 +50,7 @@ function pageFromPathname(pathname: string): DashboardPage | null {
   if (path === "/applications" || path === "/apply") return "applications";
   if (path === "/outreach") return "outreach";
   if (path === "/pipeline") return "pipeline";
+  if (path === "/learning") return "learning";
   if (path === "/settings") return "settings";
   return null;
 }
@@ -141,6 +144,8 @@ export default function App() {
         url.searchParams.set("tab", "outreach");
       } else if (nextPage === "pipeline") {
         url.searchParams.set("tab", "pipeline");
+      } else if (nextPage === "learning") {
+        url.searchParams.set("tab", "learning");
       } else if (nextPage === "settings") {
         url.searchParams.set("tab", "settings");
       } else {
@@ -267,6 +272,8 @@ export default function App() {
     content = <OutreachDashboardPage />;
   } else if (page === "pipeline") {
     content = <PipelineDashboardPage />;
+  } else if (page === "learning") {
+    content = <LearningDashboardPage />;
   } else if (page === "settings") {
     content = <SettingsDashboardPage />;
   } else {

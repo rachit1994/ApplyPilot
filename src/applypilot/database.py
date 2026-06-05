@@ -151,6 +151,11 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
     ensure_qa_bank_table(conn)
     ensure_apply_outcomes_table(conn)
     ensure_field_overrides_table(conn)
+    from applypilot.apply.direct.playbook import ensure_playbook_tables
+    from applypilot.apply.direct.review_log import ensure_review_log_table
+
+    ensure_playbook_tables(conn)
+    ensure_review_log_table(conn)
     conn.commit()
 
     # Run migrations for any columns added after initial schema

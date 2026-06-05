@@ -853,6 +853,94 @@ export async function fetchInboxQueue(limit = 50): Promise<{
   return res.json();
 }
 
+export type LearningStats = {
+  nav_playbook: {
+    total: number;
+    by_status: Record<string, number>;
+    by_source: Record<string, number>;
+    by_ats_family: Record<string, number>;
+  };
+  cache_hit: {
+    replay_count: number;
+    llm_count: number;
+    replay_pct: number;
+  };
+  field_strategy_total: number;
+};
+
+export type LearningReviewEvent = {
+  id: number;
+  ts?: string | null;
+  job_url?: string | null;
+  ats_family?: string | null;
+  apex_host?: string | null;
+  state_sig?: string | null;
+  tier?: string | null;
+  action_type?: string | null;
+  outcome?: string | null;
+  postcondition_met?: number | null;
+};
+
+export type LearningCluster = {
+  state_sig: string;
+  count: number;
+  ats_family?: string | null;
+  apex_host?: string | null;
+  action_type?: string | null;
+  tier?: string | null;
+  outcome?: string | null;
+};
+
+export async function fetchLearningStats(sinceHours = 24): Promise<LearningStats> {
+  const res = await fetch(`${API}/learning/stats?since_hours=${sinceHours}`);
+  if (!res.ok) throw new Error("Failed to load learning stats");
+  return res.json();
+}
+
+export async function fetchLearningReview(limit = 50): Promise<{ events: LearningReviewEvent[] }> {
+  const res = await fetch(`${API}/learning/review?limit=${limit}`);
+  if (!res.ok) throw new Error("Failed to load learning review log");
+  return res.json();
+}
+
+export async function fetchLearningClusters(limit = 20): Promise<{ clusters: LearningCluster[] }> {
+  const res = await fetch(`${API}/learning/clusters?limit=${limit}`);
+  if (!res.ok) throw new Error("Failed to load learning clusters");
+  return res.json();
+}
+
+export async function postLearningPromote(
+  stateSig: string,
+  scope = "host",
+): Promise<{ ok: boolean; state_sig: string; scope: string; status: string }> {
+  const res = await fetch(`${API}/learning/promote`, {
+    method: "POST",
+    headers: mergeHeaders(
+      { "Content-Type": "application/json" },
+      dashboardAuthHeaders(),
+    ),
+    body: JSON.stringify({ state_sig: stateSig, scope }),
+  });
+  if (!res.ok) throw new Error("Failed to promote playbook entry");
+  return res.json();
+}
+
+export async function postLearningBan(
+  stateSig: string,
+  scope = "host",
+): Promise<{ ok: boolean; state_sig: string; scope: string; status: string }> {
+  const res = await fetch(`${API}/learning/ban`, {
+    method: "POST",
+    headers: mergeHeaders(
+      { "Content-Type": "application/json" },
+      dashboardAuthHeaders(),
+    ),
+    body: JSON.stringify({ state_sig: stateSig, scope }),
+  });
+  if (!res.ok) throw new Error("Failed to ban playbook entry");
+  return res.json();
+}
+
 export async function postInboxScan(limit?: number): Promise<Record<string, unknown>> {
   const q = limit != null ? `?limit=${limit}` : "";
   const res = await fetch(`${API}/inbox/scan${q}`, {

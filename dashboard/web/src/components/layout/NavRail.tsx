@@ -82,6 +82,18 @@ export function NavRail({ activePage, onNavigate, badges }: Props) {
         }
       />
 
+      <NavBtn
+        label="Learning"
+        active={activePage === "learning"}
+        onClick={() => onNavigate("learning")}
+        icon={
+          <svg viewBox="0 0 22 22" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <path d="M11 3 4 7v6c0 4.5 3 7.5 7 9 4-1.5 7-4.5 7-9V7l-7-4z" />
+            <path d="M8 11l2.5 2.5L14 9" />
+          </svg>
+        }
+      />
+
       <div className="rail__spacer" />
 
       <NavBtn
