@@ -41,12 +41,17 @@ def test_first_last_name_split():
     assert resolve_field(Field(label="First name"), TOKENS).answer == "Rachit"
     assert resolve_field(Field(label="Last name"), TOKENS).answer == "Srivastava"
     assert resolve_field(Field(label="Full name"), TOKENS).answer == "Rachit Srivastava"
+    assert (
+        resolve_field(Field(label="Legal First and Last Name"), TOKENS).answer
+        == "Rachit Srivastava"
+    )
 
 
 def test_contact_fields():
     assert resolve_field(Field(label="Email Address"), TOKENS).answer == "rachit@example.com"
     assert resolve_field(Field(label="Mobile phone"), TOKENS).answer == "5551234567"
     assert resolve_field(Field(label="LinkedIn Profile"), TOKENS).answer.endswith("/rachit")
+    assert resolve_field(Field(label="Location"), TOKENS).answer == "Toronto, ON, Canada"
 
 
 def test_attr_beats_label_ambiguity():
@@ -59,6 +64,21 @@ def test_attr_beats_label_ambiguity():
 def test_work_authorization_questions():
     assert resolve_field(Field(label="Are you legally authorized to work?"), TOKENS).answer == "Yes"
     assert resolve_field(Field(label="Do you require sponsorship?"), TOKENS).answer == "No"
+    assert (
+        resolve_field(
+            Field(label="Will you now or in the future require Notion to sponsor an immigration case?"),
+            TOKENS,
+        ).answer
+        == "No"
+    )
+    assert (
+        resolve_field(Field(label="Yes, I am able to work from the office 3 days a week"), TOKENS).answer
+        == "Yes"
+    )
+    assert (
+        resolve_field(Field(label="Can you work from one of our offices on Anchor Days?"), TOKENS).answer
+        == "Yes"
+    )
 
 
 def test_eeo_defaults_to_decline():
@@ -167,6 +187,34 @@ def test_checkbox_group_escalates_non_source_questions():
         "Which certifications do you hold?", ("AWS", "GCP", "Azure")
     ) is None
     assert choose_checkbox_group_option("", ("A", "B")) is None
+
+
+def test_checkbox_group_handles_export_control_none_of_above():
+    opts = (
+        "Citizen or permanent resident of Cuba, Iran, North Korea, or Syria",
+        "Ordinarily a resident of Russia or Belarus and not willing to relocate",
+        "None of the above",
+    )
+    assert (
+        choose_checkbox_group_option(
+            "Please confirm whether any of the below applies to you. Select all that apply.",
+            opts,
+        )
+        == "None of the above"
+    )
+
+
+def test_checkbox_group_handles_export_control_followup_not_applicable():
+    opts = (
+        "U.S. citizen",
+        "Individual granted permanent residency in a country other than Cuba, Iran, North Korea, or Syria",
+        "None of these apply to me",
+        "Not applicable (i.e., I selected none of the above for the prior question)",
+    )
+    assert choose_checkbox_group_option(
+        "If you selected a response to the prior question other than none of the above, select all that apply.",
+        opts,
+    ).startswith("Not applicable")
 
 
 def test_date_picker_start_question_uses_concrete_date():

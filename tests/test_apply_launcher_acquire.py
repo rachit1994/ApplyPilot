@@ -177,6 +177,30 @@ def test_acquire_job_continues_after_persisted_skip(apply_db, monkeypatch):
     ]
 
 
+def test_acquire_job_prefers_fresh_direct_rows_over_parked_rows(apply_db):
+    from applypilot.apply import launcher
+
+    _insert_job(
+        apply_db,
+        "https://authentication.example/apply",
+        title="AAA Parked Generic",
+        status="needs_adapter",
+        application_url="https://authentication.example/apply",
+    )
+    _insert_job(
+        apply_db,
+        "https://job-boards.greenhouse.io/acme/jobs/123",
+        title="ZZZ Fresh Greenhouse",
+        status=None,
+        application_url="https://job-boards.greenhouse.io/acme/jobs/123",
+    )
+
+    job = launcher.acquire_job(min_score=7, worker_id=0)
+
+    assert job is not None
+    assert job["url"] == "https://job-boards.greenhouse.io/acme/jobs/123"
+
+
 def _patch_apply_engine_claude(monkeypatch):
     monkeypatch.setattr(
         "applypilot.apply.apply_settings.apply_engine",
@@ -394,16 +418,16 @@ def test_acquire_job_prefers_direct_adapter_before_linkedin(apply_db, monkeypatc
     )
     _insert_job(
         apply_db,
-        "https://jobs.example/greenhouse",
-        title="Greenhouse Role",
-        application_url="https://job-boards.greenhouse.io/acme/jobs/1",
-        site="greenhouse:acme",
+        "https://jobs.example/lever",
+        title="Lever Role",
+        application_url="https://jobs.lever.co/acme/uuid-1",
+        site="lever:acme",
     )
 
     job = launcher.acquire_job(min_score=7, worker_id=0)
 
     assert job is not None
-    assert job["url"] == "https://jobs.example/greenhouse"
+    assert job["url"] == "https://jobs.example/lever"
 
 
 def test_wellfound_row_with_embedded_ats_url_is_direct_capable(apply_db):
@@ -415,12 +439,12 @@ def test_wellfound_row_with_embedded_ats_url_is_direct_capable(apply_db):
         "site": "Wellfound",
         "full_description": (
             "Apply through the employer ATS: "
-            "https://boards.greenhouse.io/acme/jobs/123"
+            "https://jobs.lever.co/acme/uuid-123"
         ),
     }
 
     assert launcher.job_has_direct_adapter(job) is True
-    assert job["application_url"] == "https://boards.greenhouse.io/acme/jobs/123"
+    assert job["application_url"] == "https://jobs.lever.co/acme/uuid-123"
 
 
 def test_try_direct_apply_uses_recovered_wellfound_ats_url(apply_db, monkeypatch):
@@ -433,7 +457,7 @@ def test_try_direct_apply_uses_recovered_wellfound_ats_url(apply_db, monkeypatch
         application_url="",
         site="Wellfound",
         full_description=(
-            "External application: https://boards.greenhouse.io/acme/jobs/123"
+            "External application: https://jobs.lever.co/acme/uuid-123"
         ),
     )
     job = {
@@ -441,7 +465,7 @@ def test_try_direct_apply_uses_recovered_wellfound_ats_url(apply_db, monkeypatch
         "application_url": None,
         "site": "Wellfound",
         "full_description": (
-            "External application: https://boards.greenhouse.io/acme/jobs/123"
+            "External application: https://jobs.lever.co/acme/uuid-123"
         ),
     }
     seen: list[str] = []
@@ -450,8 +474,8 @@ def test_try_direct_apply_uses_recovered_wellfound_ats_url(apply_db, monkeypatch
         result="applied",
         elapsed_ms=50,
         escalate=False,
-        ats_family="greenhouse",
-        fingerprint="greenhouse:url",
+        ats_family="lever",
+        fingerprint="lever:url",
     )
 
     class _ImmediateThread:
@@ -485,12 +509,12 @@ def test_try_direct_apply_uses_recovered_wellfound_ats_url(apply_db, monkeypatch
 
     assert result is not None
     assert result[0] == "applied"
-    assert seen == ["https://boards.greenhouse.io/acme/jobs/123"]
+    assert seen == ["https://jobs.lever.co/acme/uuid-123"]
     row = apply_db.execute(
         "SELECT application_url FROM jobs WHERE url = ?",
         ("https://wellfound.com/jobs/123",),
     ).fetchone()
-    assert row["application_url"] == "https://boards.greenhouse.io/acme/jobs/123"
+    assert row["application_url"] == "https://jobs.lever.co/acme/uuid-123"
 
 
 def test_try_direct_apply_defers_claude_when_other_direct_jobs_remain(

@@ -54,6 +54,13 @@ def _subprocess_env(run_id: str) -> dict[str, str]:
     env = os.environ.copy()
     env["APPLYPILOT_RUN_ID"] = run_id
     env["PYTHONUNBUFFERED"] = "1"
+    path_parts = [
+        str(Path.home() / ".local" / "bin"),
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        env.get("PATH", ""),
+    ]
+    env["PATH"] = os.pathsep.join(part for part in path_parts if part)
     if not (env.get("APPLYPILOT_APPLY_ENGINE") or "").strip():
         default_engine = str(config.DEFAULTS.get("apply_engine", "direct")).strip().lower()
         if default_engine in ("direct", "claude"):
@@ -544,7 +551,7 @@ def start_apply_run(
     )
     conn.commit()
 
-    cmd = _resolve_cli() + ["apply", "--engine", "direct"]
+    cmd = _resolve_cli() + ["apply", "--engine", "direct", "--include-untailored"]
     if limit is not None and limit > 0:
         cmd.extend(["--limit", str(limit)])
         if not continuous:

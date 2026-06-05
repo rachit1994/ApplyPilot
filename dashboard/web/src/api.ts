@@ -149,6 +149,24 @@ export type ApplicationDetail = Application & {
   log_detail?: ApplicationLogDetail | null;
 };
 
+export type PendingLogin = {
+  domain: string;
+  url?: string | null;
+  reason?: string | null;
+  has_google_signin?: boolean | null;
+  since?: string | null;
+};
+
+export type LoginPendingResponse = {
+  paused: boolean;
+  pending: PendingLogin[];
+};
+
+export type LoginResumeResponse = {
+  resumed_domain: string;
+  requeued: number;
+};
+
 export type SiteCount = {
   site: string | null;
   count: number;
@@ -743,6 +761,25 @@ export async function fetchRequeueApplication(
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error((err as { detail?: string }).detail ?? "Requeue failed");
+  }
+  return res.json();
+}
+
+export async function fetchPendingLogins(): Promise<LoginPendingResponse> {
+  const res = await fetch(`${API}/login/pending`);
+  if (!res.ok) throw new Error("Failed to load pending logins");
+  return res.json();
+}
+
+export async function postResumeLogin(domain?: string): Promise<LoginResumeResponse> {
+  const res = await fetch(`${API}/login/resume`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ domain: domain ?? null }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { detail?: string }).detail ?? "Resume login failed");
   }
   return res.json();
 }

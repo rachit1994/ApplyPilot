@@ -13,7 +13,7 @@ export type ApplyCliOptions = {
 };
 
 export function buildApplyCliCommand(opts: ApplyCliOptions): string {
-  const parts = ["applypilot", "apply", "--engine", opts.engine ?? "direct"];
+  const parts = ["applypilot", "apply", "--engine", opts.engine ?? "direct", "--include-untailored"];
   const limit = opts.limit === "" ? null : Number(opts.limit);
   if (limit != null && limit > 0) {
     parts.push("--limit", String(limit));
@@ -36,7 +36,7 @@ export function applyRunSummaryLines(
   const limit = opts.limit === "" ? null : Number(opts.limit);
   const lines = [
     readyCount != null ? `Ready queue: ${readyCount} (min score ≥${opts.minScore})` : `Min score ≥${opts.minScore}`,
-    `${opts.workers} worker(s) · direct apply first (Claude rescue when needed)`,
+    `${opts.workers} worker(s) · direct apply first · includes discovered jobs`,
     opts.watch
       ? "Visible Chrome (--watch, slow pacing)"
       : opts.headless

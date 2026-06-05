@@ -59,6 +59,8 @@ export function needsHumanIntervention(app: Application): boolean {
   const raw = (app.apply_error ?? "").toLowerCase();
   return (
     raw.includes("sso_login_needed") ||
+    raw.includes("awaiting_login") ||
+    raw.includes("login_required_no_google") ||
     raw.includes("pause_for_human") ||
     raw.includes("email verification") ||
     raw.includes("verify your email") ||
@@ -77,6 +79,8 @@ const HUMAN_APPLY_REASONS: Record<string, string> = {
   claude_quota_exhausted: "Claude quota exhausted",
   worker_interrupted: "Worker stopped",
   sso_login_needed: "SSO login needed",
+  login_required: "Login required",
+  login_required_no_google: "Login required, no Google sign-in",
   pause_for_human: "Paused for you",
   pending_claude_rescue: "Waiting for Claude retry",
   no_confirmation: "No submit confirmation",
@@ -111,6 +115,10 @@ function splitApplyErrorBody(raw: string): string[] {
 function humanizeApplyReasonToken(token: string): string {
   const key = token.trim().toLowerCase();
   if (HUMAN_APPLY_REASONS[key]) return HUMAN_APPLY_REASONS[key];
+  if (key.startsWith("awaiting_login:")) {
+    const domain = token.slice("awaiting_login:".length).trim();
+    return domain ? `Awaiting login: ${domain}` : "Awaiting login";
+  }
   if (key.includes("email verification") || key.includes("verify your email")) {
     return "Email verification needed";
   }

@@ -64,6 +64,28 @@ CREATE INDEX IF NOT EXISTS idx_inbox_audit_urn
     ON inbox_audit_events(conversation_urn);
 CREATE INDEX IF NOT EXISTS idx_inbox_audit_created
     ON inbox_audit_events(created_at);
+
+CREATE TABLE IF NOT EXISTS inbox_gmail_messages (
+    message_id TEXT PRIMARY KEY,
+    thread_id TEXT,
+    from_address TEXT,
+    subject TEXT,
+    snippet TEXT,
+    received_at TEXT,
+    intent TEXT,
+    intent_confidence REAL,
+    extracted_title TEXT,
+    extracted_company TEXT,
+    reasoning TEXT,
+    classified_at TEXT,
+    matched_job_url TEXT,
+    matched_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_inbox_gmail_classified
+    ON inbox_gmail_messages(classified_at);
+CREATE INDEX IF NOT EXISTS idx_inbox_gmail_matched
+    ON inbox_gmail_messages(matched_job_url);
 """
 
 _INBOX_OPPORTUNITY_COLUMNS: dict[str, str] = {
@@ -108,6 +130,15 @@ def init_inbox_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(INBOX_DDL)
     conn.commit()
     ensure_inbox_columns(conn)
+
+
+def clear_gmail_inbox_data() -> None:
+    """Remove cached Gmail recruiter messages (re-scan)."""
+    from applypilot.database import get_connection
+
+    conn = get_connection()
+    conn.execute("DELETE FROM inbox_gmail_messages")
+    conn.commit()
 
 
 def get_inbox_stats(conn: sqlite3.Connection) -> dict:

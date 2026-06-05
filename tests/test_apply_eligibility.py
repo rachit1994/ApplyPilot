@@ -4,11 +4,14 @@ import sqlite3
 
 from applypilot.apply.eligibility import (
     ApplyDecision,
+    apply_location_passes,
     classify_apply_target,
     direct_adapter_priority_sql,
     is_ats_url,
     load_exclude_title_substrings,
+    summarize_eligibility_classification,
 )
+from applypilot.apply.salary import salary_meets_regional_minimum
 
 
 def test_linkedin_job_page_can_flow_to_company_website_apply():
@@ -277,6 +280,16 @@ def test_remote_usa_location_skips_for_india_candidate():
     assert result.reason == "not_eligible_location"
 
 
+def test_canada_only_remote_location_skips_for_india_candidate():
+    job = _greenhouse_job(
+        "This role is remote within Canada.",
+        location="Canada - Remote (ON, AB, BC, or NS Only)",
+    )
+    result = classify_apply_target(job, profile=_INDIA_PROFILE)
+    assert result.decision == ApplyDecision.SKIP_PERMANENT
+    assert result.reason == "not_eligible_location"
+
+
 def test_north_america_remote_stays_eligible():
     # "North America, Remote" hires internationally; must NOT be blocked
     # (this was a real, confirmed application).
@@ -297,3 +310,107 @@ def test_candidate_home_city_segment_keeps_us_listing_eligible():
     job = _greenhouse_job("Great role.", location="Remote - US; Bengaluru, India")
     result = classify_apply_target(job, profile=_INDIA_PROFILE)
     assert result.decision == ApplyDecision.ELIGIBLE
+
+
+def test_remote_india_location_eligible_for_india_candidate():
+    job = _greenhouse_job("India remote role.", location="Remote - India")
+    result = classify_apply_target(job, profile=_INDIA_PROFILE)
+    assert result.decision == ApplyDecision.ELIGIBLE
+
+
+def test_bengaluru_not_false_not_eligible_location_for_india_candidate():
+    """Apply path must not use searches.yaml US reject list (e.g. bare 'India')."""
+    job = {
+        "url": "https://boards.greenhouse.io/acme/jobs/99",
+        "application_url": "https://boards.greenhouse.io/acme/jobs/99",
+        "title": "Staff Engineer",
+        "site": "Greenhouse:Acme",
+        "salary": "₹55L",
+        "location": "Bengaluru, Karnataka",
+        "full_description": "5+ years experience.",
+    }
+    assert apply_location_passes("Bengaluru, Karnataka", _INDIA_PROFILE)
+    result = classify_apply_target(job, profile=_INDIA_PROFILE)
+    assert result.decision == ApplyDecision.ELIGIBLE
+    assert result.reason != "not_eligible_location"
+
+
+def test_hyderabad_and_ncr_locations_eligible():
+    for loc in (
+        "Hyderabad, Telangana",
+        "Gurugram, Haryana (NCR)",
+        "Noida, Delhi NCR",
+    ):
+        assert apply_location_passes(loc, _INDIA_PROFILE)
+        job = _greenhouse_job("Role.", location=loc)
+        result = classify_apply_target(job, profile=_INDIA_PROFILE)
+        assert result.decision == ApplyDecision.ELIGIBLE, loc
+
+
+def test_india_domestic_job_skips_us_residency_description_block():
+    job = {
+        "url": "https://boards.greenhouse.io/acme/jobs/100",
+        "application_url": "https://boards.greenhouse.io/acme/jobs/100",
+        "title": "Backend Engineer",
+        "site": "Greenhouse:Acme",
+        "salary": "₹50 LPA",
+        "location": "Bengaluru, India",
+        "full_description": (
+            "You must reside in the United States. We do not sponsor visas."
+        ),
+    }
+    result = classify_apply_target(job, profile=_INDIA_PROFILE)
+    assert result.decision == ApplyDecision.ELIGIBLE
+
+
+def test_us_focused_job_still_blocks_us_residency_for_india_candidate():
+    job = _greenhouse_job(
+        "You must live in a state where Acme, Inc. has a registered entity.",
+        location="Remote - USA",
+    )
+    result = classify_apply_target(job, profile=_INDIA_PROFILE)
+    assert result.decision == ApplyDecision.SKIP_PERMANENT
+    assert result.reason == "not_eligible_location"
+
+
+def test_lpa_at_40l_strict_mode_passes():
+    job = {
+        "url": "https://boards.greenhouse.io/acme/jobs/101",
+        "application_url": "https://boards.greenhouse.io/acme/jobs/101",
+        "title": "Engineer",
+        "site": "greenhouse",
+        "salary": "40 LPA",
+        "location": "Bengaluru, India",
+    }
+    assert salary_meets_regional_minimum(
+        job["salary"], job.get("full_description"), job["location"]
+    )
+    result = classify_apply_target(job, profile=_INDIA_PROFILE, strict=True)
+    assert result.decision == ApplyDecision.ELIGIBLE
+
+
+def test_lpa_below_40l_strict_mode_skips():
+    job = {
+        "url": "https://boards.greenhouse.io/acme/jobs/102",
+        "application_url": "https://boards.greenhouse.io/acme/jobs/102",
+        "title": "Engineer",
+        "site": "greenhouse",
+        "salary": "35 LPA",
+        "location": "Hyderabad, India",
+    }
+    assert not salary_meets_regional_minimum(
+        job["salary"], job.get("full_description"), job["location"]
+    )
+    result = classify_apply_target(job, profile=_INDIA_PROFILE, strict=True)
+    assert result.decision == ApplyDecision.SKIP_PERMANENT
+    assert result.reason == "not_eligible_salary"
+
+
+def test_summarize_eligibility_classification_counts():
+    jobs = [
+        _greenhouse_job("ok", location="Bengaluru, India"),
+        _greenhouse_job("blocked", location="Remote - USA"),
+    ]
+    summary = summarize_eligibility_classification(jobs, profile=_INDIA_PROFILE)
+    assert summary.get("eligible") == 1
+    assert summary.get("skip_permanent:not_eligible_location") == 1

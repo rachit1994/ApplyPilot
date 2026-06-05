@@ -335,6 +335,12 @@ def apply(
         help="Apply engine: direct (default, Playwright ATS applier) or claude "
         "(Claude Code browser agent, ~$0.15/apply).",
     ),
+    deterministic_only: bool = typer.Option(
+        False,
+        "--deterministic-only",
+        help="Only deterministic Direct Apply adapters; park others as needs_adapter "
+        "($0 Claude).",
+    ),
 ) -> None:
     """Launch auto-apply to submit job applications."""
     _bootstrap()
@@ -349,7 +355,7 @@ def apply(
     if priority_boards_only:
         os.environ["APPLYPILOT_PRIORITY_BOARDS_ONLY"] = "1"
 
-    from applypilot.config import check_tier, PROFILE_PATH as _profile_path
+    from applypilot.config import check_tier, get_chrome_path, PROFILE_PATH as _profile_path
     from applypilot.database import get_connection
 
     # --- Utility modes (no Chrome/Claude needed) ---
@@ -419,11 +425,24 @@ def apply(
 
     from applypilot.apply import apply_settings
 
+    if deterministic_only:
+        apply_settings.set_deterministic_only_override(True)
+        os.environ["APPLYPILOT_APPLY_ENGINE"] = "direct"
+
     if prompt_mode:
         apply_settings.set_apply_prompt_mode_override(prompt_mode)
 
-    # Check 1: Tier 3 required (Claude Code CLI + Chrome)
-    check_tier(3, "auto-apply")
+    # Check 1: Full auto-apply needs Claude rescue; deterministic-only does not.
+    if deterministic_only:
+        check_tier(2, "deterministic auto-apply")
+        try:
+            get_chrome_path()
+        except FileNotFoundError:
+            console.print("[red]Chrome/Chromium is required for deterministic auto-apply.[/red]")
+            console.print("Install Chrome or set CHROME_PATH.")
+            raise typer.Exit(code=1)
+    else:
+        check_tier(3, "auto-apply")
 
     # Check 2: Profile exists
     if not _profile_path.exists():
@@ -494,11 +513,13 @@ def apply(
 
     from applypilot.apply.launcher import count_acquirable_jobs, main as apply_main
 
-    if watch and not continuous:
+    if watch and not continuous and not url:
         continuous = True
 
     if limit is not None:
         effective_limit = limit
+    elif url and not continuous:
+        effective_limit = 1
     elif continuous:
         effective_limit = 0
     else:
@@ -545,6 +566,8 @@ def apply(
         console.print("  ATS only: on (skip non-ATS apply URLs)")
     if priority_boards_only:
         console.print("  Boards:   LinkedIn + Wellfound only")
+    if deterministic_only:
+        console.print("  Mode:     deterministic-only (no Claude; needs_adapter parking)")
     console.print()
 
     apply_main(
@@ -837,6 +860,11 @@ def inbox_scan(
 @inbox_app.command("classify")
 def inbox_classify(
     limit: int = typer.Option(50, "--limit", help="Max threads to classify."),
+    link: bool = typer.Option(
+        False,
+        "--link",
+        help="After classify, match human replies to applied jobs (LinkedIn).",
+    ),
 ) -> None:
     """LLM: job-related? extract role/company."""
     _bootstrap()
@@ -845,6 +873,63 @@ def inbox_classify(
 
     result = classify_inbox(settings=load_inbox_config(), limit=limit)
     console.print(f"[green]Classify complete:[/green] {result}")
+    if link:
+        from applypilot.inbox.job_match import link_linkedin_threads
+
+        linked = link_linkedin_threads()
+        console.print(f"[green]Job link (LinkedIn):[/green] {linked}")
+
+
+@inbox_app.command("scan-gmail")
+def inbox_scan_gmail(
+    limit: int = typer.Option(50, "--limit", help="Max Gmail messages to fetch (read-only)."),
+    since_days: int = typer.Option(None, "--since-days", help="Gmail newer_than window."),
+    link: bool = typer.Option(
+        True,
+        "--link/--no-link",
+        help="After scan+classify, match replies to applied jobs.",
+    ),
+) -> None:
+    """Fetch recruiter Gmail (read-only), classify intent, optionally link to jobs."""
+    _bootstrap()
+    from applypilot.inbox.config import load_inbox_config
+    from applypilot.inbox.gmail_scanner import scan_gmail_inbox
+    from applypilot.inbox.job_match import link_all_replies
+
+    cfg = load_inbox_config()
+    console.print("[dim]Scanning Gmail (read-only, no send/archive)…[/dim]")
+    result = scan_gmail_inbox(settings=cfg, limit=limit, since_days=since_days)
+    if result.get("error"):
+        console.print(f"[red]Gmail scan failed:[/red] {result}")
+        raise typer.Exit(1)
+    console.print(f"[green]Gmail scan:[/green] {result}")
+    if link:
+        linked = link_all_replies(lookback_days=since_days or cfg.since_days)
+        console.print(f"[green]Job link:[/green] {linked}")
+
+
+@inbox_app.command("link-replies")
+def inbox_link_replies(
+    lookback_days: int = typer.Option(90, "--lookback-days", help="Applied jobs to match."),
+) -> None:
+    """Match classified LinkedIn/Gmail recruiter replies to job rows."""
+    _bootstrap()
+    from applypilot.inbox.job_match import link_all_replies
+
+    result = link_all_replies(lookback_days=lookback_days)
+    console.print(f"[green]Link complete:[/green] {result}")
+
+
+@inbox_app.command("reply-report")
+def inbox_reply_report(
+    days: int = typer.Option(7, "--days", help="Rolling window for applies and replies."),
+) -> None:
+    """Reply-rate by source: applies, verified applies, replies, interview invites."""
+    _bootstrap()
+    from applypilot.inbox.reply_report import build_reply_rate_report, format_reply_rate_report
+
+    report = build_reply_rate_report(days=days)
+    console.print(format_reply_rate_report(report))
 
 
 @inbox_app.command("list")

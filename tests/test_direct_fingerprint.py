@@ -94,15 +94,23 @@ def test_greenhouse_form_url_none_when_no_token():
     assert fp.greenhouse_form_url(["https://example.com/app.js"]) is None
 
 
-def test_has_adapter():
-    assert fp.has_adapter("greenhouse")
+def test_has_adapter_respects_skip_list(monkeypatch):
+    monkeypatch.setenv("APPLYPILOT_SKIP_ATS_FAMILIES", "greenhouse,ashby")
+    assert not fp.has_adapter("greenhouse")
     assert fp.has_adapter("lever")
-    assert fp.has_adapter("ashby")
-    assert fp.has_adapter("workday")
+    assert not fp.has_adapter("ashby")
+    assert not fp.has_adapter("workday")
     assert fp.has_adapter("workatastartup")
     assert not fp.has_adapter("icims")
     assert not fp.has_adapter("unknown")
     assert not fp.has_adapter(None)
+
+
+def test_has_adapter_when_skip_cleared(no_skip_ats):
+    assert fp.has_adapter("greenhouse")
+    assert fp.has_adapter("lever")
+    assert fp.has_adapter("ashby")
+    assert fp.has_adapter("workatastartup")
     assert get_adapter("workatastartup") is not None
 
 

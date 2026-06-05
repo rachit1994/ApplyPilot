@@ -23,6 +23,7 @@ _DEFAULT_SOURCES = {
     "greenhouse": True,
     "lever": True,
     "ashby": True,
+    "linkedin_harvest": False,
     "career_targets": True,
     "funded_startups": False,
 }
@@ -81,6 +82,7 @@ def _normalize(data: dict[str, Any]) -> dict[str, Any]:
         "workatastartup": data.get("workatastartup") or {},
         "wellfound": data.get("wellfound") or {},
         "startupjobs": data.get("startupjobs") or {},
+        "linkedin_harvest": data.get("linkedin_harvest") or {},
         "hn_hiring": data.get("hn_hiring") or {},
         "himalayas": data.get("himalayas") or {},
         "funded_startups": data.get("funded_startups") or {},

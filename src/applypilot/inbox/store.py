@@ -14,6 +14,114 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def upsert_gmail_message(
+    *,
+    message_id: str,
+    thread_id: str | None,
+    from_address: str,
+    subject: str,
+    snippet: str,
+    received_at: str | None,
+) -> None:
+    conn = get_connection()
+    conn.execute(
+        """
+        INSERT INTO inbox_gmail_messages (
+            message_id, thread_id, from_address, subject, snippet, received_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(message_id) DO UPDATE SET
+            thread_id = COALESCE(excluded.thread_id, inbox_gmail_messages.thread_id),
+            from_address = excluded.from_address,
+            subject = excluded.subject,
+            snippet = excluded.snippet,
+            received_at = COALESCE(excluded.received_at, inbox_gmail_messages.received_at)
+        """,
+        (message_id, thread_id, from_address, subject, snippet, received_at),
+    )
+    conn.commit()
+
+
+def list_gmail_unclassified(limit: int) -> list[dict]:
+    conn = get_connection()
+    rows = conn.execute(
+        """
+        SELECT message_id, from_address, subject, snippet, received_at
+        FROM inbox_gmail_messages
+        WHERE classified_at IS NULL
+          AND (length(trim(COALESCE(subject, ''))) > 0 OR length(trim(COALESCE(snippet, ''))) > 0)
+        ORDER BY received_at DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def save_gmail_classification(
+    message_id: str,
+    *,
+    intent: str,
+    intent_confidence: float,
+    extracted_title: str | None,
+    extracted_company: str | None,
+    reasoning: str,
+) -> None:
+    conn = get_connection()
+    conn.execute(
+        """
+        UPDATE inbox_gmail_messages SET
+            intent = ?,
+            intent_confidence = ?,
+            extracted_title = ?,
+            extracted_company = ?,
+            reasoning = ?,
+            classified_at = ?
+        WHERE message_id = ?
+        """,
+        (
+            intent,
+            intent_confidence,
+            extracted_title,
+            extracted_company,
+            reasoning,
+            _utc_now(),
+            message_id,
+        ),
+    )
+    conn.commit()
+
+
+def list_gmail_for_job_link(*, only_unmatched: bool = True) -> list[dict]:
+    conn = get_connection()
+    clause = "AND matched_job_url IS NULL" if only_unmatched else ""
+    rows = conn.execute(
+        f"""
+        SELECT message_id, from_address, subject, snippet, received_at,
+               intent, extracted_title, extracted_company
+        FROM inbox_gmail_messages
+        WHERE classified_at IS NOT NULL
+          AND intent IS NOT NULL
+          {clause}
+        ORDER BY received_at DESC
+        """
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def mark_gmail_matched(message_id: str, job_url: str) -> None:
+    conn = get_connection()
+    conn.execute(
+        """
+        UPDATE inbox_gmail_messages SET
+            matched_job_url = ?,
+            matched_at = ?
+        WHERE message_id = ?
+        """,
+        (job_url, _utc_now(), message_id),
+    )
+    conn.commit()
+
+
 def clear_inbox_data() -> None:
     """Remove cached threads (use before re-scanning Other tab after a Focused sync)."""
     conn = get_connection()
@@ -22,6 +130,7 @@ def clear_inbox_data() -> None:
     conn.execute("DELETE FROM inbox_replies")
     conn.execute("DELETE FROM inbox_opportunities")
     conn.execute("DELETE FROM inbox_threads")
+    conn.execute("DELETE FROM inbox_gmail_messages")
     conn.commit()
 
 

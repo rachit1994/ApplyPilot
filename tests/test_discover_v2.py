@@ -87,6 +87,10 @@ def test_discover_config_defaults(tmp_path, monkeypatch):
     assert cfg["sources"]["smartextract"] is False
     assert cfg["sources"]["funded_startups"] is False
     assert cfg["sources"]["ashby"] is True
+    assert cfg["sources"]["linkedin_harvest"] is False
+    assert cfg["linkedin_harvest"]["max_jobs"] == 15
+    assert cfg["linkedin_harvest"]["expand_employer"] is True
+    assert cfg["linkedin_harvest"]["max_employer_jobs"] == 5
     assert cfg["agent_discover"]["enabled"] is True
 
 
@@ -171,6 +175,30 @@ def test_smartextract_captcha_page_skips_llm(monkeypatch):
 
 
 @patch("applypilot.discovery.runner._run_source")
+def test_run_discover_skips_greenhouse_by_default(mock_run, monkeypatch):
+    """Default skip policy disables Greenhouse board crawls only."""
+    monkeypatch.delenv("APPLYPILOT_SKIP_ATS_FAMILIES", raising=False)
+    mock_run.return_value = {"status": "ok", "result": {}}
+
+    def fake_config():
+        base = load_discover_config()
+        sources = dict(base["sources"])
+        sources["greenhouse"] = True
+        sources["ashby"] = True
+        return {**base, "sources": sources}
+
+    with patch("applypilot.discovery.runner.load_discover_config", fake_config):
+        from applypilot.discovery.runner import run_discover
+
+        run_discover(workers=1)
+
+    called = {c.args[0] for c in mock_run.call_args_list}
+    assert "greenhouse" not in called
+    assert "ashby" in called
+    assert "lever" in called or "jobspy" in called
+
+
+@patch("applypilot.discovery.runner._run_source")
 def test_run_discover_respects_disabled_sources(mock_run):
     mock_run.return_value = {"status": "ok", "result": {}}
 
@@ -190,6 +218,69 @@ def test_run_discover_respects_disabled_sources(mock_run):
         stats = run_discover(workers=1)
     assert stats == {}
     mock_run.assert_not_called()
+
+
+@patch("applypilot.discovery.runner._record_source_stats")
+@patch("applypilot.discovery.runner._run_source")
+def test_run_discover_can_run_linkedin_harvest_source(mock_run, _mock_record_stats):
+    mock_run.return_value = {"status": "ok", "result": {"new": 2, "seen": 3, "total": 3}}
+
+    def fake_config():
+        cfg = load_discover_config()
+        cfg["sources"] = {key: False for key in cfg["sources"]}
+        cfg["sources"]["linkedin_harvest"] = True
+        cfg["linkedin_harvest"] = {
+            "keywords": ["backend engineer"],
+            "max_jobs": 3,
+            "expand_company": False,
+            "max_company_jobs": 0,
+            "expand_employer": True,
+            "max_employer_jobs": 2,
+            "worker_id": 0,
+        }
+        cfg["agent_discover"] = {"enabled": False, "max_pages": 1, "headless": True}
+        return cfg
+
+    with patch("applypilot.discovery.runner.load_discover_config", fake_config):
+        from applypilot.discovery.runner import run_discover
+
+        stats = run_discover(workers=1)
+
+    assert stats["linkedin_harvest"]["status"] == "ok"
+    mock_run.assert_called_once()
+    assert mock_run.call_args.args[0] == "linkedin_harvest"
+
+
+@patch("applypilot.discovery.linkedin_harvest.run_harvest")
+def test_linkedin_harvest_config_merges_keyword_runs(mock_harvest):
+    from applypilot.discovery.runner import _run_linkedin_harvest_from_config
+
+    mock_harvest.side_effect = [
+        {"new": 2, "duplicate": 1, "seen": 3},
+        {"new": 1, "duplicate": 0, "seen": 1},
+    ]
+    result = _run_linkedin_harvest_from_config(
+        {
+            "linkedin_harvest": {
+                "keywords": ["backend engineer", "full stack engineer"],
+                "max_jobs": 4,
+                "expand_company": False,
+                "max_company_jobs": 0,
+                "expand_employer": True,
+                "max_employer_jobs": 2,
+                "worker_id": 2,
+            }
+        }
+    )
+    assert result["new"] == 3
+    assert result["duplicate"] == 1
+    assert result["seen"] == 4
+    assert result["total"] == 4
+    assert mock_harvest.call_count == 2
+    assert mock_harvest.call_args_list[0].kwargs["keywords"] == "backend engineer"
+    assert mock_harvest.call_args_list[0].kwargs["worker_id"] == 2
+    assert mock_harvest.call_args_list[0].kwargs["expand_employer"] is True
+    assert mock_harvest.call_args_list[0].kwargs["max_employer_jobs"] == 2
 
 
 @patch("applypilot.discovery.runner._record_source_stats")

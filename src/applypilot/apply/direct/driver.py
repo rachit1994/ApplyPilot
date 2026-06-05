@@ -27,6 +27,7 @@ vocabulary; it also carries telemetry for the apply_outcomes ledger.
 from __future__ import annotations
 
 import logging
+import os
 import random
 import time
 from dataclasses import dataclass
@@ -37,6 +38,7 @@ from applypilot.apply import apply_settings
 from applypilot.apply.direct import extractor, fingerprint, profile_binding, resolver
 from applypilot.apply.direct import captcha as direct_captcha
 from applypilot.apply.direct import email_verify
+from applypilot.apply.direct import unblock
 from applypilot.apply.direct.adapters import Adapter, get_adapter
 from applypilot.apply.prompt import ensure_resume_pdf
 from applypilot.role_resumes import resolve_job_resume_path
@@ -178,8 +180,50 @@ def _content_sniff_family(page) -> tuple[str, str | None]:
     except Exception:  # noqa: BLE001
         html = ""
     family = fingerprint.sniff_ats_family(html=html, embedded_urls=urls)
+    if family in apply_settings.direct_excluded_families():
+        return fingerprint.UNKNOWN_FAMILY, None
     form_url = fingerprint.greenhouse_form_url(urls) if family == "greenhouse" else None
     return family, form_url
+
+
+# Labels that identify a *real* job-application form. If the engine fills a
+# 2+-field form but lands on none of these, the page is almost certainly a
+# search box / cookie banner / newsletter — NOT an application — so we must
+# never submit it. Used by the identity-field safety guard below.
+_IDENTITY_LABEL_HINTS: tuple[str, ...] = (
+    "first name", "last name", "full name", "your name", "given name",
+    "family name", "surname", "email", "e-mail", "phone", "mobile",
+    "resume", "cv", "résumé", "linkedin",
+)
+
+
+def _identity_fields_filled(filled_rows: list[dict]) -> int:
+    """Count filled rows whose label looks like a job-application identity field."""
+    n = 0
+    for row in filled_rows:
+        if row.get("empty"):
+            continue
+        label = str(row.get("label") or "").lower()
+        if any(hint in label for hint in _IDENTITY_LABEL_HINTS):
+            n += 1
+    return n
+
+
+def _form_record_stub(
+    url: str, job: dict, filled_rows: list[dict], errors: list[str]
+) -> dict:
+    """apply_form_filled record built outside the driver's main closure."""
+    return {
+        "form_url": url,
+        "page_title": (job.get("title") or "")[:160],
+        "company": job.get("site") or "",
+        "fields": filled_rows,
+        "fill_actions": [],
+        "visible_errors": list(errors or []),
+        "empty_required": 0,
+        "field_count": len(filled_rows),
+        "engine": "direct",
+    }
 
 
 def _record_row(label: str, value: str, *, ftype: str, via: str) -> dict:
@@ -243,6 +287,23 @@ def _reveal_form(page, adapter: Adapter) -> None:
             continue
 
 
+def _wait_for_form_ready(page, *, timeout_ms: int = 8_000) -> None:
+    """Wait for JS-rendered ATS forms to mount before declaring no_form.
+
+    Ashby often reaches domcontentloaded while the React application tab is
+    still rendering. A fixed 1.2s wait is too short on real pages and causes a
+    false no_form escalation even though the form appears a few seconds later.
+    """
+    deadline = time.monotonic() + (timeout_ms / 1000)
+    while time.monotonic() < deadline:
+        try:
+            if len(extractor.extract_fields(page).fillable()) >= 2:
+                return
+        except Exception:  # noqa: BLE001
+            pass
+        page.wait_for_timeout(500)
+
+
 def _locator(page, field):
     if field.key:
         loc = page.locator(f'[data-ap-key="{field.key}"]').first
@@ -256,7 +317,76 @@ def _locator(page, field):
     return page.locator(f'[data-ap-id="{field.ap_id}"]').first
 
 
-def _fill_field(page, field, answer: str) -> bool:
+_CLICK_OPTION_NEAR_LABEL_JS = r"""({label, answer}) => {
+  const norm = s => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const wantLabel = norm(label).slice(0, 90);
+  const wantAnswer = norm(answer).slice(0, 60);
+  if (!wantLabel || !wantAnswer) return false;
+  const answerMatches = (txt) => {
+    const t = norm(txt);
+    return t === wantAnswer || t.startsWith(wantAnswer + ',') ||
+      t.startsWith(wantAnswer + ' ') || t.includes(wantAnswer);
+  };
+  const clickIfMatch = (root) => {
+    const candidates = [
+      ...root.querySelectorAll('button, [role="button"], label, [role="radio"], input[type="radio"], input[type="checkbox"]')
+    ];
+    for (const c of candidates) {
+      const txt = c.innerText || c.value || c.getAttribute('aria-label') || '';
+      if (answerMatches(txt)) {
+        c.click();
+        return true;
+      }
+    }
+    return false;
+  };
+  const labels = [...document.querySelectorAll('label, legend, [class*="question-title"], [class*="Question"], [class*="label"], [class*="Label"]')];
+  for (const lab of labels) {
+    const txt = norm(lab.innerText).slice(0, 140);
+    if (!txt || !(txt.includes(wantLabel) || wantLabel.includes(txt))) continue;
+    let root = lab;
+    for (let i = 0; i < 5 && root; i++, root = root.parentElement) {
+      if (clickIfMatch(root)) return true;
+    }
+  }
+  return false;
+}"""
+
+
+def _click_option_near_label(page, field, answer: str) -> bool:
+    try:
+        return bool(
+            page.evaluate(
+                _CLICK_OPTION_NEAR_LABEL_JS,
+                {"label": field.label, "answer": answer},
+            )
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("option click fallback failed for %r", field.label, exc_info=True)
+        return False
+
+
+def _ashby_visible_option_field(field) -> bool:
+    blob = f"{field.label} {field.section_header}".lower()
+    return any(
+        marker in blob
+        for marker in (
+            "authorized to work",
+            "legally authorized",
+            "sponsorship",
+            "sponsor",
+            "immigration case",
+            "sponsor my employment",
+            "hybrid",
+            "anchor days",
+            "working from one of our offices",
+            "work from the office",
+            "in person",
+        )
+    )
+
+
+def _fill_field(page, field, answer: str, *, family: str = "") -> bool:
     """Fill one resolved field. Returns True on success."""
     try:
         loc = _locator(page, field)
@@ -287,13 +417,31 @@ def _fill_field(page, field, answer: str) -> bool:
             from applypilot.apply.direct import profile_binding
 
             if profile_binding.choose_select_option(answer, (field.label,)) == field.label:
-                loc.check(timeout=3_000)
-                return True
+                if family == "ashby":
+                    return _click_option_near_label(page, field, answer)
+                try:
+                    loc.check(timeout=3_000)
+                    return True
+                except Exception:  # noqa: BLE001
+                    return _click_option_near_label(page, field, answer)
             return False
         if field.type == "checkbox":
             want = answer.strip().lower() in ("yes", "true", "checked", "on", "1")
             if want:
-                loc.check(timeout=3_000)
+                if family == "ashby" and _ashby_visible_option_field(field):
+                    return _click_option_near_label(page, field, answer)
+                try:
+                    loc.check(timeout=3_000)
+                except Exception:  # noqa: BLE001
+                    return _click_option_near_label(page, field, answer)
+                # Styled checkboxes (e.g. Greenhouse "I acknowledge") wrap a
+                # visually-hidden input; .check() reports success but the bound
+                # state never flips. Confirm, and click the label if it didn't.
+                try:
+                    if not loc.is_checked():
+                        return _click_option_near_label(page, field, answer)
+                except Exception:  # noqa: BLE001
+                    pass
             return True
         if field.type == "tel":
             # intl-tel-input detects the country from keystrokes, not a bulk
@@ -317,28 +465,67 @@ def _fill_field(page, field, answer: str) -> bool:
         return False
 
 
-def _fill_checkbox_group(page, members) -> tuple[str, str | None]:
-    """Check exactly ONE option in a required checkbox group (e.g. 'how did you
-    hear about us'). Returns (status, picked_label) with status in
-    {'filled', 'unresolved'}; 'unresolved' means we won't guess (escalate)."""
+def _resolve_checkbox_group_pick(
+    members,
+    *,
+    tokens: dict,
+    job: dict | None = None,
+    gemini_enabled: bool = True,
+) -> tuple[str | None, str]:
     labels = tuple(m.label for m in members)
     question = next((m.section_header for m in members if m.section_header), "")
     pick = profile_binding.choose_checkbox_group_option(question, labels)
+    if pick:
+        return pick, "group"
+    if not gemini_enabled or not labels:
+        return None, ""
+    synthetic = profile_binding.Field(
+        label=question or "Select the best option",
+        type="checkbox",
+        tag="input",
+        name_attr=members[0].name_attr if members else "",
+        section_header=question,
+        required=True,
+        options=labels,
+        key=f"checkbox_group|{members[0].name_attr if members else question}",
+    )
+    outcome = resolver.resolve([synthetic], tokens, job=job, gemini_enabled=True)
+    answer = outcome.answers.get(synthetic.key)
+    if answer and answer in labels:
+        return answer, outcome.via.get(synthetic.key, "t2:gemini")
+    return None, ""
+
+
+def _fill_checkbox_group(
+    page,
+    members,
+    *,
+    tokens: dict,
+    job: dict | None = None,
+    gemini_enabled: bool = True,
+) -> tuple[str, str | None, str]:
+    """Check exactly ONE option in a required checkbox group (e.g. 'how did you
+    hear about us'). Returns (status, picked_label) with status in
+    {'filled', 'unresolved'}; 'unresolved' means we won't guess (escalate)."""
+    question = next((m.section_header for m in members if m.section_header), "")
+    pick, via = _resolve_checkbox_group_pick(
+        members, tokens=tokens, job=job, gemini_enabled=gemini_enabled
+    )
     if not pick:
-        return "unresolved", None
+        return "unresolved", None, ""
     target = next((m for m in members if m.label == pick), None)
     if target is None:
-        return "unresolved", None
+        return "unresolved", None, ""
     try:
         loc = _locator(page, target)
         if loc.count() == 0:
-            return "unresolved", None
+            return "unresolved", None, ""
         loc.scroll_into_view_if_needed(timeout=3_000)
         loc.check(timeout=4_000)
-        return "filled", pick
+        return "filled", pick, via
     except Exception:  # noqa: BLE001
         logger.debug("checkbox group fill failed for %r", question, exc_info=True)
-        return "unresolved", None
+        return "unresolved", None, ""
 
 
 def _file_input_locator(page, field):
@@ -361,9 +548,65 @@ def _file_input_locator(page, field):
     return _locator(page, field)
 
 
-def _upload_files(page, form, resume_pdf: str, cover_pdf: str | None) -> None:
+def _is_ashby_autofill_file(field) -> bool:
+    hint = f"{field.label} {field.name_attr} {field.section_header}".lower()
+    return "autofill from resume" in hint or "autofill from résumé" in hint
+
+
+def _upload_ashby_required_resume_input(page, resume_pdf: str) -> bool:
+    """Upload to Ashby's required system resume input, not the optional autofill input."""
+    selector = (
+        'input[type="file"][id="_systemfield_resume"], '
+        'input[type="file"][name="_systemfield_resume"]'
+    )
+    try:
+        loc = page.locator(selector).first
+        if loc.count() == 0:
+            return False
+        loc.set_input_files(resume_pdf, timeout=8_000)
+        _wait_upload_complete(page)
+        return True
+    except Exception:  # noqa: BLE001
+        logger.debug("Ashby required resume input upload failed", exc_info=True)
+        return False
+
+
+def _upload_ashby_resume(page, resume_pdf: str) -> bool:
+    """Ashby renders upload controls as buttons that open a file chooser."""
+    if _upload_ashby_required_resume_input(page, resume_pdf):
+        return True
+    for label in ("Upload File", "Upload file"):
+        try:
+            button = page.get_by_role("button", name=label, exact=False).last
+            if button.count() == 0:
+                continue
+            button.scroll_into_view_if_needed(timeout=3_000)
+            with page.expect_file_chooser(timeout=8_000) as chooser_info:
+                button.click(timeout=4_000)
+            chooser_info.value.set_files(resume_pdf)
+            _wait_upload_complete(page)
+            return True
+        except Exception:  # noqa: BLE001
+            logger.debug("Ashby resume upload failed via %r", label, exc_info=True)
+            continue
+    return False
+
+
+def _upload_files(
+    page,
+    form,
+    resume_pdf: str,
+    cover_pdf: str | None,
+    *,
+    family: str = "",
+) -> None:
+    uploaded_resume = False
+    if family == "ashby":
+        uploaded_resume = _upload_ashby_required_resume_input(page, resume_pdf)
     for f in form.fields:
         if f.type != "file":
+            continue
+        if family == "ashby" and _is_ashby_autofill_file(f):
             continue
         # Use label + name + section so the resume/cover inputs (both labelled
         # "Attach" on modern Greenhouse) are told apart by their name/id.
@@ -378,9 +621,50 @@ def _upload_files(page, form, resume_pdf: str, cover_pdf: str | None) -> None:
             target = resume_pdf
         try:
             _file_input_locator(page, f).set_input_files(target, timeout=8_000)
+            if not is_cover:
+                uploaded_resume = True
             _wait_upload_complete(page)
         except Exception:  # noqa: BLE001
             logger.debug("file upload failed for %r", f.label, exc_info=True)
+    if not uploaded_resume and family == "ashby":
+        _upload_ashby_resume(page, resume_pdf)
+
+
+_ASHBY_REQUIRED_VISIBLE_CONTROLS: tuple[tuple[str, str], ...] = (
+    (
+        "Are you legally authorized to work in the country where this role is located, for any employer?",
+        "Yes",
+    ),
+    (
+        "Will you now or will you in the future require employment visa sponsorship?",
+        "require_sponsorship",
+    ),
+    (
+        "Will you now or in the future require Notion to sponsor an immigration case in order to employ you?",
+        "require_sponsorship",
+    ),
+    (
+        "Are you excited and able to join us in person on those days?",
+        "Yes",
+    ),
+    (
+        "We work from our offices on Mondays, Tuesdays, and Thursdays (Anchor Days). If you need an accommodation, we’ll partner with you and explore reasonable options consistent with applicable law. Are you able to commit to working from one of our offices on Anchor Days each week?",
+        "Yes",
+    ),
+)
+
+
+def _fill_ashby_required_visible_controls(page, tokens: dict) -> list[tuple[str, str]]:
+    filled: list[tuple[str, str]] = []
+    for label, answer_or_token in _ASHBY_REQUIRED_VISIBLE_CONTROLS:
+        answer = tokens.get(answer_or_token, "") if answer_or_token in tokens else answer_or_token
+        if not str(answer or "").strip():
+            continue
+        field = profile_binding.Field(label=label)
+        if _click_option_near_label(page, field, str(answer)):
+            filled.append((label, str(answer)))
+            page.wait_for_timeout(250)
+    return filled
 
 
 def _wait_upload_complete(page) -> None:
@@ -480,18 +764,72 @@ def _try_clear_verification_wall(
 
 
 def _click_submit(page, adapter: Adapter) -> bool:
+    # 1) Text-matched submit control (button / link / input / any element whose
+    #    normalized text equals a submit label). unblock._click_text handles
+    #    scroll-into-view, overlay-intercept (force), and styled buttons.
     for text in adapter.submit_button_texts:
         try:
-            btn = page.get_by_role("button", name=text, exact=False).first
-            if btn.count() == 0:
-                btn = page.locator(f'input[type="submit"][value*="{text}" i]').first
-            if btn.count() > 0:
-                btn.scroll_into_view_if_needed(timeout=3_000)
-                btn.click(timeout=8_000)
+            inp = page.locator(f'input[type="submit"][value*="{text}" i]').first
+            if inp.count() > 0:
+                inp.scroll_into_view_if_needed(timeout=3_000)
+                inp.click(timeout=8_000)
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+        if unblock._click_text(page, text):
+            return True
+    # 2) Fallback: a real submit control exists but its text didn't match our
+    #    list (custom label). We only reach here AFTER the identity guard
+    #    confirmed this is a genuine application form, so the lone submit on the
+    #    page is the application submit. Prefer an unambiguous single candidate.
+    for sel in ('button[type="submit"]', 'input[type="submit"]'):
+        try:
+            loc = page.locator(sel)
+            if loc.count() == 1:
+                cand = loc.first
+                cand.scroll_into_view_if_needed(timeout=3_000)
+                cand.click(timeout=8_000)
                 return True
         except Exception:  # noqa: BLE001
             continue
     return False
+
+
+# Multi-step forms advance with one of these controls. They are NOT a final
+# submit (clicking one does not send the application — it only reveals the next
+# page), so it is safe to click them even during a dry run.
+_ADVANCE_BUTTON_TEXTS: tuple[str, ...] = (
+    "next", "continue", "save and continue", "save & continue", "next step",
+    "next: ", "proceed", "review", "save and next", "continue to",
+)
+# Words that mean an irreversible side-effect, never auto-clicked as "advance".
+_ADVANCE_DENY = ("submit", "apply", "create account", "register", "sign up", "pay")
+
+
+def _multistep_max_pages() -> int:
+    try:
+        return max(1, int(os.environ.get("APPLYPILOT_DIRECT_MAX_PAGES", "6")))
+    except ValueError:
+        return 6
+
+
+def _find_advance_button(page):
+    """Return a clickable 'Next/Continue' control for a multi-step form, or None.
+
+    Only matches pure-navigation controls (never a final Submit/Apply or an
+    account-creation button), so advancing has no irreversible side-effect.
+    """
+    try:
+        cands = page.evaluate(unblock._CLICKABLES_JS)
+    except Exception:  # noqa: BLE001
+        return None
+    for text in cands:
+        low = text.strip().lower()
+        if not low or any(d in low for d in _ADVANCE_DENY):
+            continue
+        if any(low == t or low.startswith(t) for t in _ADVANCE_BUTTON_TEXTS):
+            return text
+    return None
 
 
 # Options live only inside the OPEN menu. Scope to it — reading bare
@@ -505,12 +843,18 @@ _OPTION_SELECTOR_GREENHOUSE = (
     '.select__menu .select__option, .select__menu [role="option"]'
 )
 _OPTION_SELECTOR_ASHBY = '[role="listbox"] [role="option"], [data-headlessui-state] [role="option"]'
+_OPTION_SELECTOR_LEVER = (
+    '.select__menu .select__option, .select__menu [role="option"], '
+    '[role="listbox"] [role="option"]'
+)
 _OPTION_SELECTOR = _OPTION_SELECTOR_GREENHOUSE
 
 
 def _option_selector(family: str) -> str:
     if family == "ashby":
         return _OPTION_SELECTOR_ASHBY
+    if family == "lever":
+        return _OPTION_SELECTOR_LEVER
     return _OPTION_SELECTOR_GREENHOUSE
 
 
@@ -563,6 +907,25 @@ _MARK_COMBO_JS = r"""(label) => {
 }"""
 
 
+_MARK_ASHBY_COMBO_JS = r"""(label) => {
+  const norm = s => (s||'').replace(/\s+/g,' ').trim().toLowerCase();
+  const want = norm(label).slice(0, 80);
+  document.querySelectorAll('[data-ap-open]').forEach(e => e.removeAttribute('data-ap-open'));
+  if (!want) return false;
+  const texts = [...document.querySelectorAll('label, [class*="label"], [class*="Label"], [class*="field"], [class*="Field"]')];
+  for (const el of texts) {
+    const txt = norm(el.innerText || el.textContent || '').slice(0, 120);
+    if (!txt || !(txt === want || txt.includes(want) || want.includes(txt))) continue;
+    let root = el;
+    for (let i = 0; i < 6 && root; i++, root = root.parentElement) {
+      const combo = root.querySelector('input[role="combobox"], [role="combobox"]');
+      if (combo) { combo.setAttribute('data-ap-open', '1'); return true; }
+    }
+  }
+  return false;
+}"""
+
+
 def _split_multi_answer(answer: str) -> list[str]:
     import re as _re
 
@@ -602,6 +965,17 @@ def _fill_combobox(
             if not page.evaluate(_MARK_COMBO_JS, field.label):
                 return "error", None
             opener = page.locator('[data-ap-open="1"]').first
+        elif family == "ashby":
+            if page.evaluate(_MARK_ASHBY_COMBO_JS, field.label):
+                opener = page.locator('[data-ap-open="1"]').first
+            elif "location" in field.label.lower():
+                opener = page.locator(
+                    'input[role="combobox"][placeholder*="Start typing"]'
+                ).first
+            else:
+                opener = page.get_by_role("combobox", name=field.label, exact=False).first
+                if opener.count() == 0:
+                    opener = page.locator(f'[aria-label*="{field.label[:40]}"]').first
         else:
             opener = page.get_by_role("combobox", name=field.label, exact=False).first
             if opener.count() == 0:
@@ -706,8 +1080,18 @@ def apply_via_direct(
     can_content_sniff = (
         adapter is None and family == fingerprint.UNKNOWN_FAMILY and bool(url)
     )
+    from applypilot.apply.direct import generic as generic_mod
+
     if adapter is None and not can_content_sniff:
-        return done("failed:direct_no_adapter", escalate=True, reason="no_adapter")
+        # No known adapter and not a sniffable custom-domain embed. Attempt the
+        # form generically (extract→resolve→fill→verify is vendor-agnostic) so we
+        # can apply on plain company forms / Indian ATS. Excluded families
+        # (greenhouse/ashby) are never attempted here — the launcher parks them.
+        excluded = apply_settings.skipped_ats_families()
+        if family not in excluded and generic_mod.generic_form_enabled() and url:
+            adapter = generic_mod.ADAPTER
+        else:
+            return done("failed:direct_no_adapter", escalate=True, reason="no_adapter")
     if not url:
         return done("failed:direct_no_url", escalate=True, reason="no_url")
 
@@ -743,7 +1127,53 @@ def apply_via_direct(
             page.goto(nav_url, wait_until="domcontentloaded", timeout=_NAV_TIMEOUT_MS)
         except Exception:  # noqa: BLE001
             return done("failed:direct_nav_timeout", escalate=True, reason="nav_timeout")
+        if family == "ashby":
+            try:
+                page.wait_for_load_state("networkidle", timeout=15_000)
+            except Exception:  # noqa: BLE001
+                pass
         page.wait_for_timeout(1_200)
+
+        # Login wall? Pause for a human to sign in rather than failing. The job is
+        # parked awaiting_login (reversible); after you log in + Resume it retries.
+        from applypilot.apply import login_gate
+        from applypilot.apply.direct import login_detect
+
+        try:
+            has_pw = page.locator("input[type=password]").count() > 0
+        except Exception:  # noqa: BLE001
+            has_pw = False
+        try:
+            quick_fields = page.locator("input, textarea, select").count()
+        except Exception:  # noqa: BLE001
+            quick_fields = 0
+        body_text = _body_text_lower(page)
+        try:
+            html_text = page.content()
+        except Exception:  # noqa: BLE001
+            html_text = ""
+        if login_detect.detect_login_required(
+            page.url,
+            body_text=body_text,
+            has_password_field=has_pw,
+            application_field_count=quick_fields,
+        ):
+            dom = login_detect.login_domain(page.url) or login_detect.login_domain(url)
+            has_google = login_detect.has_google_signin(body_text, html=html_text)
+            login_reason = "login_required" if has_google else "login_required_no_google"
+            login_gate.request_login(
+                dom,
+                url=url,
+                reason=login_reason,
+                has_google_signin=has_google,
+            )
+            logger.info(
+                "[W%d] Direct login wall on %s — awaiting login (%s)",
+                worker_id,
+                dom,
+                login_reason,
+            )
+            return done(f"awaiting_login:{dom}", reason=login_reason)
 
         # Content-based ATS detection: the URL fingerprint said 'unknown', so
         # sniff the loaded page for a known backing ATS (custom-domain Greenhouse
@@ -758,9 +1188,15 @@ def apply_via_direct(
                     sniffed_family, sniffed_form_url = _content_sniff_family(page)
             sniffed_adapter = get_adapter(sniffed_family)
             if sniffed_adapter is None:
-                return done(
-                    "failed:direct_no_adapter", escalate=True, reason="no_adapter"
-                )
+                # Not a recognized embed — attempt the form generically rather
+                # than give up (parks on uncertainty, never junk-submits).
+                if generic_mod.generic_form_enabled():
+                    sniffed_family = generic_mod.GENERIC_FAMILY
+                    sniffed_adapter = generic_mod.ADAPTER
+                else:
+                    return done(
+                        "failed:direct_no_adapter", escalate=True, reason="no_adapter"
+                    )
             family = sniffed_family
             # URL still reads 'unknown', so derive the fingerprint from the
             # content-detected family (not the URL) for correct outcome records.
@@ -791,88 +1227,73 @@ def apply_via_direct(
             return done("expired")
 
         _reveal_form(page, adapter)
+        if family == "ashby":
+            _wait_for_form_ready(page)
         form = extractor.extract_fields(page)
         fields = form.fillable()
+
+        # Form-acquisition gate. The Driver can fill any form it can see, but it
+        # cannot navigate: a job-board landing page, an off-page Apply link, a
+        # cookie/login wall, or a slow JS mount all leave us without the real
+        # application form. Detect that here — no form, a partial form, or a
+        # 2+-field form with NO identity field (search box / newsletter) — and
+        # hand the page to the Gemini unblock tier to surface the real form.
+        # Only then fill. This also prevents filling/submitting the wrong form.
+        needs_unblock = (
+            form.partial
+            or len(fields) < 2
+            or not unblock.has_identity_field(fields)
+        )
+        if needs_unblock and unblock.unblock_enabled():
+            block_reason = (
+                "partial_form" if form.partial
+                else "no_form" if len(fields) < 2
+                else "no_application_form"
+            )
+            try:
+                if unblock.gemini_unblock(
+                    page, job, family=family, worker_id=worker_id,
+                    reason=block_reason,
+                ):
+                    _reveal_form(page, adapter)
+                    form = extractor.extract_fields(page)
+                    fields = form.fillable()
+            except unblock.GeminiQuotaExhausted as exc:
+                # Gemini is capped — fall through to the normal escalate path so
+                # the next tier (Claude, if allowed) or park-and-continue runs.
+                return done(
+                    "failed:direct_unblock_quota", escalate=True,
+                    reason=f"gemini_quota:{block_reason}",
+                )
+
         if form.partial:
             return done("failed:direct_partial_form", escalate=True, reason="partial_form")
         if len(fields) < 2:
             return done("failed:direct_no_form", escalate=True, reason="no_form")
+        if not unblock.has_identity_field(fields):
+            return done(
+                "failed:direct_no_application_form", escalate=True,
+                reason="no_application_form",
+            )
 
         tokens = _build_tokens(job, resume_pdf)
-        # Three field classes, each handled differently:
-        #   - file       -> _upload_files (never the answer resolver)
-        #   - combobox   -> opened individually, resolved against live options
-        #   - regular    -> one upfront batch resolve + fill
-        combos = [f for f in fields if f.combobox]
-        non_combo = [f for f in fields if not f.combobox and f.type != "file"]
-        # Required checkbox GROUPS (>=2 checkboxes sharing a name, e.g. the
-        # "how did you hear about us?" multi-select) need exactly one option
-        # checked — not one answer per member. Pull their members out of the
-        # per-field resolve so each isn't treated as a standalone required field.
-        checkbox_groups: dict[str, list] = {}
-        for f in non_combo:
-            if f.type == "checkbox" and f.name_attr:
-                checkbox_groups.setdefault(f.name_attr, []).append(f)
-        multi_group_keys = [k for k, v in checkbox_groups.items() if len(v) > 1]
-        group_member_keys = {
-            f.key for k in multi_group_keys for f in checkbox_groups[k]
-        }
-        regular = [f for f in non_combo if f.key not in group_member_keys]
 
-        # Let JS widgets (intl-tel-input, react-select) finish initializing
-        # before filling; otherwise a value set too early is misparsed (e.g. an
-        # international phone read as an over-long US number).
-        page.wait_for_timeout(1_500)
+        # ---- Per-page fill loop (multi-step forms) ----------------------------
+        # Many portals paginate: page 1 collects identity + resume with a
+        # "Next"/"Continue" button, later pages add questions, then a final
+        # Submit. We fill the current page, and if a pure-navigation advance
+        # button is present (never a Submit/Apply/Create-account), click it and
+        # repeat. Clicking Next has no irreversible side-effect, so the loop runs
+        # in dry-run too (it just stops before the FINAL submit). filled_rows and
+        # the resolver outcome accumulate across pages.
+        from applypilot.apply.cover_resolve import resolve_apply_cover_letter
 
-        outcome = resolver.resolve(
-            regular, tokens, job=job, gemini_enabled=gemini_enabled
-        )
-        filled_rows: list[dict] = []  # what we actually put on the form (per company)
-        for f in regular:
-            ans = outcome.answers.get(f.key)
-            if ans:
-                if _fill_field(page, f, ans):
-                    filled_rows.append(
-                        _record_row(f.label, ans, ftype=f.type or f.tag,
-                                    via=outcome.via.get(f.key, ""))
-                    )
-                _sleep_fill()
-
-        unresolved_required = list(outcome.unresolved_required)
-        unresolved_labels: list[str] = []
-        for f in combos:
-            status, sub = _fill_combobox(
-                page, f, tokens, gemini_enabled=gemini_enabled, family=family
-            )
-            if sub is not None:
-                outcome.tier_max = max(outcome.tier_max, sub.tier_max)
-                outcome.llm_field_count += sub.llm_field_count
-            if status == "filled" and sub is not None:
-                filled_rows.append(
-                    _record_row(f.label, sub.answers.get(f.key, ""),
-                                ftype="select", via=sub.via.get(f.key, ""))
-                )
-            if status != "filled" and f.required:
-                unresolved_required.append(f.key)
-                unresolved_labels.append(f"{f.label[:50]} [{status}]")
-            _sleep_fill()
-
-        for gkey in multi_group_keys:
-            members = checkbox_groups[gkey]
-            status, pick = _fill_checkbox_group(page, members)
-            if status == "filled":
-                filled_rows.append(
-                    _record_row(
-                        members[0].section_header or "checkbox group",
-                        pick or "", ftype="checkbox", via="group",
-                    )
-                )
-            elif any(m.required for m in members):
-                unresolved_required.append(gkey)
-                unresolved_labels.append(
-                    f"{(members[0].section_header or members[0].label)[:50]} [group]"
-                )
-            _sleep_fill()
+        filled_rows: list[dict] = []
+        outcome = None
+        unresolved_state: dict[str, int] = {"count": 0}
+        cover_upload: str | None = None
+        cover_resolved = False
+        max_pages = _multistep_max_pages()
 
         def _form_record(extra_errors=None) -> dict:
             return {
@@ -882,66 +1303,225 @@ def apply_via_direct(
                 "fields": filled_rows,
                 "fill_actions": [],
                 "visible_errors": list(extra_errors or []),
-                "empty_required": len(unresolved_required),
+                "empty_required": unresolved_state["count"],
                 "field_count": len(filled_rows),
                 "engine": "direct",
             }
 
-        from applypilot.apply.cover_resolve import resolve_apply_cover_letter
+        def _required_empty_fields(form_state):
+            # A required checkbox GROUP is satisfied once any one member is
+            # checked; the other members staying empty is expected, not a block.
+            checked_group_names = {
+                f.name_attr for f in form_state.fields
+                if f.type == "checkbox" and f.name_attr and str(f.value).strip()
+            }
+            return [
+                f for f in form_state.fields
+                if f.required and not f.combobox and not str(f.value).strip()
+                and not (f.type == "checkbox" and f.name_attr in checked_group_names)
+            ]
 
-        _cl_text, _cl_txt, cover_pdf = resolve_apply_cover_letter(job)
-        cover_upload = cover_pdf or None
-        _upload_files(page, form, resume_pdf, cover_upload)
-        page.wait_for_timeout(800)
+        for page_num in range(max_pages):
+            if page_num > 0:
+                # New page after clicking Next: wait for the next step's form to
+                # mount (SPA pages render after navigation) before reading it, so
+                # a slow page is not mistaken for a confirmation page.
+                _wait_for_form_ready(page)
+                form = extractor.extract_fields(page)
+                fields = form.fillable()
+                if len(fields) < 2 or not unblock.has_identity_field(fields) and not any(
+                    f.required for f in fields
+                ):
+                    # Confirmation/review page (just a Submit, or only optional
+                    # fields) — finalize and submit.
+                    break
 
-        _persist_form_filled(job.get("url") or url, _form_record(unresolved_labels))
+            # Three field classes, each handled differently:
+            #   - file       -> _upload_files (never the answer resolver)
+            #   - combobox   -> opened individually, resolved against live options
+            #   - regular    -> one upfront batch resolve + fill
+            combos = [f for f in fields if f.combobox]
+            non_combo = [f for f in fields if not f.combobox and f.type != "file"]
+            # Required checkbox GROUPS (>=2 checkboxes sharing a name) need exactly
+            # one option checked — pull their members out of the per-field resolve.
+            checkbox_groups: dict[str, list] = {}
+            for f in non_combo:
+                if f.type == "checkbox" and f.name_attr:
+                    checkbox_groups.setdefault(f.name_attr, []).append(f)
+            multi_group_keys = [k for k, v in checkbox_groups.items() if len(v) > 1]
+            group_member_keys = {
+                f.key for k in multi_group_keys for f in checkbox_groups[k]
+            }
+            regular = [f for f in non_combo if f.key not in group_member_keys]
 
-        if unresolved_required:
-            logger.info(
-                "[W%d] Direct unresolved required on %s: %d field(s): %s",
-                worker_id, family, len(unresolved_required),
-                "; ".join(unresolved_labels[:8]),
-            )
-            return done(
-                "failed:direct_unresolved_required",
-                escalate=True, reason="unresolved_required",
-                outcome=outcome, fields_total=len(fields),
-            )
+            # Let JS widgets (intl-tel-input, react-select) finish initializing.
+            page.wait_for_timeout(1_500)
 
-        # Final guard: re-extract and confirm no required *non-combobox* field is
-        # still empty (react-select keeps its selection outside input.value, so
-        # comboboxes are trusted from the fill step above, not re-read here).
-        verify = extractor.extract_fields(page)
-        # A required checkbox GROUP is satisfied once any one member is checked;
-        # the other members staying empty is expected, not a blocking gap.
-        checked_group_names = {
-            f.name_attr for f in verify.fields
-            if f.type == "checkbox" and f.name_attr and str(f.value).strip()
-        }
-        still_empty = [
-            f for f in verify.fields
-            if f.required and not f.combobox and not str(f.value).strip()
-            and not (f.type == "checkbox" and f.name_attr in checked_group_names)
-        ]
-        if still_empty:
-            blocking = [f"{f.label} ({f.tag}/{f.type})" for f in still_empty]
-            logger.info(
-                "[W%d] Direct verify incomplete on %s — %d required empty: %s",
-                worker_id, family, len(still_empty), "; ".join(blocking[:12]),
+            page_outcome = resolver.resolve(
+                regular, tokens, job=job, gemini_enabled=gemini_enabled
             )
-            return done(
-                "failed:direct_verify_incomplete",
-                escalate=True, reason=f"empty_required={len(still_empty)}",
-                outcome=outcome, fields_total=len(fields),
-            )
+            if outcome is None:
+                outcome = page_outcome
+            else:
+                outcome.tier_max = max(outcome.tier_max, page_outcome.tier_max)
+                outcome.llm_field_count += page_outcome.llm_field_count
+            for f in regular:
+                ans = page_outcome.answers.get(f.key)
+                if ans:
+                    if _fill_field(page, f, ans, family=family):
+                        filled_rows.append(
+                            _record_row(f.label, ans, ftype=f.type or f.tag,
+                                        via=page_outcome.via.get(f.key, ""))
+                        )
+                    _sleep_fill()
+
+            unresolved_required = list(page_outcome.unresolved_required)
+            unresolved_labels: list[str] = []
+            for f in combos:
+                status, sub = _fill_combobox(
+                    page, f, tokens, gemini_enabled=gemini_enabled, family=family
+                )
+                if sub is not None:
+                    outcome.tier_max = max(outcome.tier_max, sub.tier_max)
+                    outcome.llm_field_count += sub.llm_field_count
+                if status == "filled" and sub is not None:
+                    filled_rows.append(
+                        _record_row(f.label, sub.answers.get(f.key, ""),
+                                    ftype="select", via=sub.via.get(f.key, ""))
+                    )
+                if status != "filled" and f.required:
+                    unresolved_required.append(f.key)
+                    unresolved_labels.append(f"{f.label[:50]} [{status}]")
+                _sleep_fill()
+
+            for gkey in multi_group_keys:
+                members = checkbox_groups[gkey]
+                status, pick, via = _fill_checkbox_group(
+                    page, members, tokens=tokens, job=job, gemini_enabled=gemini_enabled,
+                )
+                if status == "filled":
+                    filled_rows.append(
+                        _record_row(
+                            members[0].section_header or "checkbox group",
+                            pick or "", ftype="checkbox", via=via or "group",
+                        )
+                    )
+                elif any(m.required for m in members):
+                    unresolved_required.append(gkey)
+                    unresolved_labels.append(
+                        f"{(members[0].section_header or members[0].label)[:50]} [group]"
+                    )
+                _sleep_fill()
+
+            # Safety guard (page 1 only): if we filled NO identity field, this is
+            # a search box / cookie banner / landing page, NOT an application —
+            # never submit it.
+            if page_num == 0 and _identity_fields_filled(filled_rows) == 0:
+                logger.info(
+                    "[W%d] Direct: no application form on %s "
+                    "(%d fields, 0 identity filled) — not submitting",
+                    worker_id, family, len(fields),
+                )
+                _persist_form_filled(job.get("url") or url, _form_record_stub(
+                    url, job, filled_rows, ["no_application_form"]
+                ))
+                return done(
+                    "failed:direct_no_application_form",
+                    escalate=True, reason="no_application_form",
+                    outcome=outcome, fields_total=len(fields),
+                )
+
+            # Upload resume/cover on any page that exposes a file input.
+            if any(f.type == "file" for f in fields):
+                if not cover_resolved:
+                    _cl_text, _cl_txt, cover_pdf = resolve_apply_cover_letter(job)
+                    cover_upload = cover_pdf or None
+                    cover_resolved = True
+                _upload_files(page, form, resume_pdf, cover_upload, family=family)
+            if family == "ashby":
+                for label, value in _fill_ashby_required_visible_controls(page, tokens):
+                    filled_rows.append(
+                        _record_row(label, value, ftype="option", via="ashby")
+                    )
+            page.wait_for_timeout(800)
+
+            unresolved_state["count"] = len(unresolved_required)
+            _persist_form_filled(job.get("url") or url, _form_record(unresolved_labels))
+
+            if unresolved_required:
+                logger.info(
+                    "[W%d] Direct unresolved required on %s p%d: %d field(s): %s",
+                    worker_id, family, page_num, len(unresolved_required),
+                    "; ".join(unresolved_labels[:8]),
+                )
+                return done(
+                    "failed:direct_unresolved_required",
+                    escalate=True, reason="unresolved_required",
+                    outcome=outcome, fields_total=len(fields),
+                )
+
+            # Re-extract and confirm no required non-combobox field is still empty.
+            verify = extractor.extract_fields(page)
+            still_empty = _required_empty_fields(verify)
+            if still_empty:
+                retry_fields = [
+                    f for f in still_empty if f.type != "file" and f.tag != "select"
+                ]
+                if retry_fields:
+                    retry = resolver.resolve(
+                        retry_fields, tokens, job=job, gemini_enabled=gemini_enabled,
+                    )
+                    outcome.tier_max = max(outcome.tier_max, retry.tier_max)
+                    outcome.llm_field_count += retry.llm_field_count
+                    for f in retry_fields:
+                        ans = retry.answers.get(f.key)
+                        if ans and _fill_field(page, f, ans, family=family):
+                            filled_rows.append(
+                                _record_row(f.label, ans, ftype=f.type or f.tag,
+                                            via=retry.via.get(f.key, ""))
+                            )
+                            _sleep_fill()
+                if any(f.type == "file" for f in still_empty) and family == "ashby":
+                    _upload_ashby_resume(page, resume_pdf)
+                page.wait_for_timeout(600)
+                verify = extractor.extract_fields(page)
+                still_empty = _required_empty_fields(verify)
+            if still_empty:
+                blocking = [f"{f.label} ({f.tag}/{f.type})" for f in still_empty]
+                logger.info(
+                    "[W%d] Direct verify incomplete on %s p%d — %d required empty: %s",
+                    worker_id, family, page_num, len(still_empty), "; ".join(blocking[:12]),
+                )
+                return done(
+                    "failed:direct_verify_incomplete",
+                    escalate=True, reason=f"empty_required={len(still_empty)}",
+                    outcome=outcome, fields_total=len(fields),
+                )
+
+            # Page complete and valid. Multi-step? Click Next and fill the next
+            # page; otherwise drop out to the final-submit section below.
+            advance = _find_advance_button(page)
+            if advance and page_num < max_pages - 1:
+                logger.info(
+                    "[W%d] Direct multi-step: page %d filled, advancing via %r",
+                    worker_id, page_num, advance,
+                )
+                if not unblock._click_text(page, advance):
+                    logger.info("[W%d] Direct multi-step: advance click missed — finalizing",
+                                worker_id)
+                    break
+                page.wait_for_timeout(1_800)
+                continue
+            break
+        # ---- end per-page loop ------------------------------------------------
+
+        if outcome is None:
+            return done("failed:direct_no_form", escalate=True, reason="no_form")
 
         # Anti-bot wall: a few employers (e.g. Airbnb) require an emailed
-        # verification code before Submit activates. The deterministic engine
-        # can't read email — that's the Claude+Gmail path's job — so detect this
-        # specific blocking wall and escalate cleanly. NOTE: do NOT treat a
-        # reCAPTCHA element as a block — Greenhouse mounts an invisible
-        # reCAPTCHA v3 on every form that does not stop a normal submit; keying
-        # off it flags every clean form as "needs verification" (false positive).
+        # verification code before Submit activates. NOTE: do NOT treat a
+        # reCAPTCHA element as a block — Greenhouse mounts an invisible v3 on
+        # every form that does not stop a normal submit.
         pre_submit_body = _body_text_lower(page)
         if _verification_wall_present(pre_submit_body):
             cleared, wall_reason = _try_clear_verification_wall(
@@ -962,8 +1542,8 @@ def apply_via_direct(
 
         if dry_run:
             result_dr.result = "skipped:direct_dry_run"
-            logger.info("[W%d] Direct dry-run filled %d fields (no submit): %s",
-                        worker_id, len(fields), url[:80])
+            logger.info("[W%d] Direct dry-run filled %d fields across pages (no submit): %s",
+                        worker_id, len(filled_rows), url[:80])
             return result_dr
 
         pre_url = page.url

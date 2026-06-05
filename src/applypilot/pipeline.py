@@ -43,7 +43,7 @@ ALL_STAGES = STAGE_ORDER + OPTIONAL_STAGES
 
 STAGE_META: dict[str, dict] = {
     "role_resumes": {"desc": "One-time prep: role-specific resume PDFs (skips when complete)"},
-    "discover": {"desc": "Job discovery (JobSpy + Workday + smart extract)"},
+    "discover": {"desc": "Job discovery (JobSpy + Workday + LinkedIn harvest + smart extract)"},
     "enrich":   {"desc": "Detail enrichment (full descriptions + apply URLs)"},
     "filter":   {"desc": "Cheap relevance filter (location, salary, title, JD/profile signals)"},
     "score":    {"desc": "LLM scoring (fit 1-10)"},
@@ -73,7 +73,7 @@ _UPSTREAM: dict[str, str | None] = {
 # ---------------------------------------------------------------------------
 
 def _run_discover(workers: int = 1) -> dict:
-    """Stage: Job discovery — feeds, ATS, career targets, JobSpy, Workday, SmartExtract."""
+    """Stage: Job discovery — feeds, ATS, career targets, JobSpy, Workday, LinkedIn, SmartExtract."""
     console.print("  [cyan]Discover v2 (unified sources)...[/cyan]")
     try:
         from applypilot.discovery.runner import run_discover
@@ -463,7 +463,7 @@ def _stage_progress_snapshot(
         return {
             "stage": stage,
             "total": total,
-            "detail": "JobSpy, Workday, and smart extract",
+            "detail": "JobSpy, Workday, LinkedIn harvest, and smart extract",
         }
 
     if stage == "filter":

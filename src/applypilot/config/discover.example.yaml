@@ -18,6 +18,9 @@ sources:
   greenhouse: true
   lever: true
   ashby: true
+  # Opens visible Chrome with your persistent LinkedIn login and captures
+  # employer-side apply form URLs. Enable only when you can keep Chrome signed in.
+  linkedin_harvest: false
   career_targets: true
   funded_startups: false
 
@@ -52,6 +55,17 @@ startupjobs:
   # wellfound.indexed_results_file; rows are imported only when an employer ATS
   # URL is present, preserving StartupJobs as the discovery source.
   indexed_results_file: ""
+
+linkedin_harvest:
+  keywords:
+    - "backend engineer"
+    - "full stack engineer"
+  max_jobs: 15
+  expand_company: false
+  max_company_jobs: 5
+  expand_employer: true
+  max_employer_jobs: 5
+  worker_id: 0
 
 hn_hiring:
   url: "https://hnhiring.com/locations/remote"

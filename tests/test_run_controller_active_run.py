@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -54,6 +55,23 @@ def test_get_active_run_falls_back_to_db_without_memory_handle(temp_db):
     assert run["id"] == "run-db-only"
     assert run["status"] == "running"
     assert run["current_stage"] == "discover"
+
+
+def test_subprocess_env_prepends_local_tool_paths(monkeypatch):
+    import applypilot.orchestration.run_controller as rc
+
+    monkeypatch.setenv("PATH", "/bin")
+
+    env = rc._subprocess_env("run-path")
+    parts = env["PATH"].split(":")
+
+    assert env["APPLYPILOT_RUN_ID"] == "run-path"
+    assert parts[:3] == [
+        str(Path.home() / ".local" / "bin"),
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+    ]
+    assert parts[-1] == "/bin"
 
 
 def test_reconcile_keeps_running_run_with_recent_events(temp_db, monkeypatch):

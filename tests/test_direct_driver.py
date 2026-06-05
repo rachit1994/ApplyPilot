@@ -15,7 +15,7 @@ from applypilot.apply.direct.adapters import get_adapter
 # Adapter dispatch
 # --------------------------------------------------------------------------- #
 
-def test_greenhouse_adapter_dispatched():
+def test_greenhouse_adapter_dispatched(no_skip_ats):
     adapter = get_adapter("greenhouse")
     assert adapter is not None
     assert adapter.family == "greenhouse"
@@ -23,7 +23,7 @@ def test_greenhouse_adapter_dispatched():
 
 
 @pytest.mark.parametrize("family", ["lever", "ashby"])
-def test_lever_ashby_adapter_dispatched(family):
+def test_lever_ashby_adapter_dispatched(family, no_skip_ats):
     adapter = get_adapter(family)
     assert adapter is not None
     assert adapter.family == family
@@ -161,6 +161,81 @@ def test_driver_no_url():
     assert dr.result == "failed:direct_no_adapter"  # unknown family from empty url
 
 
+def test_checkbox_group_uses_gemini_when_deterministic_rules_do_not_apply(monkeypatch):
+    from applypilot.apply.direct.profile_binding import Field
+
+    members = [
+        Field(
+            label="Interview engineering",
+            type="checkbox",
+            tag="input",
+            name_attr="background",
+            section_header="Which background best describes you?",
+            required=True,
+            key="bg_1",
+        ),
+        Field(
+            label="Software engineering",
+            type="checkbox",
+            tag="input",
+            name_attr="background",
+            section_header="Which background best describes you?",
+            required=True,
+            key="bg_2",
+        ),
+    ]
+
+    class Outcome:
+        answers = {"checkbox_group|background": "Software engineering"}
+        via = {"checkbox_group|background": "t2:gemini"}
+
+    monkeypatch.setattr(driver.resolver, "resolve", lambda *a, **k: Outcome())
+
+    pick, via = driver._resolve_checkbox_group_pick(
+        members,
+        tokens={"full_name": "Rachit Srivastava"},
+        job={"title": "Full-Stack Engineer"},
+        gemini_enabled=True,
+    )
+
+    assert pick == "Software engineering"
+    assert via == "t2:gemini"
+
+
+def test_checkbox_group_stays_unresolved_when_gemini_disabled():
+    from applypilot.apply.direct.profile_binding import Field
+
+    members = [
+        Field(
+            label="AWS",
+            type="checkbox",
+            tag="input",
+            name_attr="certs",
+            section_header="Which certifications do you hold?",
+            required=True,
+            key="cert_1",
+        ),
+        Field(
+            label="GCP",
+            type="checkbox",
+            tag="input",
+            name_attr="certs",
+            section_header="Which certifications do you hold?",
+            required=True,
+            key="cert_2",
+        ),
+    ]
+
+    pick, via = driver._resolve_checkbox_group_pick(
+        members,
+        tokens={},
+        gemini_enabled=False,
+    )
+
+    assert pick is None
+    assert via == ""
+
+
 @pytest.mark.parametrize("url,expected", [
     # custom-domain Greenhouse -> hosted embed form
     ("https://careers.datadoghq.com/detail/7683726/?gh_jid=7683726",
@@ -198,7 +273,7 @@ class _FakePage:
         return self._html
 
 
-def test_content_sniff_detects_greenhouse_iframe():
+def test_content_sniff_detects_greenhouse_iframe(no_skip_ats):
     page = _FakePage(
         resource_urls=["https://boards.greenhouse.io/embed/job_app?token=7862086"],
     )
@@ -207,7 +282,7 @@ def test_content_sniff_detects_greenhouse_iframe():
     assert form_url == "https://boards.greenhouse.io/embed/job_app?token=7862086"
 
 
-def test_content_sniff_detects_greenhouse_from_markers_no_form_url():
+def test_content_sniff_detects_greenhouse_from_markers_no_form_url(no_skip_ats):
     page = _FakePage(html='<div id="grnhse_app"></div>')
     family, form_url = driver._content_sniff_family(page)
     assert family == "greenhouse"
@@ -232,6 +307,21 @@ def test_record_row_shape():
     assert row["value"] == "+918168433423"
     assert row["empty"] is False
     assert row["source"] == "direct:t0:attr"
+
+
+def test_ashby_autofill_file_is_not_submission_resume():
+    from applypilot.apply.direct.profile_binding import Field
+
+    autofill = Field(label="Autofill from resume", type="file", tag="input")
+    required = Field(
+        label="Resume",
+        type="file",
+        tag="input",
+        name_attr="_systemfield_resume",
+    )
+
+    assert driver._is_ashby_autofill_file(autofill) is True
+    assert driver._is_ashby_autofill_file(required) is False
 
 
 # --------------------------------------------------------------------------- #

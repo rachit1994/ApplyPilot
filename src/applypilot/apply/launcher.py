@@ -34,7 +34,7 @@ from applypilot.role_resumes import (
     resolve_job_resume_text,
     role_resumes_available,
 )
-from applypilot.apply import apply_settings, chrome, dashboard, prompt as prompt_mod
+from applypilot.apply import apply_budget, apply_settings, chrome, dashboard, prompt as prompt_mod
 from applypilot.apply.eligibility import (
     ApplyDecision,
     ats_only_where_clause,
@@ -42,6 +42,7 @@ from applypilot.apply.eligibility import (
     direct_adapter_priority_sql,
     classify_apply_target,
     priority_boards_only_enabled,
+    excluded_ats_families_where_clause,
     priority_boards_only_where_clause,
 )
 from applypilot.apply.chrome import (
@@ -227,6 +228,9 @@ def _acquirable_jobs_where(
     boards_clause = ""
     if priority_boards_only or priority_boards_only_enabled():
         boards_clause = priority_boards_only_where_clause()
+    skip_ats_clause = ""
+    if apply_settings.deterministic_only_enabled():
+        skip_ats_clause = excluded_ats_families_where_clause()
     if include_untailored:
         tailored_clause = ""
     elif role_resumes_available():
@@ -241,7 +245,11 @@ def _acquirable_jobs_where(
         WHERE 1=1
           {tailored_clause}
           AND applied_at IS NULL
-          AND (apply_status IS NULL OR apply_status = 'failed')
+          AND (
+            apply_status IS NULL
+            OR apply_status = 'failed'
+            OR apply_status = 'needs_adapter'
+          )
           AND (
             apply_not_before IS NULL
             OR datetime(apply_not_before) <= datetime('now')
@@ -252,6 +260,7 @@ def _acquirable_jobs_where(
           {url_clauses}
           {ats_clause}
           {boards_clause}
+          {skip_ats_clause}
     """
     return where, params
 
@@ -260,6 +269,9 @@ def acquire_job_order_sql() -> str:
     """ORDER BY for acquire_job: direct-capable first, then ATS priority, score."""
     direct_tier = direct_adapter_priority_sql()
     priority = ats_priority_sql_case()
+    parked_tail = (
+        "CASE WHEN apply_status = 'needs_adapter' THEN 1 ELSE 0 END"
+    )
     claude_rescue_tail = (
         "CASE WHEN COALESCE(apply_error, '') LIKE 'pending_claude_rescue%' "
         "THEN 1 ELSE 0 END"
@@ -275,6 +287,7 @@ def acquire_job_order_sql() -> str:
     )"""
     return (
         f"{direct_tier} ASC, "
+        f"{parked_tail} ASC, "
         f"{claude_rescue_tail} ASC, "
         f"{site_load} ASC, "
         f"CASE WHEN last_attempted_at IS NOT NULL "
@@ -353,6 +366,33 @@ def job_has_direct_adapter(job: dict) -> bool:
     return get_adapter(fingerprint.ats_family(_job_apply_url(job))) is not None
 
 
+def job_runnable_in_deterministic_only(job: dict) -> bool:
+    """True when Direct Apply may run without Claude (known adapter or content-sniff unknown)."""
+    from applypilot.apply.direct import fingerprint
+    from applypilot.apply.direct.adapters import get_adapter
+
+    family = fingerprint.ats_family(_job_apply_url(job))
+    return get_adapter(family) is not None or family == fingerprint.UNKNOWN_FAMILY
+
+
+def _persist_needs_adapter(conn, row: dict, detail: str) -> None:
+    """Mark job needs_adapter inside acquire_job (reversible, not attempts=99)."""
+    url = row["url"]
+    conn.execute(
+        """
+        UPDATE jobs
+        SET apply_status = 'needs_adapter',
+            apply_error = ?,
+            apply_not_before = NULL,
+            agent_id = NULL
+        WHERE url = ?
+        """,
+        (detail.strip()[:200], url),
+    )
+    conn.commit()
+    apply_budget.governor().note_parked_needs_adapter()
+
+
 def _job_pending_claude_rescue(job: dict) -> bool:
     return str(job.get("apply_error") or "").startswith("pending_claude_rescue")
 
@@ -371,6 +411,8 @@ def _should_defer_claude_rescue(
     they spin forever while any direct URL remains in the DB). Jobs with no direct
     adapter must run Claude immediately when this worker holds them.
     """
+    if apply_settings.deterministic_only_enabled() or not apply_budget.governor().claude_allowed():
+        return False
     if count_acquirable_direct_adapter_jobs(
         min_score=min_score,
         ats_only=ats_only,
@@ -449,7 +491,8 @@ def apply_queue_snapshot() -> dict[str, int]:
           SUM(CASE WHEN apply_status = 'failed'
                     AND COALESCE(apply_attempts, 0) >= 99 THEN 1 ELSE 0 END),
           SUM(CASE WHEN apply_status = 'submitted_unverified' THEN 1 ELSE 0 END),
-          SUM(CASE WHEN apply_status = 'manual' THEN 1 ELSE 0 END)
+          SUM(CASE WHEN apply_status = 'manual' THEN 1 ELSE 0 END),
+          SUM(CASE WHEN apply_status = 'needs_adapter' THEN 1 ELSE 0 END)
         FROM jobs
         """,
         (max_attempts,),
@@ -462,6 +505,7 @@ def apply_queue_snapshot() -> dict[str, int]:
         "failed_permanent": int(row[4] or 0),
         "submitted_unverified": int(row[5] or 0),
         "manual": int(row[6] or 0),
+        "needs_adapter": int(row[7] or 0),
     }
 
 
@@ -489,6 +533,7 @@ def format_apply_queue_hint(
         f"Failed — permanent/skip (attempts=99): {snap['failed_permanent']}",
         f"Needs check (submitted_unverified): {snap['submitted_unverified']}",
         f"Manual apply only: {snap['manual']}",
+        f"Parked — needs adapter (re-queue when shipped): {snap['needs_adapter']}",
     ]
     if acquirable == 0 and snap["failed_resettable"] > 0:
         lines.append(
@@ -553,7 +598,8 @@ def acquire_job(
                 row = conn.execute("""
                     SELECT url, title, site, application_url, tailored_resume_path,
                            fit_score, location, full_description, cover_letter_path, salary,
-                           strategy, score_role_key, score_jd_fit
+                           strategy, score_role_key, score_jd_fit,
+                           apply_status, apply_error, apply_attempts
                     FROM jobs
                     WHERE (url = ? OR application_url = ? OR application_url LIKE ? OR url LIKE ?)
                       {tailored_clause}
@@ -583,7 +629,8 @@ def acquire_job(
                         f"""
                         SELECT url, title, site, application_url, tailored_resume_path,
                                fit_score, location, full_description, cover_letter_path, salary,
-                               strategy, score_role_key, score_jd_fit
+                               strategy, score_role_key, score_jd_fit,
+                               apply_status, apply_error, apply_attempts
                         FROM jobs
                         {where}
                         ORDER BY {acquire_job_order_sql()}
@@ -638,6 +685,22 @@ def acquire_job(
                             continue
                         if resume_path:
                             candidate_row["tailored_resume_path"] = resume_path
+                        if apply_settings.deterministic_only_enabled() and use_direct:
+                            status = str(candidate_row.get("apply_status") or "")
+                            if status == "needs_adapter":
+                                if not job_runnable_in_deterministic_only(
+                                    candidate_row
+                                ):
+                                    continue
+                            elif not job_runnable_in_deterministic_only(
+                                candidate_row
+                            ):
+                                _persist_needs_adapter(
+                                    conn,
+                                    candidate_row,
+                                    "deterministic_only",
+                                )
+                                continue
                         row = cand
                         job_row = candidate_row
                         break
@@ -1200,6 +1263,9 @@ def run_job(
         'applied', 'expired', 'captcha', 'login_issue',
         'failed:reason', or 'skipped'.
     """
+    if not apply_budget.governor().claude_allowed():
+        return "parked:needs_adapter:claude_budget_capped", 0, None
+
     resume_text = resolve_job_resume_text(job, allow_base=False)
     worker_dir = reset_worker_dir(worker_id)
 
@@ -1262,6 +1328,10 @@ def run_job(
     start = time.time()
     stats: dict = {}
     proc = None
+    # Track Claude spawn so the per-run governor counts EVERY attempt (incl.
+    # timeouts / quota / inactivity aborts), not just runs that emit usage stats.
+    claude_spawned = False
+    claude_cost_seen = 0.0
 
     try:
         popen_kwargs: dict = {}
@@ -1281,6 +1351,7 @@ def run_job(
         )
         with _claude_lock:
             _claude_procs[worker_id] = proc
+        claude_spawned = True
 
         proc.stdin.write(agent_prompt)
         proc.stdin.close()
@@ -1434,6 +1505,7 @@ def run_job(
         job_log.write_text(output, encoding="utf-8")
 
         if stats:
+            claude_cost_seen = float(stats.get("cost_usd") or 0.0)
             try:
                 from applypilot.database import record_llm_usage
 
@@ -1513,6 +1585,13 @@ def run_job(
         update_state(worker_id, status="failed", last_action=f"ERROR: {str(e)[:25]}")
         return f"failed:{str(e)[:100]}", duration_ms, None
     finally:
+        # Count every spawned Claude run against the per-run cap exactly once,
+        # even when an abort/timeout returned before usage stats were parsed.
+        if claude_spawned:
+            try:
+                apply_budget.governor().record_claude_apply(claude_cost_seen)
+            except Exception:
+                logger.debug("Failed to record Claude apply in governor", exc_info=True)
         with _claude_lock:
             _claude_procs.pop(worker_id, None)
         if proc is not None and proc.poll() is None:
@@ -1608,6 +1687,84 @@ def _park_job_for_retry(url: str, *, not_before: str, error: str) -> None:
         (error, not_before, url),
     )
     conn.commit()
+
+
+def _park_job_needs_adapter(url: str, reason: str) -> None:
+    """Park a job until a deterministic adapter exists (reversible, not attempts=99)."""
+    detail = (reason or "no_adapter").strip()[:200]
+    conn = get_connection()
+    conn.execute(
+        """
+        UPDATE jobs
+        SET apply_status = 'needs_adapter',
+            apply_error = ?,
+            apply_not_before = NULL,
+            agent_id = NULL
+        WHERE url = ?
+        """,
+        (detail, url),
+    )
+    conn.commit()
+    apply_budget.governor().note_parked_needs_adapter()
+
+
+def _park_job_awaiting_login(
+    url: str,
+    domain: str,
+    *,
+    reason: str = "login_required",
+) -> None:
+    """Park a job until the human logs into the provider (reversible)."""
+    reason = (reason or "login_required").strip()[:80]
+    detail = f"awaiting_login:{(domain or '').strip()[:120]};{reason}"
+    conn = get_connection()
+    conn.execute(
+        """
+        UPDATE jobs
+        SET apply_status = 'awaiting_login',
+            apply_error = ?,
+            apply_not_before = NULL,
+            agent_id = NULL
+        WHERE url = ?
+        """,
+        (detail, url),
+    )
+    conn.commit()
+
+
+def requeue_awaiting_login(domain: str | None = None) -> int:
+    """Re-queue jobs parked awaiting_login (all, or one domain) after you log in."""
+    conn = get_connection()
+    if domain:
+        cur = conn.execute(
+            """
+            UPDATE jobs SET apply_status = NULL, apply_error = NULL, agent_id = NULL
+            WHERE apply_status = 'awaiting_login'
+              AND COALESCE(apply_error, '') LIKE ?
+            """,
+            (f"awaiting_login:{domain.strip().lower()}%",),
+        )
+    else:
+        cur = conn.execute(
+            """
+            UPDATE jobs SET apply_status = NULL, apply_error = NULL, agent_id = NULL
+            WHERE apply_status = 'awaiting_login'
+            """
+        )
+    conn.commit()
+    return cur.rowcount
+
+
+def resume_login(domain: str | None = None) -> dict:
+    """Resume after login: clear the gate AND re-queue awaiting_login jobs.
+
+    Called by the dashboard Resume button and the CLI/script.
+    """
+    from applypilot.apply import login_gate
+
+    requeued = requeue_awaiting_login(domain)
+    login_gate.resume(domain)
+    return {"resumed_domain": domain or "all", "requeued": requeued}
 
 
 def _defer_job_for_claude_rescue(url: str, reason: str) -> None:
@@ -1706,6 +1863,12 @@ def _try_direct_apply(
     # navigate and content-sniff before giving up. Other adapter-less families
     # (workday, icims, ...) can't be rescued that way, so they defer/fail here.
     if get_adapter(family) is None and family != fingerprint.UNKNOWN_FAMILY:
+        if (
+            apply_settings.deterministic_only_enabled()
+            or not apply_budget.governor().claude_allowed()
+        ):
+            _park_job_needs_adapter(row_url, f"no_adapter:{family}")
+            return f"parked:needs_adapter:no_adapter:{family}", 0, None
         if defer_claude_rescue:
             add_event(
                 f"[W{worker_id}] Direct: no adapter for {family} — "
@@ -1790,6 +1953,13 @@ def _try_direct_apply(
 
     if dr.result.startswith("skipped"):
         return "skipped", dr.elapsed_ms, None
+    if would_claude_rescue and (
+        apply_settings.deterministic_only_enabled()
+        or not apply_budget.governor().claude_allowed()
+    ):
+        reason = dr.escalate_reason or dr.result[:40]
+        _park_job_needs_adapter(row_url, reason)
+        return f"parked:needs_adapter:{reason}", dr.elapsed_ms, None
     if would_claude_rescue and defer_claude_rescue:
         reason = dr.escalate_reason or dr.result[:40]
         add_event(
@@ -1821,6 +1991,18 @@ def _run_job_with_optional_fallback(
     include_untailored: bool = False,
 ) -> tuple[str, int, Path | None]:
     """Run apply once on primary model; escalate to fallback on retriable failure."""
+    # Excluded ATS families (e.g. greenhouse, ashby) are never applied to and never
+    # escalate to Claude — park them as needs_adapter (reversible) regardless of
+    # engine/mode. Configured via APPLYPILOT_SKIP_ATS_FAMILIES (apply_settings).
+    excluded_families = apply_settings.skipped_ats_families()
+    if excluded_families:
+        from applypilot.apply.direct import fingerprint
+
+        family = fingerprint.ats_family(_job_apply_url(job))
+        if family in excluded_families:
+            _park_job_needs_adapter(_job_row_url(job), f"excluded_ats:{family}")
+            return f"parked:needs_adapter:excluded_ats:{family}", 0, None
+
     if apply_settings.apply_engine() == "direct":
         defer_claude = _should_defer_claude_rescue(
             job,
@@ -1841,6 +2023,18 @@ def _run_job_with_optional_fallback(
             if direct is not None:
                 return direct
         # Direct queue drained, Claude-only rescue, or APPLYPILOT_DIRECT_ESCALATE tier.
+
+    if (
+        apply_settings.deterministic_only_enabled()
+        or not apply_budget.governor().claude_allowed()
+    ):
+        cap_reason = (
+            "deterministic_only"
+            if apply_settings.deterministic_only_enabled()
+            else "claude_budget_capped"
+        )
+        _park_job_needs_adapter(_job_row_url(job), cap_reason)
+        return f"parked:needs_adapter:{cap_reason}", 0, None
 
     fallback_model = apply_settings.apply_fallback_model()
     result, duration_ms, session_log = run_job(
@@ -2058,6 +2252,43 @@ def worker_loop(
                 add_event(f"[W{worker_id}] Skipped: {job['title'][:30]}")
                 jobs_done += 1
                 continue
+            elif result.startswith("parked:needs_adapter"):
+                add_event(
+                    f"[W{worker_id}] Parked (needs adapter): "
+                    f"{result.split(':', 1)[-1][:40]}"
+                )
+                jobs_done += 1
+                continue
+            elif result.startswith("awaiting_login"):
+                from applypilot.apply import login_gate
+
+                domain = result.split(":", 1)[-1] if ":" in result else "provider"
+                info = next(
+                    (
+                        p for p in login_gate.pending()
+                        if (p.get("domain") or "").lower() == domain.lower()
+                    ),
+                    {},
+                )
+                reason_detail = str(info.get("reason") or "login_required")
+                _park_job_awaiting_login(job["url"], domain, reason=reason_detail)
+                suffix = (
+                    " (no Google sign-in)"
+                    if reason_detail == "login_required_no_google"
+                    else ""
+                )
+                add_event(
+                    f"[W{worker_id}] AWAITING LOGIN: {domain}{suffix} — "
+                    "log in then Resume from the dashboard"
+                )
+                update_state(
+                    worker_id, status="awaiting_login",
+                    last_action=f"login: {domain[:24]}",
+                )
+                # Pause this worker until you log in and Resume (or timeout).
+                login_gate.wait_for_resume(domain, timeout_s=1800.0)
+                release_lock(job["url"])
+                continue
             elif result.startswith("deferred:"):
                 release_lock(job["url"])
                 if result.startswith("deferred:claude_rescue"):
@@ -2186,6 +2417,15 @@ def main(
     POLL_INTERVAL = poll_interval
     _stop_event.clear()
 
+    try:
+        apply_profile = config.load_profile()
+    except Exception:
+        apply_profile = {}
+    budget_snap = apply_budget.governor().reset(
+        deterministic_only=apply_settings.deterministic_only_enabled(),
+        profile=apply_profile,
+    )
+
     config.ensure_dirs()
     console = Console()
     use_live = not plain and sys.stdout.isatty()
@@ -2251,6 +2491,18 @@ def main(
         f"prompt_slim={flags['prompt_slim']} session_reuse={flags['session_reuse']} "
         f"gmail_mcp={flags['gmail_mcp']}[/dim]"
     )
+    if budget_snap.deterministic_only:
+        console.print(
+            "[dim]Deterministic-only: Claude disabled; non-adapter jobs -> needs_adapter[/dim]"
+        )
+    if budget_snap.claude_max_attempts is not None:
+        console.print(
+            f"[dim]Claude cap: {budget_snap.claude_max_attempts} apply(s) per run[/dim]"
+        )
+    if budget_snap.claude_max_cost_usd is not None:
+        console.print(
+            f"[dim]Claude cap: ${budget_snap.claude_max_cost_usd:.4f} per run[/dim]"
+        )
     console.print("[dim]Ctrl+C = skip current job(s) | Ctrl+C x2 = stop[/dim]")
 
     # Double Ctrl+C handler
@@ -2362,10 +2614,28 @@ def main(
             total_applied, total_failed = _run_workers()
 
         totals = get_totals()
+        run_snap = apply_budget.governor().snapshot()
         console.print(
             f"\n[bold]Done: {total_applied} applied, {total_failed} failed "
-            f"(${totals['cost']:.3f})[/bold]"
+            f"(${totals['cost']:.3f} Claude in DB)[/bold]"
         )
+        if run_snap.deterministic_only:
+            console.print(
+                f"[dim]Run Claude spend (governor): ${run_snap.claude_cost_usd:.4f} "
+                f"({run_snap.claude_attempts} attempts)[/dim]"
+            )
+        elif run_snap.claude_attempts or run_snap.claude_cost_usd:
+            console.print(
+                f"[dim]Run Claude spend (governor): ${run_snap.claude_cost_usd:.4f} "
+                f"({run_snap.claude_attempts} attempts)"
+                + (" — cap reached" if run_snap.claude_capped else "")
+                + "[/dim]"
+            )
+        if run_snap.parked_needs_adapter:
+            console.print(
+                f"[yellow]Parked needs_adapter (re-queue when adapter ships): "
+                f"{run_snap.parked_needs_adapter}[/yellow]"
+            )
         console.print(f"Logs: {config.LOG_DIR}")
 
     except KeyboardInterrupt:

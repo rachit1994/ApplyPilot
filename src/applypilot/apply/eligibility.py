@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import json
+import os
 import re
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 
 from applypilot import config
 from applypilot.apply.experience import is_too_junior_role
-from applypilot.apply.salary import salary_meets_regional_minimum
+from applypilot.apply.salary import is_india_focused_job, salary_meets_regional_minimum
 from applypilot.apply.apply_url_extract import coerce_application_url
 from applypilot.config import DEFAULTS, is_contractor_marketplace, is_manual_ats, load_search_config
 from applypilot.discovery._filters import location_passes
@@ -106,6 +109,7 @@ NO_SPONSORSHIP_PATTERNS: tuple[str, ...] = (
 _US_LOCATION_RE = re.compile(
     r"\b(?:usa|u\.s\.a\.?|u\.s\.?|us|united\s+states)\b", re.I
 )
+_CANADA_LOCATION_RE = re.compile(r"\b(?:canada|canadian)\b", re.I)
 
 # Location strings that are open to the candidate regardless of country tags.
 _GLOBAL_LOCATION_TOKENS: tuple[str, ...] = (
@@ -119,12 +123,70 @@ _GLOBAL_LOCATION_TOKENS: tuple[str, ...] = (
     "south america",
     "latin america",
     "americas",
+    "remote - india",
+    "remote india",
+    "india remote",
+    "remote (india",
+    "remote/in",
+    "remote-in",
+    "work from india",
+    "anywhere in india",
+    "pan india",
+    "pan-india",
 )
+
+# Apply-time location accept list for India-based candidates (ignores searches.yaml
+# US-centric reject_patterns such as bare "India").
+_INDIA_APPLY_LOCATION_ACCEPT: tuple[str, ...] = (
+    "india",
+    "bengaluru",
+    "bangalore",
+    "karnataka",
+    "hyderabad",
+    "telangana",
+    "pune",
+    "maharashtra",
+    "mumbai",
+    "chennai",
+    "tamil nadu",
+    "delhi",
+    "new delhi",
+    "ncr",
+    "national capital region",
+    "noida",
+    "gurgaon",
+    "gurugram",
+    "faridabad",
+    "ghaziabad",
+    "remote - india",
+    "remote india",
+    "india remote",
+    "remote (in",
+    "remote/in",
+    "remote-in",
+    "work from india",
+    "anywhere in india",
+    "pan india",
+    "pan-india",
+    "remote",
+    "anywhere",
+    "work from home",
+    "wfh",
+    "distributed",
+)
+
+# City aliases for matching job location to candidate personal.* fields.
+_INDIA_LOCATION_ALIASES: dict[str, tuple[str, ...]] = {
+    "bangalore": ("bengaluru", "bangalore"),
+    "bengaluru": ("bengaluru", "bangalore"),
+    "gurgaon": ("gurgaon", "gurugram"),
+    "gurugram": ("gurgaon", "gurugram"),
+}
 
 
 def _candidate_location_facts(profile: dict | None) -> tuple[bool, bool]:
     """Return (us_based, requires_sponsorship) from the candidate profile."""
-    prof = profile or {}
+    prof = _effective_profile(profile)
     personal = prof.get("personal") or {}
     country = str(personal.get("country") or "").strip().lower()
     us_based = country in (
@@ -143,6 +205,63 @@ def _candidate_location_facts(profile: dict | None) -> tuple[bool, bool]:
     return us_based, requires_sponsorship
 
 
+def _effective_profile(profile: dict | None) -> dict:
+    if profile is not None:
+        return profile
+    try:
+        app_dir = Path(os.environ.get("APPLYPILOT_DIR", Path.home() / ".applypilot"))
+        profile_path = app_dir / "profile.json"
+        return json.loads(profile_path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def is_india_based_candidate(profile: dict | None) -> bool:
+    """True when profile personal.country targets India (not US/other)."""
+    us_based, _ = _candidate_location_facts(profile)
+    if us_based:
+        return False
+    prof = _effective_profile(profile)
+    personal = prof.get("personal") or {}
+    country = str(personal.get("country") or "").strip().lower()
+    return country in ("india", "in", "भारत")
+
+
+def apply_location_passes(
+    location: str | None, profile: dict | None = None
+) -> bool:
+    """Discover-style location filter with India-first overrides at apply time."""
+    if is_india_based_candidate(profile):
+        return location_passes(
+            location,
+            accept=list(_INDIA_APPLY_LOCATION_ACCEPT),
+            reject=[],
+        )
+    return location_passes(location)
+
+
+def _candidate_location_terms(profile: dict | None) -> list[str]:
+    """Lowercase location tokens for the candidate (country, city, aliases)."""
+    prof = _effective_profile(profile)
+    personal = prof.get("personal") or {}
+    terms: list[str] = []
+    for key in ("country", "city", "province_state"):
+        raw = str(personal.get(key) or "").strip().lower()
+        if not raw:
+            continue
+        terms.append(raw)
+        for alias_key, aliases in _INDIA_LOCATION_ALIASES.items():
+            if raw == alias_key or raw in aliases:
+                terms.extend(aliases)
+    seen: set[str] = set()
+    out: list[str] = []
+    for term in terms:
+        if term and term not in seen:
+            seen.add(term)
+            out.append(term)
+    return out
+
+
 def location_restriction_block(location: str | None, profile: dict | None) -> str | None:
     """Detect a country-restricted (e.g. US-only) location the candidate can't take.
 
@@ -159,19 +278,16 @@ def location_restriction_block(location: str | None, profile: dict | None) -> st
     if any(tok in loc for tok in _GLOBAL_LOCATION_TOKENS):
         return None
 
-    prof = profile or {}
-    personal = prof.get("personal") or {}
-    own_terms = [
-        str(personal.get(key) or "").strip().lower()
-        for key in ("country", "city", "province_state")
-    ]
+    own_terms = _candidate_location_terms(profile)
     if any(term and term in loc for term in own_terms):
         return None
 
     # Multi-location strings ("Remote - US; Bangalore") are fine if any segment
     # is the candidate's place; that's covered above. Otherwise a clear US tag
-    # with no candidate-local segment means US-only.
-    if _US_LOCATION_RE.search(loc):
+    # with no candidate-local segment means US-only. Canada-only remote roles
+    # have the same issue for an India-based candidate and often expose only
+    # Canadian province choices at apply time.
+    if _US_LOCATION_RE.search(loc) or _CANADA_LOCATION_RE.search(loc):
         return "not_eligible_location"
     return None
 
@@ -182,11 +298,18 @@ def description_eligibility_block(
     """Detect hard location/sponsorship blockers in the job description.
 
     Returns a skip reason ('not_eligible_location' / 'not_eligible_sponsorship')
-    or None. Only applies when the candidate is not US-based, so a US-based
-    candidate is never filtered by these clauses.
+    or None. US-based candidates are never filtered by these clauses. For
+    India-based candidates, US residency / no-sponsor boilerplate is skipped on
+    India-focused roles (domestic market); it still applies on US/global roles.
     """
     us_based, requires_sponsorship = _candidate_location_facts(profile)
     if us_based:
+        return None
+    if is_india_based_candidate(profile) and is_india_focused_job(
+        job.get("location"),
+        job.get("full_description"),
+        job.get("salary"),
+    ):
         return None
     blob = " ".join(
         str(job.get(key) or "")
@@ -304,7 +427,9 @@ def classify_apply_target(
     if not apply_url:
         return EligibilityResult(ApplyDecision.MANUAL, "no_apply_url")
 
-    if job.get("location") and not location_passes(job.get("location")):
+    if job.get("location") and not apply_location_passes(
+        job.get("location"), profile
+    ):
         return EligibilityResult(ApplyDecision.SKIP_PERMANENT, "not_eligible_location")
 
     # "Remote - USA" passes location_passes (it contains "remote") but is a dead
@@ -355,21 +480,44 @@ def classify_apply_target(
     return EligibilityResult(ApplyDecision.ELIGIBLE, None)
 
 
+def summarize_eligibility_classification(
+    jobs: list[dict],
+    *,
+    profile: dict | None = None,
+    **classify_kwargs,
+) -> dict[str, int]:
+    """Count classify_apply_target outcomes (before/after eligibility tuning)."""
+    counts: dict[str, int] = {}
+    for job in jobs:
+        result = classify_apply_target(job, profile=profile, **classify_kwargs)
+        label = (
+            f"{result.decision.value}:{result.reason}"
+            if result.reason
+            else result.decision.value
+        )
+        counts[label] = counts.get(label, 0) + 1
+    return dict(sorted(counts.items()))
+
+
 def direct_adapter_priority_sql() -> str:
-    """SQL CASE: 0 = Playwright direct adapter (Greenhouse/Lever/Ashby), 1 = needs Claude."""
+    """SQL CASE: 0 = active Playwright direct adapter, 1 = needs Claude/manual."""
+    from applypilot.apply import apply_settings
+
+    excluded = apply_settings.direct_excluded_families()
     parts = ["CASE"]
-    parts.append(
-        "WHEN LOWER(COALESCE(site, '')) LIKE 'greenhouse:%' "
-        "OR LOWER(COALESCE(url, '')) LIKE '%greenhouse.io%' "
-        "OR LOWER(COALESCE(application_url, '')) LIKE '%greenhouse.io%' "
-        "OR LOWER(COALESCE(full_description, '')) LIKE '%greenhouse.io%' "
-        "OR LOWER(COALESCE(url, '')) LIKE '%grnh.se%' "
-        "OR LOWER(COALESCE(application_url, '')) LIKE '%grnh.se%' "
-        "OR LOWER(COALESCE(full_description, '')) LIKE '%grnh.se%' "
-        "OR LOWER(COALESCE(application_url, url, '')) LIKE '%gh_jid=%' "
-        "OR LOWER(COALESCE(application_url, url, full_description, '')) LIKE '%gh_jid&%' "
-        "OR LOWER(COALESCE(full_description, '')) LIKE '%gh_jid=%' THEN 0"
-    )
+    if "greenhouse" not in excluded:
+        parts.append(
+            "WHEN LOWER(COALESCE(site, '')) LIKE 'greenhouse:%' "
+            "OR LOWER(COALESCE(url, '')) LIKE '%greenhouse.io%' "
+            "OR LOWER(COALESCE(application_url, '')) LIKE '%greenhouse.io%' "
+            "OR LOWER(COALESCE(full_description, '')) LIKE '%greenhouse.io%' "
+            "OR LOWER(COALESCE(url, '')) LIKE '%grnh.se%' "
+            "OR LOWER(COALESCE(application_url, '')) LIKE '%grnh.se%' "
+            "OR LOWER(COALESCE(full_description, '')) LIKE '%grnh.se%' "
+            "OR LOWER(COALESCE(application_url, url, '')) LIKE '%gh_jid=%' "
+            "OR LOWER(COALESCE(application_url, url, full_description, '')) LIKE '%gh_jid&%' "
+            "OR LOWER(COALESCE(full_description, '')) LIKE '%gh_jid=%' THEN 0"
+        )
     parts.append(
         "WHEN LOWER(COALESCE(site, '')) LIKE 'lever:%' "
         "OR LOWER(COALESCE(url, '')) LIKE '%lever.co%' "
@@ -380,12 +528,13 @@ def direct_adapter_priority_sql() -> str:
         "OR LOWER(COALESCE(application_url, url, '')) LIKE '%lever_source=%' "
         "OR LOWER(COALESCE(application_url, url, full_description, '')) LIKE '%lever_source=%' THEN 0"
     )
-    parts.append(
-        "WHEN LOWER(COALESCE(site, '')) LIKE 'ashby:%' "
-        "OR LOWER(COALESCE(url, '')) LIKE '%ashbyhq.com%' "
-        "OR LOWER(COALESCE(application_url, '')) LIKE '%ashbyhq.com%' "
-        "OR LOWER(COALESCE(full_description, '')) LIKE '%ashbyhq.com%' THEN 0"
-    )
+    if "ashby" not in excluded:
+        parts.append(
+            "WHEN LOWER(COALESCE(site, '')) LIKE 'ashby:%' "
+            "OR LOWER(COALESCE(url, '')) LIKE '%ashbyhq.com%' "
+            "OR LOWER(COALESCE(application_url, '')) LIKE '%ashbyhq.com%' "
+            "OR LOWER(COALESCE(full_description, '')) LIKE '%ashbyhq.com%' THEN 0"
+        )
     parts.append(
         "WHEN LOWER(COALESCE(application_url, url, '')) LIKE '%workatastartup.com%' "
         "OR LOWER(COALESCE(full_description, '')) LIKE '%workatastartup.com%' THEN 0"
@@ -460,6 +609,34 @@ def priority_boards_only_where_clause() -> str:
         "OR LOWER(COALESCE(application_url, '')) LIKE '%angel.co%'"
         ")"
     )
+
+
+def excluded_ats_families_where_clause() -> str:
+    """Exclude jobs whose apply URL maps to APPLYPILOT_SKIP_ATS_FAMILIES (e.g. greenhouse, ashby)."""
+    from applypilot.apply import apply_settings
+
+    excluded = apply_settings.direct_excluded_families()
+    if not excluded:
+        return ""
+    neg: list[str] = []
+    if "greenhouse" in excluded:
+        neg.extend(
+            [
+                "LOWER(COALESCE(application_url, url, '')) NOT LIKE '%greenhouse.io%'",
+                "LOWER(COALESCE(application_url, url, '')) NOT LIKE '%grnh.se%'",
+                "LOWER(COALESCE(site, '')) NOT LIKE 'greenhouse:%'",
+            ]
+        )
+    if "ashby" in excluded:
+        neg.extend(
+            [
+                "LOWER(COALESCE(application_url, url, '')) NOT LIKE '%ashbyhq.com%'",
+                "LOWER(COALESCE(site, '')) NOT LIKE 'ashby:%'",
+            ]
+        )
+    if not neg:
+        return ""
+    return "AND (" + " AND ".join(neg) + ")"
 
 
 def ats_only_where_clause() -> str:

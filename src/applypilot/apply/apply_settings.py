@@ -153,6 +153,7 @@ def prompt_slim_enabled() -> bool:
 
 
 _PROMPT_MODE_CLI_OVERRIDE: str | None = None
+_DETERMINISTIC_ONLY_CLI_OVERRIDE: bool | None = None
 
 
 def set_apply_prompt_mode_override(mode: str | None) -> None:
@@ -325,6 +326,110 @@ def _parse_result_reason(result: str) -> tuple[str, str | None]:
     return rest, None
 
 
+def _apply_profile_section(profile: dict | None = None) -> dict:
+    if profile is None:
+        try:
+            profile = config.load_profile()
+        except FileNotFoundError:
+            profile = {}
+    section = profile.get("apply")
+    return section if isinstance(section, dict) else {}
+
+
+def _optional_positive_int(raw) -> int | None:
+    if raw is None or raw == "":
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _optional_positive_float(raw) -> float | None:
+    if raw is None or raw == "":
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def apply_claude_max_per_run(profile: dict | None = None) -> int | None:
+    """Max Claude apply subprocesses per run (None = unlimited)."""
+    section = _apply_profile_section(profile)
+    for key in ("claude_max_per_run", "apply_claude_max_per_run"):
+        if key in section:
+            cap = _optional_positive_int(section.get(key))
+            if cap is not None:
+                return cap
+    env_cap = _optional_positive_int(os.environ.get("APPLYPILOT_APPLY_CLAUDE_MAX_PER_RUN"))
+    if env_cap is not None:
+        return env_cap
+    return _optional_positive_int(config.DEFAULTS.get("apply_claude_max_per_run"))
+
+
+def apply_claude_max_cost_usd_per_run(profile: dict | None = None) -> float | None:
+    """Max Claude apply spend (USD) per run (None = unlimited)."""
+    section = _apply_profile_section(profile)
+    for key in ("claude_max_cost_usd_per_run", "apply_claude_max_cost_usd_per_run"):
+        if key in section:
+            cap = _optional_positive_float(section.get(key))
+            if cap is not None:
+                return cap
+    env_cap = _optional_positive_float(
+        os.environ.get("APPLYPILOT_APPLY_CLAUDE_MAX_COST_USD_PER_RUN")
+    )
+    if env_cap is not None:
+        return env_cap
+    return _optional_positive_float(config.DEFAULTS.get("apply_claude_max_cost_usd_per_run"))
+
+
+def set_deterministic_only_override(enabled: bool | None) -> None:
+    """CLI --deterministic-only wins until cleared."""
+    global _DETERMINISTIC_ONLY_CLI_OVERRIDE
+    _DETERMINISTIC_ONLY_CLI_OVERRIDE = enabled
+
+
+def deterministic_only_enabled() -> bool:
+    if _DETERMINISTIC_ONLY_CLI_OVERRIDE is not None:
+        return _DETERMINISTIC_ONLY_CLI_OVERRIDE
+    return _env_bool("APPLYPILOT_APPLY_DETERMINISTIC_ONLY", False)
+
+
+_SKIP_ATS_FAMILIES_DEFAULT = ""
+
+
+def skipped_ats_families() -> frozenset[str]:
+    """ATS families to skip for discover sources and direct apply dispatch.
+
+    Defaults to no skipped families. Override with APPLYPILOT_SKIP_ATS_FAMILIES
+    (comma-separated) when a specific ATS adapter should be temporarily parked.
+    """
+    raw = os.environ.get("APPLYPILOT_SKIP_ATS_FAMILIES")
+    if raw is None:
+        raw = _SKIP_ATS_FAMILIES_DEFAULT
+    raw = raw.strip()
+    if not raw or raw.lower() in ("0", "false", "none", "off"):
+        return frozenset()
+    return frozenset(
+        part.strip().lower()
+        for part in raw.split(",")
+        if part.strip()
+    )
+
+
+def direct_excluded_families() -> frozenset[str]:
+    """Families the deterministic driver must not dispatch (alias of skipped_ats_families)."""
+    return skipped_ats_families()
+
+
+def discover_excluded_sources() -> frozenset[str]:
+    """Discover source keys to disable (same names as ATS families where applicable)."""
+    return skipped_ats_families()
+
+
 def apply_telemetry_flags() -> dict[str, bool | str]:
     """Snapshot of quota-related toggles for llm_usage metadata."""
     return {
@@ -335,4 +440,7 @@ def apply_telemetry_flags() -> dict[str, bool | str]:
         "require_gmail_confirmation": require_gmail_confirmation(),
         "apply_model_default": apply_model_default(),
         "apply_fallback_model": apply_fallback_model(),
+        "deterministic_only": deterministic_only_enabled(),
+        "claude_max_per_run": apply_claude_max_per_run(),
+        "claude_max_cost_usd_per_run": apply_claude_max_cost_usd_per_run(),
     }

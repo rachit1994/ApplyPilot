@@ -182,8 +182,10 @@ def sniff_ats_family(
 
 
 def has_adapter(family: str | None) -> bool:
-    """True when a deterministic adapter exists for this family."""
-    return bool(family) and family in ADAPTER_FAMILIES
+    """True when a deterministic adapter exists and is enabled for this family."""
+    from applypilot.apply.direct.adapters import get_adapter
+
+    return get_adapter(family) is not None
 
 
 def apex_domain(url: str | None) -> str:

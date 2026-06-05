@@ -20,6 +20,7 @@ from applypilot.server import workers as workers_module
 from applypilot.server import applications as applications_module
 from applypilot.server import referrals as referrals_module
 from applypilot.server import inbox as inbox_module
+from applypilot.server import login as login_module
 from applypilot.server import llm_usage_api
 from applypilot.server.schemas import (
     ApplicationDetailResponse,
@@ -91,6 +92,7 @@ def create_app() -> FastAPI:
     api.include_router(inbox_module.router)
     api.include_router(activity_module.router)
     api.include_router(workers_module.router)
+    api.include_router(login_module.router)
 
     @api.get("/overview", response_model=OverviewResponse)
     def api_overview() -> OverviewResponse:

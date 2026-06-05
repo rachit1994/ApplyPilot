@@ -297,7 +297,8 @@ def _message_matches_receipt(job: dict[str, Any], message: GmailMessageSummary) 
     return False
 
 
-def _search_messages(query: str, limit: int) -> list[GmailMessageSummary]:
+def search_messages(query: str, limit: int) -> list[GmailMessageSummary]:
+    """Read-only Gmail search (metadata + snippet). Used by inbox recruiter-reply scan."""
     token = _access_token()
     response = httpx.get(
         f"{GMAIL_API}/users/me/messages",
@@ -339,6 +340,11 @@ def _search_messages(query: str, limit: int) -> list[GmailMessageSummary]:
             )
         )
     return summaries
+
+
+def _search_messages(query: str, limit: int) -> list[GmailMessageSummary]:
+    """Backward-compatible alias for apply receipt search and tests."""
+    return search_messages(query, limit)
 
 
 def search_application_receipt(

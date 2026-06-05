@@ -1,6 +1,6 @@
 import { useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { fetchStats } from "../api";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { fetchPendingLogins, fetchStats, postResumeLogin } from "../api";
 import { useApplyRun } from "../hooks/useApplyRun";
 import { summarizeWorkers, workerStatusLabel, workerStatusbarClass } from "../utils/applyRunState";
 import { ApplyRunControls } from "./ApplyRunControls";
@@ -14,7 +14,21 @@ type Props = {
 
 export function ApplyPage({ unverifiedCount = 0, onOpenApplications }: Props) {
   const run = useApplyRun();
+  const queryClient = useQueryClient();
   const { data: stats } = useQuery({ queryKey: ["stats"], queryFn: fetchStats });
+  const { data: loginState } = useQuery({
+    queryKey: ["login-pending"],
+    queryFn: fetchPendingLogins,
+    refetchInterval: run.isRunning ? 3000 : 10000,
+  });
+  const resumeLogin = useMutation({
+    mutationFn: (domain?: string) => postResumeLogin(domain),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["login-pending"] });
+      queryClient.invalidateQueries({ queryKey: ["stats"] });
+      queryClient.invalidateQueries({ queryKey: ["applications"] });
+    },
+  });
 
   const pipeline = stats?.pipeline ?? {};
   const unverified = unverifiedCount ?? pipeline.submitted_unverified ?? 0;
@@ -24,6 +38,7 @@ export function ApplyPage({ unverifiedCount = 0, onOpenApplications }: Props) {
     () => summarizeWorkers(run.workerSnapshots),
     [run.workerSnapshots],
   );
+  const pendingLogins = loginState?.pending ?? [];
 
   return (
     <>
@@ -122,6 +137,57 @@ export function ApplyPage({ unverifiedCount = 0, onOpenApplications }: Props) {
       </section>
 
       <ClaudeUsagePanel compact className="apply-claude-usage" />
+
+      {pendingLogins.length > 0 ? (
+        <section className="panel apply-login-gate" aria-label="Pending logins">
+          <div className="panel__head">
+            <div>
+              <div className="panel__title">Awaiting login</div>
+              <div className="panel__sub">
+                Sign in inside the visible Chrome window, then resume this domain.
+              </div>
+            </div>
+          </div>
+          <div className="panel__body">
+            <div className="grid gap-8">
+              {pendingLogins.map((item) => {
+                const noGoogle = item.reason === "login_required_no_google";
+                return (
+                  <div key={item.domain} className="login-gate-row">
+                    <div className="min-w-0">
+                      <div className="login-gate-row__title">{item.domain}</div>
+                      <div className="login-gate-row__meta">
+                        {noGoogle ? "No Google sign-in shown" : "Login required"}
+                        {item.url ? ` · ${item.url}` : ""}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn--accent btn--sm"
+                      disabled={resumeLogin.isPending}
+                      onClick={() => resumeLogin.mutate(item.domain)}
+                    >
+                      Resume
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+            {pendingLogins.length > 1 ? (
+              <div className="mt-10">
+                <button
+                  type="button"
+                  className="btn btn--ghost btn--sm"
+                  disabled={resumeLogin.isPending}
+                  onClick={() => resumeLogin.mutate(undefined)}
+                >
+                  Resume all
+                </button>
+              </div>
+            ) : null}
+          </div>
+        </section>
+      ) : null}
 
       <section className="panel apply-controls" aria-label="Run controls">
         <div className="panel__head">

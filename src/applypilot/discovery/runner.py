@@ -120,10 +120,101 @@ def _company_first_limit(cfg: dict[str, Any], key: str) -> int:
         return 0
 
 
+def _as_str_list(value: Any, *, default: list[str]) -> list[str]:
+    if isinstance(value, str):
+        stripped = value.strip()
+        return [stripped] if stripped else list(default)
+    if isinstance(value, list):
+        out = [str(item).strip() for item in value if str(item).strip()]
+        return out or list(default)
+    return list(default)
+
+
+def _run_linkedin_harvest_from_config(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Run LinkedIn India harvest as a discover source.
+
+    This source intentionally stays opt-in because it opens visible Chrome and
+    uses the persistent LinkedIn session. It stores only employer-side URLs.
+    """
+    from applypilot.discovery.linkedin_harvest import run_harvest
+
+    linkedin_cfg = cfg.get("linkedin_harvest") or {}
+    if not isinstance(linkedin_cfg, dict):
+        linkedin_cfg = {}
+    keywords = _as_str_list(
+        linkedin_cfg.get("keywords") or linkedin_cfg.get("keyword"),
+        default=["backend engineer"],
+    )
+    try:
+        max_jobs = max(1, int(linkedin_cfg.get("max_jobs", 15) or 15))
+    except (TypeError, ValueError):
+        max_jobs = 15
+    try:
+        max_company_jobs = max(0, int(linkedin_cfg.get("max_company_jobs", 5) or 5))
+    except (TypeError, ValueError):
+        max_company_jobs = 5
+    try:
+        max_employer_jobs = max(0, int(linkedin_cfg.get("max_employer_jobs", 5) or 5))
+    except (TypeError, ValueError):
+        max_employer_jobs = 5
+    try:
+        worker_id = max(0, int(linkedin_cfg.get("worker_id", 0) or 0))
+    except (TypeError, ValueError):
+        worker_id = 0
+    expand_company = bool(linkedin_cfg.get("expand_company", False))
+    expand_employer = bool(linkedin_cfg.get("expand_employer", True))
+
+    totals: dict[str, Any] = {
+        "new": 0,
+        "duplicate": 0,
+        "seen": 0,
+        "total": 0,
+        "keywords": keywords,
+        "runs": [],
+    }
+    for keyword in keywords:
+        result = run_harvest(
+            keywords=keyword,
+            max_jobs=max_jobs,
+            expand_company=expand_company,
+            max_company_jobs=max_company_jobs,
+            expand_employer=expand_employer,
+            max_employer_jobs=max_employer_jobs,
+            worker_id=worker_id,
+        )
+        result = dict(result or {})
+        result["keyword"] = keyword
+        totals["runs"].append(result)
+        for key in ("new", "duplicate", "seen"):
+            try:
+                totals[key] += int(result.get(key) or 0)
+            except (TypeError, ValueError):
+                pass
+        if result.get("error"):
+            totals["error"] = result.get("error")
+            break
+    totals["total"] = int(totals["seen"] or (totals["new"] + totals["duplicate"]))
+    return totals
+
+
+def _apply_discover_source_exclusions(sources: dict[str, bool]) -> dict[str, bool]:
+    """Disable discover sources listed in APPLYPILOT_SKIP_ATS_FAMILIES."""
+    from applypilot.apply import apply_settings
+
+    excluded = apply_settings.discover_excluded_sources()
+    if not excluded:
+        return sources
+    out = dict(sources)
+    for key in excluded:
+        if key in out:
+            out[key] = False
+    return out
+
+
 def run_discover(*, workers: int = 1) -> dict[str, Any]:
     """Run all enabled discover sources. Returns per-source stats."""
     cfg = load_discover_config()
-    sources = cfg["sources"]
+    sources = _apply_discover_source_exclusions(cfg["sources"])
     agent_cfg = cfg["agent_discover"]
     company_first_cfg = cfg.get("company_first") or {}
     company_first_enabled = bool(company_first_cfg.get("enabled", True))
@@ -131,9 +222,21 @@ def run_discover(*, workers: int = 1) -> dict[str, Any]:
     source_history = load_source_history(days=30) if company_first_enabled else {}
     if priority_boards_only_enabled():
         sources = {key: False for key in sources}
-        sources["greenhouse"] = True
-        sources["lever"] = True
-        sources["ashby"] = True
+        excluded = set()
+        try:
+            from applypilot.apply import apply_settings
+
+            excluded = set(apply_settings.discover_excluded_sources())
+        except Exception:  # noqa: BLE001
+            pass
+        if "greenhouse" not in excluded:
+            sources["greenhouse"] = True
+        if "lever" not in excluded:
+            sources["lever"] = True
+        if "ashby" not in excluded:
+            sources["ashby"] = True
+        if cfg["sources"].get("linkedin_harvest"):
+            sources["linkedin_harvest"] = True
         sources["smartextract"] = True
         agent_cfg = {**agent_cfg, "enabled": False}
         log.info("Discover sources limited to ATS APIs plus priority SmartExtract boards")
@@ -178,6 +281,13 @@ def run_discover(*, workers: int = 1) -> dict[str, Any]:
             "ashby",
             run_ashby_discovery,
             companies=ranked_watchlist,
+        )
+
+    if sources.get("linkedin_harvest"):
+        stats["linkedin_harvest"] = _run_source(
+            "linkedin_harvest",
+            _run_linkedin_harvest_from_config,
+            cfg,
         )
 
     if sources.get("jobspy"):

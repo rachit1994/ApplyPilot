@@ -14,6 +14,7 @@ marked manual. See docs/maxed-apply-pipeline-jun-2026.md §4.
 
 from __future__ import annotations
 
+from applypilot.apply import apply_settings
 from applypilot.apply.direct.adapters.base import Adapter
 from applypilot.apply.direct.adapters import ashby, greenhouse, lever, workatastartup
 
@@ -37,6 +38,8 @@ _STAGED: dict[str, Adapter] = {}
 def get_adapter(family: str | None) -> Adapter | None:
     """Return the deterministic adapter for an ATS family, or None to escalate."""
     if not family:
+        return None
+    if family in apply_settings.direct_excluded_families():
         return None
     return _REGISTRY.get(family)
 

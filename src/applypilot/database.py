@@ -627,6 +627,11 @@ _ALL_COLUMNS: dict[str, str] = {
     "referral_error": "TEXT",
     "referral_openoutreach_deal_id": "TEXT",
     "referral_resume_path": "TEXT",
+    # Recruiter reply instrumentation (WP-1; read-only inbox classification)
+    "reply_status": "TEXT",
+    "reply_at": "TEXT",
+    "reply_channel": "TEXT",
+    "reply_source_id": "TEXT",
 }
 
 

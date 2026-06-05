@@ -315,6 +315,9 @@ DEFAULTS = {
     "cover_letter_batch_limit": 300,
     # Default apply subprocess engine when APPLYPILOT_APPLY_ENGINE is unset.
     "apply_engine": "direct",
+    # Per-run Claude apply caps (0 = unlimited). Override via profile apply.* or env.
+    "apply_claude_max_per_run": 0,
+    "apply_claude_max_cost_usd_per_run": 0.0,
 }
 
 

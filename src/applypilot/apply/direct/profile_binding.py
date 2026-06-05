@@ -90,14 +90,25 @@ def _start_date(tokens: dict) -> str:
     return tokens.get("start_date", "")
 
 
+def _location(tokens: dict) -> str:
+    parts = [
+        tokens.get("city", ""),
+        tokens.get("province_state", ""),
+        tokens.get("country", ""),
+    ]
+    return ", ".join(str(p).strip() for p in parts if str(p).strip())
+
+
 # Each rule: (list of label substrings, token_key OR callable(tokens)->str)
 FIELD_MAP: tuple[tuple[tuple[str, ...], object], ...] = (
+    (("first and last name", "first & last name"), "full_name"),
     (("first name",), _first_word),
     (("last name", "surname", "family name"), _last_word),
     (("full name", "your name", "legal name"), "full_name"),
     (("preferred name",), "preferred_name"),
     (("email",), "email"),
     (("phone", "mobile", "telephone"), "phone_e164"),
+    (("location",), _location),
     (("address", "street"), "address"),
     (("city", "town"), "city"),
     (("state", "province"), "province_state"),
@@ -146,7 +157,18 @@ ATTR_MAP: tuple[tuple[tuple[str, ...], str], ...] = (
 # (substrings, literal_or_token, is_token)
 QUESTION_MAP: tuple[tuple[tuple[str, ...], str, bool], ...] = (
     (("authorized to work", "legally authorized", "eligible to work"), "Yes", False),
-    (("require sponsorship", "need sponsorship", "visa sponsorship"), "require_sponsorship", True),
+    (
+        (
+            "require sponsorship",
+            "need sponsorship",
+            "visa sponsorship",
+            "sponsor an immigration",
+            "sponsor immigration",
+            "immigration case",
+        ),
+        "require_sponsorship",
+        True,
+    ),
     (("18 years", "over 18", "age 18", "at least 18"), "Yes", False),
     (("background check",), "Yes", False),
     (("criminal", "felony", "convicted"), "No", False),
@@ -156,6 +178,18 @@ QUESTION_MAP: tuple[tuple[tuple[str, ...], str, bool], ...] = (
     (("ai policy", "acknowledge", "i have read", "i agree", "i confirm", "candidate privacy", "terms"), "Yes", False),
     (("by checking this box", "i consent", "consent to", "i authorize", "i certify"), "Yes", False),
     (("willing to relocate", "relocation", "relocate"), "Yes", False),
+    (
+        (
+            "hybrid",
+            "work from the office",
+            "in person",
+            "in-office",
+            "anchor days",
+            "working from one of our offices",
+        ),
+        "Yes",
+        False,
+    ),
     (("work remotely", "comfortable remote", "remote work"), "Yes", False),
     (("gender",), "gender", True),
     (("race", "ethnicity"), "race_ethnicity", True),
@@ -204,6 +238,35 @@ PREFERRED_SOURCE_OPTIONS: tuple[str, ...] = (
     "other",
 )
 
+EXPORT_CONTROL_QUESTION_MARKERS: tuple[str, ...] = (
+    "cuba",
+    "iran",
+    "north korea",
+    "syria",
+    "crimea",
+    "donetsk",
+    "luhansk",
+    "zaporizhzhia",
+    "kherson",
+    "russia",
+    "belarus",
+)
+EXPORT_CONTROL_FOLLOWUP_MARKERS: tuple[str, ...] = (
+    "prior question",
+    "previous question",
+    "selected a response",
+    "other than",
+)
+EXPORT_CONTROL_NONE_OPTIONS: tuple[str, ...] = (
+    "none of the above",
+    "none of these apply",
+    "none apply",
+)
+EXPORT_CONTROL_NOT_APPLICABLE_OPTIONS: tuple[str, ...] = (
+    "not applicable",
+    "n/a",
+)
+
 
 def is_source_question(text: str | None) -> bool:
     """True for 'how did you hear about us' style group questions."""
@@ -211,15 +274,58 @@ def is_source_question(text: str | None) -> bool:
     return any(m in blob for m in SOURCE_QUESTION_MARKERS)
 
 
+def _pick_option_containing(
+    option_labels: tuple[str, ...],
+    needles: tuple[str, ...],
+) -> str | None:
+    for needle in needles:
+        for opt in option_labels:
+            if needle in _norm(opt):
+                return opt
+    return None
+
+
+def _pick_export_control_option(
+    question: str | None,
+    option_labels: tuple[str, ...],
+) -> str | None:
+    """Answer explicit sanctions/export-control checkbox groups conservatively.
+
+    These groups are phrased as "select all that apply" and include their own
+    negative / not-applicable option. Only answer when the form text contains
+    high-confidence restricted-country markers or a follow-up to that question.
+    """
+    blob = " ".join((_norm(question), *(_norm(opt) for opt in option_labels)))
+    has_restricted_country_marker = any(
+        marker in blob for marker in EXPORT_CONTROL_QUESTION_MARKERS
+    )
+    if has_restricted_country_marker:
+        return _pick_option_containing(option_labels, EXPORT_CONTROL_NONE_OPTIONS)
+
+    is_followup = any(marker in blob for marker in EXPORT_CONTROL_FOLLOWUP_MARKERS)
+    if is_followup:
+        return _pick_option_containing(
+            option_labels, EXPORT_CONTROL_NOT_APPLICABLE_OPTIONS
+        ) or _pick_option_containing(option_labels, EXPORT_CONTROL_NONE_OPTIONS)
+
+    return None
+
+
 def choose_checkbox_group_option(
     question: str | None, option_labels: tuple[str, ...]
 ) -> str | None:
     """Pick ONE option label to check for a required checkbox group.
 
-    Only answers low-stakes source questions; returns None (escalate) for any
-    other required multi-checkbox group rather than guessing a wrong answer.
+    Only answers low-stakes source questions and explicit export-control groups
+    that provide a negative/not-applicable option. Everything else escalates
+    rather than guessing a wrong answer.
     """
-    if not option_labels or not is_source_question(question):
+    if not option_labels:
+        return None
+    export_pick = _pick_export_control_option(question, option_labels)
+    if export_pick:
+        return export_pick
+    if not is_source_question(question):
         return None
     for pref in PREFERRED_SOURCE_OPTIONS:
         for opt in option_labels:
