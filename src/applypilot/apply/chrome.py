@@ -11,6 +11,8 @@ import shutil
 import subprocess
 import threading
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from applypilot import config
@@ -23,6 +25,20 @@ BASE_CDP_PORT = 9222
 # Track Chrome processes per worker for cleanup
 _chrome_procs: dict[int, subprocess.Popen] = {}
 _chrome_lock = threading.Lock()
+
+
+def _wait_for_cdp(port: int, *, timeout_s: float = 12.0) -> bool:
+    """Wait until Chrome's remote debugging endpoint is accepting requests."""
+    deadline = time.monotonic() + timeout_s
+    url = f"http://127.0.0.1:{port}/json/version"
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=0.5) as resp:
+                if resp.status == 200:
+                    return True
+        except (OSError, urllib.error.URLError):
+            time.sleep(0.25)
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -245,8 +261,14 @@ def launch_chrome(worker_id: int, port: int | None = None,
     with _chrome_lock:
         _chrome_procs[worker_id] = proc
 
-    # Give Chrome time to start and open the debug port
-    time.sleep(3)
+    # Wait for Chrome to start and open the debug port. A fixed sleep flakes on
+    # loaded machines and causes Playwright connect_over_cdp ECONNREFUSED.
+    if not _wait_for_cdp(port):
+        logger.warning(
+            "[worker-%d] Chrome debug port %d was not ready after launch",
+            worker_id,
+            port,
+        )
     logger.info("[worker-%d] Chrome started on port %d (pid %d)",
                 worker_id, port, proc.pid)
     return proc

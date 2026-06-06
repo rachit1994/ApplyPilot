@@ -24,7 +24,12 @@ from playwright.sync_api import sync_playwright
 
 from applypilot import config
 from applypilot.config import DB_PATH
-from applypilot.database import get_connection, init_db, ensure_columns
+from applypilot.database import get_connection, init_db
+from applypilot.enrichment.pending import (
+    DETAIL_GOTO_ATTEMPTS,
+    detail_pending_clause,
+    persist_detail_scrape_result,
+)
 from applypilot.llm import get_client
 
 log = logging.getLogger(__name__)
@@ -692,8 +697,8 @@ RETRYABLE_STATUSES = {408, 429, 500, 502, 503, 504}
 PERMANENT_FAILURES = {404, 410, 451}
 
 
-def scrape_detail_page(page, url: str) -> dict:
-    """Full cascade for one detail page."""
+def _scrape_detail_page_once(page, url: str) -> dict:
+    """Single navigation + extraction cascade for one detail page."""
     result: dict = {
         "full_description": None,
         "application_url": None,
@@ -706,6 +711,10 @@ def scrape_detail_page(page, url: str) -> dict:
     try:
         resp = page.goto(url, timeout=45000)
         if resp and resp.status in PERMANENT_FAILURES:
+            result["error"] = f"HTTP {resp.status}"
+            result["elapsed"] = time.time() - t0
+            return result
+        if resp and resp.status in RETRYABLE_STATUSES:
             result["error"] = f"HTTP {resp.status}"
             result["elapsed"] = time.time() - t0
             return result
@@ -770,6 +779,30 @@ def scrape_detail_page(page, url: str) -> dict:
     return result
 
 
+def scrape_detail_page(page, url: str) -> dict:
+    """Full cascade for one detail page with in-run retries on transient failures."""
+    from applypilot.enrichment.pending import is_retryable_detail_error
+
+    last: dict | None = None
+    for attempt in range(DETAIL_GOTO_ATTEMPTS):
+        result = _scrape_detail_page_once(page, url)
+        if result["status"] in ("ok", "partial"):
+            return result
+        err = result.get("error")
+        if not is_retryable_detail_error(err) or attempt >= DETAIL_GOTO_ATTEMPTS - 1:
+            return result
+        log.warning(
+            "Detail scrape retry %d/%d for %s: %s",
+            attempt + 1,
+            DETAIL_GOTO_ATTEMPTS,
+            url[:80],
+            err,
+        )
+        time.sleep(min(2.0 * (attempt + 1), 8.0))
+        last = result
+    return last or result
+
+
 def scrape_site_batch(
     conn: sqlite3.Connection | None,
     site: str,
@@ -827,18 +860,9 @@ def scrape_site_batch(
 
                 if status in ("ok", "partial"):
                     stats[status] += 1
-                    conn.execute(
-                        "UPDATE jobs SET full_description = ?, application_url = ?, "
-                        "detail_scraped_at = ?, detail_error = NULL WHERE url = ?",
-                        (result.get("full_description"), result.get("application_url"), now, url),
-                    )
                 else:
                     stats["error"] += 1
-                    conn.execute(
-                        "UPDATE jobs SET detail_error = ?, detail_scraped_at = ? WHERE url = ?",
-                        (result.get("error", "unknown"), now, url),
-                    )
-
+                persist_detail_scrape_result(conn, url, result, now=now)
                 conn.commit()
 
                 if i < len(jobs) - 1:
@@ -867,14 +891,19 @@ def _run_detail_scraper(
     Returns aggregate stats dict.
     """
     skip_filter = " AND ".join(f"site != '{s}'" for s in SKIP_DETAIL_SITES)
-    where = f"WHERE detail_scraped_at IS NULL AND {skip_filter}"
+    where = f"WHERE {detail_pending_clause()} AND {skip_filter}"
     rows = conn.execute(
         f"SELECT url, title, site FROM jobs {where} ORDER BY site"
     ).fetchall()
 
     if not rows:
         log.info("No pending jobs to scrape.")
-        return {"processed": 0, "ok": 0, "partial": 0, "error": 0}
+        return {
+            "processed": 0,
+            "ok": 0,
+            "partial": 0,
+            "error": 0,
+        }
 
     site_jobs: dict[str, list[tuple]] = {}
     for row in rows:
@@ -894,7 +923,13 @@ def _run_detail_scraper(
     order = [s for s in known_order if s in site_jobs]
     order += [s for s in sorted(site_jobs.keys()) if s not in order]
 
-    total_stats: dict = {"processed": 0, "ok": 0, "partial": 0, "error": 0, "tiers": {1: 0, 2: 0, 3: 0}}
+    total_stats: dict = {
+        "processed": 0,
+        "ok": 0,
+        "partial": 0,
+        "error": 0,
+        "tiers": {1: 0, 2: 0, 3: 0},
+    }
 
     def _merge_stats(stats: dict) -> None:
         for k in ("processed", "ok", "partial", "error"):
@@ -981,7 +1016,7 @@ def stream_detail(
             skip_filter = " AND ".join(f"site != '{s}'" for s in SKIP_DETAIL_SITES)
             rows = conn.execute(
                 "SELECT url, title, site FROM jobs "
-                f"WHERE detail_scraped_at IS NULL AND {skip_filter} "
+                f"WHERE {detail_pending_clause()} AND {skip_filter} "
                 "ORDER BY site LIMIT 200"
             ).fetchall()
 

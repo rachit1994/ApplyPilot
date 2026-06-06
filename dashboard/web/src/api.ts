@@ -28,10 +28,16 @@ export type Job = {
   title: string | null;
   site: string | null;
   location: string | null;
+  remote?: string | null;
   salary: string | null;
   strategy?: string | null;
   fit_score: number | null;
   score_reasoning: string | null;
+  score_role_key?: string | null;
+  score_jd_fit?: number | null;
+  pre_fit_score?: number | null;
+  pre_filter_reason?: string | null;
+  pre_filter_rejected_at?: string | null;
   discovered_at: string | null;
   scored_at: string | null;
   activity_at: string | null;
@@ -143,6 +149,24 @@ export type ApplicationDetail = Application & {
   log_detail?: ApplicationLogDetail | null;
 };
 
+export type PendingLogin = {
+  domain: string;
+  url?: string | null;
+  reason?: string | null;
+  has_google_signin?: boolean | null;
+  since?: string | null;
+};
+
+export type LoginPendingResponse = {
+  paused: boolean;
+  pending: PendingLogin[];
+};
+
+export type LoginResumeResponse = {
+  resumed_domain: string;
+  requeued: number;
+};
+
 export type SiteCount = {
   site: string | null;
   count: number;
@@ -158,6 +182,11 @@ export type ScoreBucket = {
   count: number;
 };
 
+export type LowScoreReason = {
+  reason: string;
+  count: number;
+};
+
 export type Stats = {
   total: number;
   scored: number;
@@ -170,7 +199,9 @@ export type Stats = {
   by_site: SiteCount[];
   score_distribution: ScoreDistributionItem[];
   score_buckets: ScoreBucket[];
+  low_score_reasons?: LowScoreReason[];
   pipeline: Record<string, number>;
+  triage_counts?: Record<string, number>;
   extra?: Record<string, number>;
 };
 
@@ -284,6 +315,7 @@ export type OverviewCaps = {
   spend_today_usd: number;
   spend_cap_usd: number;
   apply_today: number;
+  apply_attempts_today?: number;
   apply_cap: number;
   tailor_today: number;
   tailor_cap: number;
@@ -334,6 +366,19 @@ export type HealthResponse = {
   app_dir?: string;
 };
 
+export type AgentSettings = {
+  auto_apply_enabled: boolean;
+  apply_min_score: number;
+  tailor_per_job: boolean;
+  cover_letter: boolean;
+  cross_source_dedup: boolean;
+};
+
+export type AgentSettingsResponse = {
+  agent: AgentSettings;
+  updated_at: string | null;
+};
+
 const API = "/api";
 const DASHBOARD_TOKEN_KEY = "applypilot_dashboard_token";
 
@@ -355,6 +400,32 @@ function mergeHeaders(...parts: HeadersInit[]): HeadersInit {
 export async function fetchHealth(): Promise<HealthResponse> {
   const res = await fetch("/health");
   if (!res.ok) throw new Error("Failed to load health");
+  return res.json();
+}
+
+export async function fetchAgentSettings(): Promise<AgentSettingsResponse> {
+  const res = await fetch(`${API}/settings/agent`, {
+    headers: mergeHeaders(dashboardAuthHeaders()),
+  });
+  if (!res.ok) throw new Error("Failed to load agent settings");
+  return res.json();
+}
+
+export async function patchAgentSettings(
+  patch: Partial<AgentSettings>,
+): Promise<AgentSettingsResponse> {
+  const res = await fetch(`${API}/settings/agent`, {
+    method: "PATCH",
+    headers: mergeHeaders(
+      { "Content-Type": "application/json" },
+      dashboardAuthHeaders(),
+    ),
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) {
+    const detail = await res.text();
+    throw new Error(detail || "Failed to save agent settings");
+  }
   return res.json();
 }
 
@@ -460,6 +531,29 @@ export async function fetchSourceStats(days = 7): Promise<SourceStats[]> {
   return data.sources ?? [];
 }
 
+export type TriageCounts = Record<string, number>;
+
+export async function fetchTriageCounts(params: {
+  min_score?: number;
+  site?: string;
+  search?: string;
+  apply_status?: string;
+  low_score_reason?: string;
+}): Promise<TriageCounts> {
+  const q = new URLSearchParams();
+  if (params.min_score != null && params.min_score > 0) {
+    q.set("min_score", String(params.min_score));
+  }
+  if (params.site) q.set("site", params.site);
+  if (params.search) q.set("search", params.search);
+  if (params.apply_status) q.set("apply_status", params.apply_status);
+  if (params.low_score_reason) q.set("low_score_reason", params.low_score_reason);
+  const res = await fetch(`${API}/jobs/triage-counts?${q}`);
+  if (!res.ok) throw new Error("Failed to load triage counts");
+  const data = await res.json();
+  return data.counts ?? {};
+}
+
 export async function fetchJobs(params: {
   min_score?: number;
   site?: string;
@@ -467,10 +561,19 @@ export async function fetchJobs(params: {
   pipeline_stage?: PipelineStageFilter;
   stage?: string;
   apply_status?: string;
+  low_score_reason?: string;
   sort?: string;
   limit?: number;
   offset?: number;
-}): Promise<{ jobs: Job[]; total: number }> {
+  page?: number;
+}): Promise<{
+  jobs: Job[];
+  total: number;
+  limit?: number;
+  offset?: number;
+  page?: number;
+  pages?: number;
+}> {
   const q = new URLSearchParams();
   if (params.min_score != null && params.min_score > 0) {
     q.set("min_score", String(params.min_score));
@@ -479,14 +582,16 @@ export async function fetchJobs(params: {
   if (params.search) q.set("search", params.search);
   if (params.stage) q.set("stage", params.stage);
   if (params.apply_status) q.set("apply_status", params.apply_status);
+  if (params.low_score_reason) q.set("low_score_reason", params.low_score_reason);
   if (params.pipeline_stage && params.pipeline_stage !== "all") {
     q.set("pipeline_stage", params.pipeline_stage);
   }
   if (params.sort) q.set("sort", params.sort);
   if (params.limit) q.set("limit", String(params.limit));
   if (params.offset != null) q.set("offset", String(params.offset));
+  if (params.page != null && params.page > 0) q.set("page", String(params.page));
   if (!params.sort) q.set("sort", "activity_desc");
-  const res = await fetch(`${API}/jobs?${q}`);
+  const res = await fetch(`${API}/jobs?${q}`, { cache: "no-store" });
   if (!res.ok) throw new Error("Failed to load jobs");
   return res.json();
 }
@@ -510,6 +615,8 @@ export async function fetchApplications(params: {
   status?: string;
   site?: string;
   search?: string;
+  claude_escalated?: boolean;
+  needs_attention?: boolean;
 }): Promise<{ applications: Application[]; total: number }> {
   const q = new URLSearchParams();
   if (params.limit) q.set("limit", String(params.limit));
@@ -518,6 +625,8 @@ export async function fetchApplications(params: {
   if (params.status) q.set("status", params.status);
   if (params.site) q.set("site", params.site);
   if (params.search) q.set("search", params.search);
+  if (params.claude_escalated) q.set("claude_escalated", "true");
+  if (params.needs_attention) q.set("needs_attention", "true");
   const res = await fetch(`${API}/applications?${q}`);
   if (!res.ok) throw new Error("Failed to load applications");
   return res.json();
@@ -656,6 +765,25 @@ export async function fetchRequeueApplication(
   return res.json();
 }
 
+export async function fetchPendingLogins(): Promise<LoginPendingResponse> {
+  const res = await fetch(`${API}/login/pending`);
+  if (!res.ok) throw new Error("Failed to load pending logins");
+  return res.json();
+}
+
+export async function postResumeLogin(domain?: string): Promise<LoginResumeResponse> {
+  const res = await fetch(`${API}/login/resume`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ domain: domain ?? null }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { detail?: string }).detail ?? "Resume login failed");
+  }
+  return res.json();
+}
+
 export async function fetchRecentJobs(minutes = 60): Promise<Job[]> {
   const res = await fetch(`${API}/jobs/recent?minutes=${minutes}&limit=100`);
   if (!res.ok) throw new Error("Failed to load recent jobs");
@@ -722,6 +850,140 @@ export async function fetchInboxQueue(limit = 50): Promise<{
 }> {
   const res = await fetch(`${API}/inbox/queue?limit=${limit}`);
   if (!res.ok) throw new Error("Failed to load inbox queue");
+  return res.json();
+}
+
+export type LearningStats = {
+  nav_playbook: {
+    total: number;
+    by_status: Record<string, number>;
+    by_source: Record<string, number>;
+    by_ats_family: Record<string, number>;
+  };
+  cache_hit: {
+    replay_count: number;
+    llm_count: number;
+    replay_pct: number;
+  };
+  field_strategy_total: number;
+};
+
+export type LearningReviewEvent = {
+  id: number;
+  ts?: string | null;
+  job_url?: string | null;
+  ats_family?: string | null;
+  apex_host?: string | null;
+  state_sig?: string | null;
+  tier?: string | null;
+  action_type?: string | null;
+  outcome?: string | null;
+  postcondition_met?: number | null;
+};
+
+export type LearningCluster = {
+  state_sig: string;
+  count: number;
+  ats_family?: string | null;
+  apex_host?: string | null;
+  action_type?: string | null;
+  tier?: string | null;
+  outcome?: string | null;
+};
+
+export type LearningTierMix = {
+  since_hours: number;
+  tiers: Record<string, number>;
+};
+
+export type LearningEscalation = {
+  ats_family: string;
+  attempts: number;
+  fail_fraction: number;
+};
+
+export type LearningEscalations = {
+  since_hours: number;
+  families: LearningEscalation[];
+};
+
+export type LearningInductionCandidate = {
+  ats_family?: string | null;
+  state_sig: string;
+  action_type?: string | null;
+  support: number;
+};
+
+export type LearningInduction = {
+  min_support: number;
+  candidates: LearningInductionCandidate[];
+};
+
+export async function fetchLearningStats(sinceHours = 24): Promise<LearningStats> {
+  const res = await fetch(`${API}/learning/stats?since_hours=${sinceHours}`);
+  if (!res.ok) throw new Error("Failed to load learning stats");
+  return res.json();
+}
+
+export async function fetchLearningReview(limit = 50): Promise<{ events: LearningReviewEvent[] }> {
+  const res = await fetch(`${API}/learning/review?limit=${limit}`);
+  if (!res.ok) throw new Error("Failed to load learning review log");
+  return res.json();
+}
+
+export async function fetchLearningClusters(limit = 20): Promise<{ clusters: LearningCluster[] }> {
+  const res = await fetch(`${API}/learning/clusters?limit=${limit}`);
+  if (!res.ok) throw new Error("Failed to load learning clusters");
+  return res.json();
+}
+
+export async function fetchLearningTierMix(sinceHours = 24): Promise<LearningTierMix> {
+  const res = await fetch(`${API}/learning/tier-mix?since_hours=${sinceHours}`);
+  if (!res.ok) throw new Error("Failed to load learning tier mix");
+  return res.json();
+}
+
+export async function fetchLearningEscalations(sinceHours = 24): Promise<LearningEscalations> {
+  const res = await fetch(`${API}/learning/escalations?since_hours=${sinceHours}`);
+  if (!res.ok) throw new Error("Failed to load learning escalations");
+  return res.json();
+}
+
+export async function fetchLearningInduction(minSupport = 3): Promise<LearningInduction> {
+  const res = await fetch(`${API}/learning/induction?min_support=${minSupport}`);
+  if (!res.ok) throw new Error("Failed to load induction candidates");
+  return res.json();
+}
+
+export async function postLearningPromote(
+  stateSig: string,
+  scope = "host",
+): Promise<{ ok: boolean; state_sig: string; scope: string; status: string }> {
+  const res = await fetch(`${API}/learning/promote`, {
+    method: "POST",
+    headers: mergeHeaders(
+      { "Content-Type": "application/json" },
+      dashboardAuthHeaders(),
+    ),
+    body: JSON.stringify({ state_sig: stateSig, scope }),
+  });
+  if (!res.ok) throw new Error("Failed to promote playbook entry");
+  return res.json();
+}
+
+export async function postLearningBan(
+  stateSig: string,
+  scope = "host",
+): Promise<{ ok: boolean; state_sig: string; scope: string; status: string }> {
+  const res = await fetch(`${API}/learning/ban`, {
+    method: "POST",
+    headers: mergeHeaders(
+      { "Content-Type": "application/json" },
+      dashboardAuthHeaders(),
+    ),
+    body: JSON.stringify({ state_sig: stateSig, scope }),
+  });
+  if (!res.ok) throw new Error("Failed to ban playbook entry");
   return res.json();
 }
 

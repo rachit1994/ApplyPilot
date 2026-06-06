@@ -14,9 +14,10 @@ import { AppliedApplicationsPage } from "./components/AppliedApplicationsPage";
 import { OutreachDashboardPage } from "./components/OutreachDashboardPage";
 import { PipelineDashboardPage } from "./components/PipelineDashboardPage";
 import { SettingsDashboardPage } from "./components/SettingsDashboardPage";
+import { LearningDashboardPage } from "./components/LearningDashboardPage";
 import type { DashboardPage } from "./dashboardNav";
 import { isDashboardPage, pageSubtitleWithStats } from "./dashboardNav";
-import type { ApplyStatusFilter } from "./utils/applicationAudit";
+import { useRunLiveRefresh } from "./hooks/useRunLiveRefresh";
 
 const JOBS_FILTER_KEYS = [
   "stage",
@@ -25,10 +26,11 @@ const JOBS_FILTER_KEYS = [
   "search",
   "sort",
   "apply_status",
+  "low_score_reason",
   "limit",
 ] as const;
 
-const APPLICATIONS_FILTER_KEYS = ["filter"] as const;
+const APPLICATIONS_FILTER_KEYS = ["filter", "search", "limit", "page"] as const;
 
 const PAGE_PATH: Record<DashboardPage, string> = {
   home: "/",
@@ -37,6 +39,7 @@ const PAGE_PATH: Record<DashboardPage, string> = {
   applications: "/applications",
   outreach: "/outreach",
   pipeline: "/pipeline",
+  learning: "/learning",
   settings: "/settings",
 };
 
@@ -47,6 +50,7 @@ function pageFromPathname(pathname: string): DashboardPage | null {
   if (path === "/applications" || path === "/apply") return "applications";
   if (path === "/outreach") return "outreach";
   if (path === "/pipeline") return "pipeline";
+  if (path === "/learning") return "learning";
   if (path === "/settings") return "settings";
   return null;
 }
@@ -79,21 +83,21 @@ function jobsParamsFromUrl(): URLSearchParams {
   return jobs;
 }
 
-function applicationsFilterFromUrl(): string | null {
-  return new URLSearchParams(window.location.search).get("filter");
-}
-
-function applyFilterToUrlParam(filter: ApplyStatusFilter): string | null {
-  if (filter === "submitted_unverified") return "unverified";
-  if (filter === "all") return null;
-  return filter;
+function applicationsParamsFromUrl(): URLSearchParams {
+  const params = new URLSearchParams(window.location.search);
+  const apps = new URLSearchParams();
+  for (const key of APPLICATIONS_FILTER_KEYS) {
+    const v = params.get(key);
+    if (v) apps.set(key, v);
+  }
+  return apps;
 }
 
 export default function App() {
   const [page, setPage] = useState<DashboardPage>(readPageFromUrl);
   const [jobsSearch, setJobsSearch] = useState<URLSearchParams>(jobsParamsFromUrl);
-  const [applicationsFilter, setApplicationsFilter] = useState<string | null>(
-    applicationsFilterFromUrl,
+  const [applicationsSearch, setApplicationsSearch] = useState<URLSearchParams>(
+    applicationsParamsFromUrl,
   );
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [selectedApplication, setSelectedApplication] = useState<Application | null>(null);
@@ -105,7 +109,7 @@ export default function App() {
     (
       nextPage: DashboardPage,
       jobsParams: URLSearchParams,
-      appFilter: string | null,
+      appsParams: URLSearchParams,
       applyQueue: boolean,
     ) => {
       const url = new URL(window.location.href);
@@ -116,7 +120,14 @@ export default function App() {
       for (const key of APPLICATIONS_FILTER_KEYS) {
         url.searchParams.delete(key);
       }
-      url.searchParams.delete("page");
+      // Legacy route used ?page=jobs; numeric ?page= is pagination (jobs tab only).
+      const legacyPage = url.searchParams.get("page");
+      if (legacyPage && !/^\d+$/.test(legacyPage)) {
+        url.searchParams.delete("page");
+      }
+      if (nextPage !== "jobs") {
+        url.searchParams.delete("page");
+      }
       url.pathname = PAGE_PATH[nextPage];
 
       if (nextPage === "jobs") {
@@ -126,11 +137,15 @@ export default function App() {
         });
       } else if (nextPage === "applications") {
         url.searchParams.set("tab", applyQueue ? "apply" : "applications");
-        if (appFilter) url.searchParams.set("filter", appFilter);
+        appsParams.forEach((value, key) => {
+          if (value) url.searchParams.set(key, value);
+        });
       } else if (nextPage === "outreach") {
         url.searchParams.set("tab", "outreach");
       } else if (nextPage === "pipeline") {
         url.searchParams.set("tab", "pipeline");
+      } else if (nextPage === "learning") {
+        url.searchParams.set("tab", "learning");
       } else if (nextPage === "settings") {
         url.searchParams.set("tab", "settings");
       } else {
@@ -145,20 +160,22 @@ export default function App() {
   );
 
   useEffect(() => {
-    syncUrl(page, jobsSearch, applicationsFilter, appsShowApplyControls);
-  }, [page, jobsSearch, applicationsFilter, appsShowApplyControls, syncUrl]);
+    syncUrl(page, jobsSearch, applicationsSearch, appsShowApplyControls);
+  }, [page, jobsSearch, applicationsSearch, appsShowApplyControls, syncUrl]);
 
   useEffect(() => {
     const onPopState = () => {
       setPage(readPageFromUrl());
       setJobsSearch(jobsParamsFromUrl());
-      setApplicationsFilter(applicationsFilterFromUrl());
+      setApplicationsSearch(applicationsParamsFromUrl());
       const tab = new URLSearchParams(window.location.search).get("tab");
       setAppsShowApplyControls(tab === "apply");
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
+
+  useRunLiveRefresh();
 
   const { data: stats } = useQuery({
     queryKey: ["stats"],
@@ -174,8 +191,7 @@ export default function App() {
 
   const navBadges = useMemo(() => {
     const pipeline = stats?.pipeline;
-    const newJobs =
-      (pipeline?.scored ?? 0) + (pipeline?.unscored ?? 0) || stats?.scored || undefined;
+    const newJobs = stats?.triage_counts?.new ?? pipeline?.unscored ?? undefined;
     return {
       jobs: newJobs,
       apps: stats?.pipeline?.submitted_unverified ?? undefined,
@@ -212,15 +228,17 @@ export default function App() {
   }, []);
 
   const handleOpenApplications = useCallback((params?: Record<string, string>) => {
-    setApplicationsFilter(params?.filter ?? null);
+    const next = new URLSearchParams();
+    if (params) {
+      for (const [k, v] of Object.entries(params)) {
+        if (v) next.set(k, v);
+      }
+    }
+    setApplicationsSearch(next);
     setAppsShowApplyControls(false);
     setPage("applications");
     setSelectedJob(null);
     setSelectedApplication(null);
-  }, []);
-
-  const handleApplicationsFilterChange = useCallback((filter: ApplyStatusFilter) => {
-    setApplicationsFilter(applyFilterToUrlParam(filter));
   }, []);
 
   const handleStopRun = useCallback(() => {
@@ -245,8 +263,8 @@ export default function App() {
   } else if (page === "applications") {
     content = (
       <AppliedApplicationsPage
-        initialFilter={applicationsFilter}
-        onFilterChange={handleApplicationsFilterChange}
+        searchParams={applicationsSearch}
+        onSearchParamsChange={setApplicationsSearch}
         showApplyControls={appsShowApplyControls}
       />
     );
@@ -254,6 +272,8 @@ export default function App() {
     content = <OutreachDashboardPage />;
   } else if (page === "pipeline") {
     content = <PipelineDashboardPage />;
+  } else if (page === "learning") {
+    content = <LearningDashboardPage />;
   } else if (page === "settings") {
     content = <SettingsDashboardPage />;
   } else {

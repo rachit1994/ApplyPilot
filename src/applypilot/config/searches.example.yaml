@@ -1,6 +1,12 @@
 # ApplyPilot search configuration
 # Copy to ~/.applypilot/searches.yaml and customize for your job search.
 # The wizard (applypilot init) generates a basic version automatically.
+#
+# Discover merges queries from ROLE_CATALOG (role_resumes.py) at runtime for
+# JobSpy, Workday, and smart-extract sites. Set role_catalog_queries: false to
+# use only the queries listed below.
+
+role_catalog_queries: true
 
 # Search queries -- each has a query string and priority tier.
 # Tier 1: High-priority exact matches (searched first, highest precision)
@@ -129,3 +135,23 @@ exclude_titles:
   - "clearance required"
   - "TS/SCI"
   - "principal scientist"
+
+# Pre-score filter stage (`applypilot run filter` / score pre-gate).
+# Each check can be toggled; all default to true. Profile `fit_filters` overrides this block.
+#filter:
+#  enabled: true
+#  checks:
+#    title_junior_or_intern: true
+#    title_exec_non_eng: true
+#    title_adjacent_role: false   # e.g. allow "Sales Engineer" through to scoring
+#    title_allowlist: true
+#    location: true
+#    salary_floor: true
+#    blocked_keywords: true
+#    description_junior_signal: true
+#    profile_keyword_overlap: true
+#  disable:
+#    - title_adjacent_role
+#
+# Reason-code aliases also work: title:adjacent_role, profile:low_keyword_overlap, etc.
+# Global off: filter.enabled: false or APPLYPILOT_DISABLE_PRE_FILTER=1

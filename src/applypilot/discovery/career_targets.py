@@ -84,6 +84,9 @@ def partition_career_targets(
             "mode": row.get("mode", "smartextract"),
             "source": "career_targets",
         }
+        for key in ("company_priority", "company_priority_reasons"):
+            if key in row:
+                site[key] = row[key]
         if row.get("mode") == "agent":
             agent_sites.append(site)
         else:

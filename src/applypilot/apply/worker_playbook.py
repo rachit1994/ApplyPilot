@@ -4,14 +4,47 @@ from __future__ import annotations
 
 import re
 import shutil
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from applypilot import config
 from applypilot.apply.prompt import ensure_resume_pdf
+from applypilot.role_resumes import resolve_job_resume_path
 from applypilot.apply.worker_playbook_tools import build_tool_alias_section
 
 _TOKEN_RE = re.compile(r"\{\{(\w+)\}\}")
+
+
+def _non_decline_veteran_status(value: str | None) -> str:
+    text = str(value or "").strip()
+    norm = text.lower()
+    if not text or "decline" in norm or "prefer not" in norm or "wish" in norm:
+        return "I am not a protected veteran"
+    return text
+
+
+def _non_decline_gender(value: str | None) -> str:
+    text = str(value or "").strip()
+    norm = text.lower()
+    if not text or "decline" in norm or "prefer not" in norm or "wish" in norm:
+        return "Male"
+    return text
+
+
+def _non_decline_race_ethnicity(value: str | None) -> str:
+    text = str(value or "").strip()
+    norm = text.lower()
+    if not text or "decline" in norm or "prefer not" in norm or "wish" in norm:
+        return "Asian"
+    return text
+
+
+def _non_decline_disability_status(value: str | None) -> str:
+    text = str(value or "").strip()
+    norm = text.lower()
+    if not text or "decline" in norm or "prefer not" in norm or "wish" in norm:
+        return "No, I don't have a disability"
+    return text
 
 
 def default_playbook_path() -> Path:
@@ -30,12 +63,24 @@ def _digits_only(phone: str) -> str:
     return re.sub(r"\D", "", phone or "")
 
 
+def _job_company(job: dict) -> str:
+    for key in ("company", "company_name"):
+        value = str(job.get(key) or "").strip()
+        if value:
+            return value
+    site = str(job.get("site") or "").strip()
+    if ":" in site:
+        return site.split(":", 1)[1].strip()
+    return site
+
+
 def build_playbook_tokens(
     profile: dict,
     job: dict,
     *,
     resume_pdf_path: str,
     cover_letter_pdf_path: str = "",
+    cover_letter_text: str = "",
 ) -> dict[str, str]:
     """Build {{token}} values from profile and job (no invented fields)."""
     personal = profile["personal"]
@@ -58,13 +103,22 @@ def build_playbook_tokens(
         current_title = roles[0]
 
     job_url = str(job.get("application_url") or job.get("url") or "").strip()
+    eeo = profile.get("eeo_voluntary") or {}
+
+    raw_phone = str(personal.get("phone") or "").strip()
+    phone_digits = _digits_only(raw_phone)
+    # E.164 (+countrycode...) when the stored number carries a country code, so
+    # international phone widgets (intl-tel-input on Greenhouse, etc.) detect the
+    # right country instead of treating it as an over-long US number.
+    phone_e164 = ("+" + phone_digits) if raw_phone.startswith("+") else phone_digits
 
     return {
         "full_name": full_name,
         "preferred_name": preferred,
         "email": str(personal.get("email") or "").strip(),
         "phone": str(personal.get("phone") or "").strip(),
-        "phone_digits": _digits_only(str(personal.get("phone") or "")),
+        "phone_digits": phone_digits,
+        "phone_e164": phone_e164,
         "address": str(personal.get("address") or "").strip(),
         "city": str(personal.get("city") or "").strip(),
         "province_state": str(personal.get("province_state") or "").strip(),
@@ -82,13 +136,26 @@ def build_playbook_tokens(
         "salary_currency": str(comp.get("salary_currency") or "USD").strip(),
         "years_experience": str(exp.get("years_of_experience_total") or "").strip(),
         "education_level": str(exp.get("education_level") or "").strip(),
+        "current_company": str(exp.get("current_company") or "").strip(),
         "current_job_title": current_title,
+        "job_title": str(job.get("title") or "").strip(),
+        "company": _job_company(job),
         "earliest_start_date": str(avail.get("earliest_start_date") or "Immediately").strip(),
+        # Concrete date (MM/DD/YYYY) for date-picker "when can you start" fields,
+        # which reject free text like "Immediately". Two weeks out = realistic notice.
+        "start_date": (date.today() + timedelta(days=14)).strftime("%m/%d/%Y"),
         "resume_pdf_path": resume_pdf_path,
         "cover_letter_pdf_path": cover_letter_pdf_path,
+        "cover_letter_text": cover_letter_text.strip(),
         "today_date": date.today().isoformat(),
         "job_url": job_url,
         "password": str(personal.get("password") or "").strip(),
+        "gender": _non_decline_gender(eeo.get("gender")),
+        "race_ethnicity": _non_decline_race_ethnicity(eeo.get("race_ethnicity")),
+        "veteran_status": _non_decline_veteran_status(eeo.get("veteran_status")),
+        "disability_status": _non_decline_disability_status(
+            eeo.get("disability_status")
+        ),
     }
 
 
@@ -126,7 +193,7 @@ def build_worker_apply_prompt(
     profile = config.load_profile()
     personal = profile["personal"]
 
-    resume_path = job.get("tailored_resume_path")
+    resume_path = resolve_job_resume_path(job)
     if not resume_path:
         raise ValueError(f"No tailored resume for job: {job.get('title', 'unknown')}")
 
@@ -139,21 +206,18 @@ def build_worker_apply_prompt(
     shutil.copy(str(src_pdf), str(upload_pdf))
     pdf_path = str(upload_pdf)
 
-    cl_upload_path = ""
-    cl_path = job.get("cover_letter_path")
-    if cl_path and Path(cl_path).exists():
-        cl_src = Path(cl_path)
-        cl_pdf_src = cl_src.with_suffix(".pdf")
-        if cl_pdf_src.exists():
-            cl_upload = dest_dir / f"{name_slug}_Cover_Letter.pdf"
-            shutil.copy(str(cl_pdf_src), str(cl_upload))
-            cl_upload_path = str(cl_upload)
+    from applypilot.apply.cover_resolve import resolve_apply_cover_letter
+
+    _cl_text, _cl_txt, cl_upload_path = resolve_apply_cover_letter(
+        job, upload_dir=dest_dir
+    )
 
     tokens = build_playbook_tokens(
         profile,
         job,
         resume_pdf_path=pdf_path,
         cover_letter_pdf_path=cl_upload_path,
+        cover_letter_text=_cl_text,
     )
     resolved_path = playbook_path or default_playbook_path()
     body = load_playbook_markdown(resolved_path)

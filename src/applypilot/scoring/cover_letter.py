@@ -11,7 +11,9 @@ import re
 import time
 from datetime import datetime, timezone
 
+from applypilot import config
 from applypilot.config import COVER_LETTER_DIR, RESUME_PATH, get_target_roles, load_profile
+from applypilot.role_resumes import resolve_job_resume_text
 from applypilot.scoring.templates import (
     classify_archetype,
     cover_letter_via_template,
@@ -276,8 +278,11 @@ def generate_cover_letter_with_routing(
 
 # ── Batch Entry Point ────────────────────────────────────────────────────
 
-def run_cover_letters(min_score: int = 7, limit: int = 20,
-                      validation_mode: str = "normal") -> dict:
+def run_cover_letters(
+    min_score: int = 7,
+    limit: int | None = None,
+    validation_mode: str = "normal",
+) -> dict:
     """Generate cover letters for high-scoring jobs that have tailored resumes.
 
     Args:
@@ -288,6 +293,9 @@ def run_cover_letters(min_score: int = 7, limit: int = 20,
     Returns:
         {"generated": int, "errors": int, "elapsed": float}
     """
+    if limit is None:
+        limit = int(config.DEFAULTS.get("cover_letter_batch_limit", 300))
+
     profile = load_profile()
     resume_text = RESUME_PATH.read_text(encoding="utf-8")
     conn = get_connection()
@@ -325,8 +333,9 @@ def run_cover_letters(min_score: int = 7, limit: int = 20,
     for job in jobs:
         completed += 1
         try:
+            job_resume = resolve_job_resume_text(job) or resume_text
             letter, cl_report = generate_cover_letter_with_routing(
-                resume_text, job, profile, validation_mode=validation_mode
+                job_resume, job, profile, validation_mode=validation_mode
             )
             log.debug(
                 "Cover letter for %s: source=%s archetype=%s",

@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from applypilot import config
 from applypilot.database import get_connection, init_db
 from applypilot.orchestration.events import (
     emit_run_event,
@@ -48,6 +49,25 @@ def _redact(line: str) -> str:
     return line
 
 
+def _subprocess_env(run_id: str) -> dict[str, str]:
+    """Env for dashboard-spawned CLI subprocesses (inherits user shell, then defaults)."""
+    env = os.environ.copy()
+    env["APPLYPILOT_RUN_ID"] = run_id
+    env["PYTHONUNBUFFERED"] = "1"
+    path_parts = [
+        str(Path.home() / ".local" / "bin"),
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        env.get("PATH", ""),
+    ]
+    env["PATH"] = os.pathsep.join(part for part in path_parts if part)
+    if not (env.get("APPLYPILOT_APPLY_ENGINE") or "").strip():
+        default_engine = str(config.DEFAULTS.get("apply_engine", "direct")).strip().lower()
+        if default_engine in ("direct", "claude"):
+            env["APPLYPILOT_APPLY_ENGINE"] = default_engine
+    return env
+
+
 def _resolve_cli() -> list[str]:
     """Command prefix to invoke applypilot in the current environment."""
     if shutil.which("applypilot"):
@@ -77,32 +97,119 @@ def _reap_active_process() -> None:
         _active_run_id = None
 
 
+def _parse_iso_ts(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _run_recently_active(
+    conn: Any,
+    run_id: str,
+    *,
+    within_seconds: int = 300,
+) -> bool:
+    """True when run_events show activity within the window (CLI still going after serve reload)."""
+    row = conn.execute(
+        """
+        SELECT created_at FROM run_events
+        WHERE run_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (run_id,),
+    ).fetchone()
+    if not row or not row["created_at"]:
+        return False
+    created = _parse_iso_ts(row["created_at"])
+    if created is None:
+        return False
+    return (datetime.now(timezone.utc) - created).total_seconds() < within_seconds
+
+
+def _find_db_running_run() -> dict[str, Any] | None:
+    """Latest DB row still marked running (survives serve reload without in-memory handles)."""
+    conn = get_connection()
+    init_run_schema(conn)
+    row = conn.execute(
+        """
+        SELECT id FROM runs
+        WHERE status = 'running'
+        ORDER BY started_at DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    if not row:
+        return None
+    return get_run(row["id"])
+
+
 def reconcile_orphaned_runs() -> int:
-    """Mark dashboard runs left 'running' after a server crash/restart."""
+    """Mark stale dashboard runs left 'running' after a server crash/restart."""
     _reap_active_process()
+    with _lock:
+        if (
+            _active_process is not None
+            and _active_process.poll() is None
+            and _active_run_id
+        ):
+            return 0
     conn = get_connection()
     init_run_schema(conn)
     finished = _now()
-    cur = conn.execute(
-        """
-        UPDATE runs
-        SET status = 'stopped',
-            finished_at = COALESCE(finished_at, ?),
-            error_message = COALESCE(error_message, 'Dashboard server restarted')
-        WHERE status = 'running'
-        """,
-        (finished,),
-    )
+    stopped = 0
+    rows = conn.execute("SELECT id FROM runs WHERE status = 'running'").fetchall()
+    for row in rows:
+        run_id = row["id"]
+        if _run_recently_active(conn, run_id):
+            continue
+        conn.execute(
+            """
+            UPDATE runs
+            SET status = 'stopped',
+                finished_at = COALESCE(finished_at, ?),
+                error_message = COALESCE(
+                    error_message,
+                    'Dashboard server restarted (no recent run activity)'
+                )
+            WHERE id = ?
+            """,
+            (finished, run_id),
+        )
+        stopped += 1
     conn.commit()
-    return int(cur.rowcount)
+    return stopped
 
 
 def get_active_run() -> dict[str, Any] | None:
+    """Return the active run: in-memory subprocess first, else latest DB 'running' row."""
     _reap_active_process()
     with _lock:
-        if not _active_run_id:
-            return None
-        return get_run(_active_run_id)
+        if (
+            _active_run_id
+            and _active_process is not None
+            and _active_process.poll() is None
+        ):
+            run = get_run(_active_run_id)
+            if run and run["status"] == "running":
+                return run
+    return _find_db_running_run()
+
+
+def _assert_no_conflicting_run(*, force: bool) -> None:
+    """Block starting a new run while another is still active."""
+    if force:
+        return
+    existing = get_active_run()
+    if existing:
+        rid = existing.get("id", "")
+        stage = existing.get("current_stage") or "running"
+        raise RuntimeError(
+            f"Run {rid} is still active ({stage}). Stop it first or use force=true."
+        )
 
 
 def get_run(run_id: str) -> dict[str, Any] | None:
@@ -117,14 +224,28 @@ def get_run(run_id: str) -> dict[str, Any] | None:
             stages = json.loads(row["stages_json"])
         except json.JSONDecodeError:
             stages = []
+    from applypilot.orchestration.stage_ui import effective_current_stage
+
+    stream = bool(row["stream"])
+    status = row["status"]
+    current_stage = row["current_stage"]
+    if status == "running" and stream:
+        current_stage = effective_current_stage(
+            stream=True,
+            running=True,
+            db_current_stage=current_stage,
+            run_stages=stages,
+            run_id=row["id"],
+        )
+
     return {
         "id": row["id"],
         "run_type": row["run_type"],
-        "status": row["status"],
+        "status": status,
         "stages": stages,
-        "stream": bool(row["stream"]),
+        "stream": stream,
         "dry_run": bool(row["dry_run"]),
-        "current_stage": row["current_stage"],
+        "current_stage": current_stage,
         "exit_code": row["exit_code"],
         "error_message": row["error_message"],
         "started_at": row["started_at"],
@@ -315,17 +436,13 @@ def start_pipeline_run(
 
     init_db()
     _reap_active_process()
-    run_to_stop: str | None = None
-    with _lock:
-        if _active_process is not None and _active_process.poll() is None:
-            if not force:
-                raise RuntimeError(
-                    f"Run {_active_run_id} is still active. Stop it first or use force=true."
-                )
-            run_to_stop = _active_run_id or ""
-    if run_to_stop:
-        stop_run(run_to_stop)
+    if force:
+        existing = get_active_run()
+        if existing and existing.get("id"):
+            stop_run(str(existing["id"]))
         _reap_active_process()
+    else:
+        _assert_no_conflicting_run(force=False)
 
     if stages is None or not stages or stages == ["all"]:
         stage_list = list(STAGE_ORDER)
@@ -353,9 +470,7 @@ def start_pipeline_run(
     cmd.extend(["--min-score", str(min_score), "--workers", str(workers)])
     cmd.extend(["--validation", validation_mode])
 
-    env = os.environ.copy()
-    env["APPLYPILOT_RUN_ID"] = run_id
-    env["PYTHONUNBUFFERED"] = "1"
+    env = _subprocess_env(run_id)
 
     try:
         proc = subprocess.Popen(
@@ -415,17 +530,13 @@ def start_apply_run(
 
     init_db()
     _reap_active_process()
-    run_to_stop: str | None = None
-    with _lock:
-        if _active_process is not None and _active_process.poll() is None:
-            if not force:
-                raise RuntimeError(
-                    f"Run {_active_run_id} is still active. Stop it first or use force=true."
-                )
-            run_to_stop = _active_run_id or ""
-    if run_to_stop:
-        stop_run(run_to_stop)
+    if force:
+        existing = get_active_run()
+        if existing and existing.get("id"):
+            stop_run(str(existing["id"]))
         _reap_active_process()
+    else:
+        _assert_no_conflicting_run(force=False)
 
     run_id = str(uuid.uuid4())
     started = _now()
@@ -440,9 +551,13 @@ def start_apply_run(
     )
     conn.commit()
 
-    cmd = _resolve_cli() + ["apply"]
+    cmd = _resolve_cli() + ["apply", "--engine", "direct", "--include-untailored"]
     if limit is not None and limit > 0:
         cmd.extend(["--limit", str(limit)])
+        if not continuous:
+            cmd.append("--no-continuous")
+    else:
+        cmd.append("--continuous")
     cmd.extend(["--min-score", str(min_score), "--workers", str(workers)])
     if watch:
         cmd.append("--watch")
@@ -450,14 +565,10 @@ def start_apply_run(
         cmd.extend(["--pace", "2"])
     if headless:
         cmd.append("--headless")
-    if continuous:
-        cmd.append("--continuous")
     if dry_run:
         cmd.append("--dry-run")
 
-    env = os.environ.copy()
-    env["APPLYPILOT_RUN_ID"] = run_id
-    env["PYTHONUNBUFFERED"] = "1"
+    env = _subprocess_env(run_id)
 
     try:
         proc = subprocess.Popen(
@@ -512,17 +623,13 @@ def start_inbox_run(
 
     init_db()
     _reap_active_process()
-    run_to_stop: str | None = None
-    with _lock:
-        if _active_process is not None and _active_process.poll() is None:
-            if not force:
-                raise RuntimeError(
-                    f"Run {_active_run_id} is still active. Stop it first or use force=true."
-                )
-            run_to_stop = _active_run_id or ""
-    if run_to_stop:
-        stop_run(run_to_stop)
+    if force:
+        existing = get_active_run()
+        if existing and existing.get("id"):
+            stop_run(str(existing["id"]))
         _reap_active_process()
+    else:
+        _assert_no_conflicting_run(force=False)
 
     run_id = str(uuid.uuid4())
     started = _now()
@@ -544,9 +651,7 @@ def start_inbox_run(
     if dry_run:
         cmd.append("--dry-run")
 
-    env = os.environ.copy()
-    env["APPLYPILOT_RUN_ID"] = run_id
-    env["PYTHONUNBUFFERED"] = "1"
+    env = _subprocess_env(run_id)
 
     try:
         proc = subprocess.Popen(

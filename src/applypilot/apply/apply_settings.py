@@ -41,6 +41,75 @@ def _env_str(name: str, default: str) -> str:
     return stripped if stripped else default
 
 
+def apply_engine(cli_override: str | None = None) -> Literal["claude", "direct"]:
+    """Apply execution engine.
+
+    'direct' (default) — deterministic Playwright Direct Apply (~$0 Claude/apply)
+                         for Greenhouse/Lever/Ashby; optional Claude rescue tier.
+    'claude'           — Claude Code browser agent (~$0.15/apply) for all jobs.
+    """
+    default = str(config.DEFAULTS.get("apply_engine", "direct")).strip().lower()
+    if default not in ("direct", "claude"):
+        default = "direct"
+    raw = (cli_override or _env_str("APPLYPILOT_APPLY_ENGINE", default)).strip().lower()
+    return "direct" if raw == "direct" else "claude"
+
+
+def direct_gemini_enabled() -> bool:
+    """Allow the Resolver Tier-2 (one cheap Gemini call for novel required fields)."""
+    return _env_bool("APPLYPILOT_DIRECT_GEMINI", True)
+
+
+def email_verification_enabled() -> bool:
+    """Read employer verification codes from Gmail during Direct Apply."""
+    return _env_bool("APPLYPILOT_DIRECT_EMAIL_VERIFY", True)
+
+
+def captcha_solving_enabled() -> bool:
+    """Solve visible reCAPTCHA v2 via CapSolver when CAPSOLVER_API_KEY is set."""
+    if not _env_bool("APPLYPILOT_DIRECT_CAPTCHA", True):
+        return False
+    return bool(os.environ.get("CAPSOLVER_API_KEY", "").strip())
+
+
+def direct_escalate_to_claude() -> bool:
+    """When Direct Apply can't finish a job, fall back to the Claude path.
+
+    Off by default so a cost-capped run never silently spends Claude budget;
+    unresolved jobs are parked (failed:direct_*) for a later Claude pass.
+    """
+    return _env_bool("APPLYPILOT_DIRECT_ESCALATE", False)
+
+
+def direct_job_timeout() -> float:
+    """Hard wall-clock budget (seconds) for one Direct Apply attempt.
+
+    The Driver runs in-process (no subprocess wall-timeout covers it), so a hung
+    Playwright call on an unfamiliar form could otherwise stall a worker for the
+    whole night. On timeout the job escalates/parks and the worker moves on.
+    """
+    try:
+        return float(_env_str("APPLYPILOT_DIRECT_JOB_TIMEOUT", "100"))
+    except ValueError:
+        return 100.0
+
+
+def max_per_ats_family_per_day() -> int:
+    """IP-reputation cap: max submits per ATS family per local day (0 = unlimited)."""
+    try:
+        return int(_env_str("APPLYPILOT_MAX_PER_ATS_FAMILY_PER_DAY", "75"))
+    except ValueError:
+        return 75
+
+
+def max_per_apex_domain_per_day() -> int:
+    """IP-reputation cap: max submits per company apex domain per day (0 = unlimited)."""
+    try:
+        return int(_env_str("APPLYPILOT_MAX_PER_APEX_DOMAIN_PER_DAY", "25"))
+    except ValueError:
+        return 25
+
+
 def apply_model_default(cli_override: str | None = None) -> str:
     """Primary Claude model for apply runs (default haiku)."""
     if cli_override:
@@ -49,6 +118,23 @@ def apply_model_default(cli_override: str | None = None) -> str:
         "APPLYPILOT_APPLY_MODEL",
         str(config.DEFAULTS.get("apply_model_default", "haiku")),
     )
+
+
+def apply_retry_cooldown_hours() -> float:
+    """Hours a failed job is parked (apply_not_before) before it can be re-acquired.
+
+    Keeps a continuous/overnight run from re-applying to the same jobs in a tight
+    loop: each non-permanent failure waits out the cooldown before the next try.
+    """
+    try:
+        return float(
+            _env_str(
+                "APPLYPILOT_APPLY_RETRY_COOLDOWN_HOURS",
+                str(config.DEFAULTS.get("apply_retry_cooldown_hours", 18)),
+            )
+        )
+    except ValueError:
+        return float(config.DEFAULTS.get("apply_retry_cooldown_hours", 18))
 
 
 def apply_fallback_model() -> str:
@@ -67,6 +153,7 @@ def prompt_slim_enabled() -> bool:
 
 
 _PROMPT_MODE_CLI_OVERRIDE: str | None = None
+_DETERMINISTIC_ONLY_CLI_OVERRIDE: bool | None = None
 
 
 def set_apply_prompt_mode_override(mode: str | None) -> None:
@@ -105,6 +192,13 @@ def gmail_mcp_enabled() -> bool:
     return _env_bool(
         "APPLYPILOT_APPLY_GMAIL_MCP",
         bool(config.DEFAULTS.get("apply_gmail_mcp_enabled", False)),
+    )
+
+
+def require_gmail_confirmation() -> bool:
+    return _env_bool(
+        "APPLYPILOT_APPLY_REQUIRE_GMAIL_CONFIRMATION",
+        bool(config.DEFAULTS.get("apply_require_gmail_confirmation", True)),
     )
 
 
@@ -232,6 +326,132 @@ def _parse_result_reason(result: str) -> tuple[str, str | None]:
     return rest, None
 
 
+def _apply_profile_section(profile: dict | None = None) -> dict:
+    if profile is None:
+        try:
+            profile = config.load_profile()
+        except FileNotFoundError:
+            profile = {}
+    section = profile.get("apply")
+    return section if isinstance(section, dict) else {}
+
+
+def _optional_positive_int(raw) -> int | None:
+    if raw is None or raw == "":
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _optional_positive_float(raw) -> float | None:
+    if raw is None or raw == "":
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def apply_claude_max_per_run(profile: dict | None = None) -> int | None:
+    """Max Claude apply subprocesses per run (None = unlimited)."""
+    section = _apply_profile_section(profile)
+    for key in ("claude_max_per_run", "apply_claude_max_per_run"):
+        if key in section:
+            cap = _optional_positive_int(section.get(key))
+            if cap is not None:
+                return cap
+    env_cap = _optional_positive_int(os.environ.get("APPLYPILOT_APPLY_CLAUDE_MAX_PER_RUN"))
+    if env_cap is not None:
+        return env_cap
+    return _optional_positive_int(config.DEFAULTS.get("apply_claude_max_per_run"))
+
+
+def apply_claude_max_cost_usd_per_run(profile: dict | None = None) -> float | None:
+    """Max Claude apply spend (USD) per run (None = unlimited)."""
+    section = _apply_profile_section(profile)
+    for key in ("claude_max_cost_usd_per_run", "apply_claude_max_cost_usd_per_run"):
+        if key in section:
+            cap = _optional_positive_float(section.get(key))
+            if cap is not None:
+                return cap
+    env_cap = _optional_positive_float(
+        os.environ.get("APPLYPILOT_APPLY_CLAUDE_MAX_COST_USD_PER_RUN")
+    )
+    if env_cap is not None:
+        return env_cap
+    return _optional_positive_float(config.DEFAULTS.get("apply_claude_max_cost_usd_per_run"))
+
+
+def set_deterministic_only_override(enabled: bool | None) -> None:
+    """CLI --deterministic-only wins until cleared."""
+    global _DETERMINISTIC_ONLY_CLI_OVERRIDE
+    _DETERMINISTIC_ONLY_CLI_OVERRIDE = enabled
+
+
+def deterministic_only_enabled() -> bool:
+    if _DETERMINISTIC_ONLY_CLI_OVERRIDE is not None:
+        return _DETERMINISTIC_ONLY_CLI_OVERRIDE
+    return _env_bool("APPLYPILOT_APPLY_DETERMINISTIC_ONLY", False)
+
+
+def escalate_min_attempts() -> int:
+    """Minimum review_log attempts before per-family escalation cap applies."""
+    raw = os.environ.get("APPLYPILOT_ESCALATE_MIN_ATTEMPTS")
+    if raw is None:
+        return 6
+    try:
+        return max(1, int(raw.strip()))
+    except ValueError:
+        return 6
+
+
+def escalate_fail_rate() -> float:
+    """Fail fraction threshold (0–1) for per-family escalation cap."""
+    raw = os.environ.get("APPLYPILOT_ESCALATE_FAIL_RATE")
+    if raw is None:
+        return 0.8
+    try:
+        return min(1.0, max(0.0, float(raw.strip())))
+    except ValueError:
+        return 0.8
+
+
+_SKIP_ATS_FAMILIES_DEFAULT = ""
+
+
+def skipped_ats_families() -> frozenset[str]:
+    """ATS families to skip for discover sources and direct apply dispatch.
+
+    Defaults to no skipped families. Override with APPLYPILOT_SKIP_ATS_FAMILIES
+    (comma-separated) when a specific ATS adapter should be temporarily parked.
+    """
+    raw = os.environ.get("APPLYPILOT_SKIP_ATS_FAMILIES")
+    if raw is None:
+        raw = _SKIP_ATS_FAMILIES_DEFAULT
+    raw = raw.strip()
+    if not raw or raw.lower() in ("0", "false", "none", "off"):
+        return frozenset()
+    return frozenset(
+        part.strip().lower()
+        for part in raw.split(",")
+        if part.strip()
+    )
+
+
+def direct_excluded_families() -> frozenset[str]:
+    """Families the deterministic driver must not dispatch (alias of skipped_ats_families)."""
+    return skipped_ats_families()
+
+
+def discover_excluded_sources() -> frozenset[str]:
+    """Discover source keys to disable (same names as ATS families where applicable)."""
+    return skipped_ats_families()
+
+
 def apply_telemetry_flags() -> dict[str, bool | str]:
     """Snapshot of quota-related toggles for llm_usage metadata."""
     return {
@@ -239,6 +459,10 @@ def apply_telemetry_flags() -> dict[str, bool | str]:
         "prompt_mode": apply_prompt_mode(),
         "session_reuse": session_reuse_enabled(),
         "gmail_mcp": gmail_mcp_enabled(),
+        "require_gmail_confirmation": require_gmail_confirmation(),
         "apply_model_default": apply_model_default(),
         "apply_fallback_model": apply_fallback_model(),
+        "deterministic_only": deterministic_only_enabled(),
+        "claude_max_per_run": apply_claude_max_per_run(),
+        "claude_max_cost_usd_per_run": apply_claude_max_cost_usd_per_run(),
     }

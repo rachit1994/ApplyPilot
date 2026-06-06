@@ -16,6 +16,8 @@ def temp_db(monkeypatch, tmp_path):
     monkeypatch.setattr(database, "DB_PATH", db_path)
     database.init_db()
     yield db_path
+    database.close_connection()
+    database.invalidate_stats_cache()
 
 
 def _insert_job(conn: sqlite3.Connection, url: str, **fields) -> None:
@@ -47,6 +49,37 @@ def test_stage_progress_snapshot_enrich(temp_db):
     assert snap["pending"] == 1
     assert snap["percent"] == 50
     assert "1/2" in snap["detail"]
+
+
+def test_stage_progress_snapshot_filter(temp_db):
+    conn = database.get_connection()
+    _insert_job(
+        conn,
+        "https://a.example/kept",
+        pre_fit_score=8,
+        detail_scraped_at="2026-05-18T00:00:00+00:00",
+    )
+    _insert_job(
+        conn,
+        "https://a.example/rejected",
+        pre_fit_score=1,
+        pre_filter_reason="title:junior_or_intern",
+        pre_filter_rejected_at="2026-05-18T00:00:00+00:00",
+        fit_score=1,
+        detail_scraped_at="2026-05-18T00:00:00+00:00",
+    )
+    _insert_job(
+        conn,
+        "https://a.example/pending",
+        detail_scraped_at="2026-05-18T00:00:00+00:00",
+    )
+
+    snap = _stage_progress_snapshot("filter")
+    assert snap["done"] == 2
+    assert snap["pending"] == 1
+    assert snap["percent"] == 67
+    assert "1 kept" in snap["detail"]
+    assert "1 rejected" in snap["detail"]
 
 
 def test_stage_progress_snapshot_score(temp_db):

@@ -11,16 +11,30 @@ from applypilot.config import APP_DIR, CONFIG_DIR
 _DEFAULT_SOURCES = {
     "jobspy": True,
     "workday": True,
-    "smartextract": True,
+    "smartextract": False,
     "workatastartup": True,
+    "wellfound": False,
+    "startupjobs": False,
     "hn_hiring": True,
     "himalayas": True,
     "remotive": True,
+    "remoteok": True,
     "weworkremotely": True,
     "greenhouse": True,
     "lever": True,
+    "ashby": True,
+    "linkedin_harvest": False,
     "career_targets": True,
     "funded_startups": False,
+}
+
+_DEFAULT_COMPANY_FIRST = {
+    "enabled": True,
+    "max_watchlist_companies": 0,
+    "max_workday_employers": 0,
+    "max_career_targets": 0,
+    "max_smartextract_sites": 0,
+    "max_funded_startup_sites": 0,
 }
 
 
@@ -45,14 +59,30 @@ def _normalize(data: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(agent, dict):
         agent = {}
 
+    raw_company_first = data.get("company_first") or {}
+    if not isinstance(raw_company_first, dict):
+        raw_company_first = {}
+    company_first = dict(_DEFAULT_COMPANY_FIRST)
+    for key, default in _DEFAULT_COMPANY_FIRST.items():
+        if key not in raw_company_first:
+            continue
+        if isinstance(default, bool):
+            company_first[key] = bool(raw_company_first[key])
+        else:
+            company_first[key] = max(0, int(raw_company_first[key] or 0))
+
     return {
         "sources": sources,
+        "company_first": company_first,
         "agent_discover": {
             "enabled": bool(agent.get("enabled", True)),
             "max_pages": int(agent.get("max_pages", 3)),
             "headless": bool(agent.get("headless", False)),
         },
         "workatastartup": data.get("workatastartup") or {},
+        "wellfound": data.get("wellfound") or {},
+        "startupjobs": data.get("startupjobs") or {},
+        "linkedin_harvest": data.get("linkedin_harvest") or {},
         "hn_hiring": data.get("hn_hiring") or {},
         "himalayas": data.get("himalayas") or {},
         "funded_startups": data.get("funded_startups") or {},

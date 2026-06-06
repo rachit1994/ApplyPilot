@@ -28,13 +28,21 @@ from rich.live import Live
 from applypilot import config
 from applypilot.config import load_profile
 from applypilot.database import get_connection
-from applypilot.apply import apply_settings, chrome, dashboard, prompt as prompt_mod
+from applypilot.role_resumes import (
+    resolve_job_resume,
+    resolve_job_resume_path,
+    resolve_job_resume_text,
+    role_resumes_available,
+)
+from applypilot.apply import apply_budget, apply_settings, chrome, dashboard, prompt as prompt_mod
 from applypilot.apply.eligibility import (
     ApplyDecision,
     ats_only_where_clause,
     ats_priority_sql_case,
+    direct_adapter_priority_sql,
     classify_apply_target,
     priority_boards_only_enabled,
+    excluded_ats_families_where_clause,
     priority_boards_only_where_clause,
 )
 from applypilot.apply.chrome import (
@@ -56,6 +64,8 @@ def _load_blocked():
 
 # How often to poll the DB when the queue is empty (seconds)
 POLL_INTERVAL = config.DEFAULTS["poll_interval"]
+# Jobs scanned per acquire pass (paginate past cap-blocked direct URLs)
+ACQUIRE_CANDIDATE_BATCH = 80
 
 # Thread-safe shutdown coordination
 _stop_event = threading.Event()
@@ -64,9 +74,12 @@ _stop_event = threading.Event()
 _claude_procs: dict[int, subprocess.Popen] = {}
 _claude_lock = threading.Lock()
 
-# Register cleanup on exit
+# Register cleanup on exit (signal handlers only in main thread — e.g. FastAPI workers import this module)
 atexit.register(cleanup_on_exit)
-if platform.system() != "Windows":
+if (
+    platform.system() != "Windows"
+    and threading.current_thread() is threading.main_thread()
+):
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 
 
@@ -215,12 +228,28 @@ def _acquirable_jobs_where(
     boards_clause = ""
     if priority_boards_only or priority_boards_only_enabled():
         boards_clause = priority_boards_only_where_clause()
-    tailored_clause = "" if include_untailored else "AND tailored_resume_path IS NOT NULL"
+    skip_ats_clause = ""
+    if apply_settings.deterministic_only_enabled():
+        skip_ats_clause = excluded_ats_families_where_clause()
+    if include_untailored:
+        tailored_clause = ""
+    elif role_resumes_available():
+        role_min = int(config.DEFAULTS.get("role_resume_apply_min_score", 7))
+        tailored_clause = (
+            "AND (tailored_resume_path IS NOT NULL "
+            f"OR (fit_score IS NOT NULL AND fit_score >= {role_min}))"
+        )
+    else:
+        tailored_clause = "AND tailored_resume_path IS NOT NULL"
     where = f"""
         WHERE 1=1
           {tailored_clause}
           AND applied_at IS NULL
-          AND (apply_status IS NULL OR apply_status = 'failed')
+          AND (
+            apply_status IS NULL
+            OR apply_status = 'failed'
+            OR apply_status = 'needs_adapter'
+          )
           AND (
             apply_not_before IS NULL
             OR datetime(apply_not_before) <= datetime('now')
@@ -231,8 +260,201 @@ def _acquirable_jobs_where(
           {url_clauses}
           {ats_clause}
           {boards_clause}
+          {skip_ats_clause}
     """
     return where, params
+
+
+def acquire_job_order_sql() -> str:
+    """ORDER BY for acquire_job: direct-capable first, then ATS priority, score."""
+    direct_tier = direct_adapter_priority_sql()
+    priority = ats_priority_sql_case()
+    parked_tail = (
+        "CASE WHEN apply_status = 'needs_adapter' THEN 1 ELSE 0 END"
+    )
+    claude_rescue_tail = (
+        "CASE WHEN COALESCE(apply_error, '') LIKE 'pending_claude_rescue%' "
+        "THEN 1 ELSE 0 END"
+    )
+    day_like = "strftime('%Y-%m-%d', 'now') || '%'"
+    # Deprioritize sites already submitted today so one employer doesn't dominate a run.
+    site_load = f"""(
+        SELECT COUNT(*) FROM apply_outcomes ao
+        INNER JOIN jobs jx ON jx.url = ao.url
+        WHERE jx.site = jobs.site
+          AND ao.created_at LIKE {day_like}
+          AND (ao.result LIKE 'applied%' OR ao.result LIKE 'submitted_unverified%')
+    )"""
+    return (
+        f"{direct_tier} ASC, "
+        f"{parked_tail} ASC, "
+        f"{claude_rescue_tail} ASC, "
+        f"{site_load} ASC, "
+        f"CASE WHEN last_attempted_at IS NOT NULL "
+        f"AND datetime(last_attempted_at) > datetime('now', '-60 minutes') "
+        f"THEN 1 ELSE 0 END, {priority}, fit_score DESC, url"
+    )
+
+
+def _job_apply_url(job: dict) -> str:
+    return _resolve_job_apply_url(job)
+
+
+def _resolve_job_apply_url(job: dict, *, persist: bool = False) -> str:
+    """Return the best apply URL for a job, recovering ATS links from board text.
+
+    Board rows such as Wellfound can keep the board URL as ``url`` while the
+    actual employer ATS link is embedded in ``full_description`` or
+    ``description``. Resolve that before direct adapter detection so the
+    deterministic engine gets a chance to apply without Claude.
+    """
+    from applypilot.apply.apply_url_extract import (
+        coerce_application_url,
+        extract_best_apply_url_from_text,
+    )
+    from applypilot.apply.direct import fingerprint
+
+    current = coerce_application_url(job.get("application_url"))
+    if current and fingerprint.has_adapter(fingerprint.ats_family(current)):
+        return current
+
+    extracted = extract_best_apply_url_from_text(
+        "\n".join(
+            str(job.get(key) or "")
+            for key in ("full_description", "description")
+        )
+    )
+    if extracted:
+        job["application_url"] = extracted
+        if persist:
+            row_url = (job.get("url") or "").strip()
+            if row_url:
+                try:
+                    conn = get_connection()
+                    conn.execute(
+                        """
+                        UPDATE jobs
+                        SET application_url = ?
+                        WHERE url = ?
+                        """,
+                        (extracted, row_url),
+                    )
+                    conn.commit()
+                except Exception:  # noqa: BLE001
+                    logger.debug(
+                        "failed to persist recovered apply URL for %s",
+                        row_url[:80],
+                        exc_info=True,
+                    )
+        return extracted
+
+    if current:
+        return current
+    return (coerce_application_url(job.get("url")) or "").strip()
+
+
+def _job_row_url(job: dict) -> str:
+    """SQLite primary key for jobs — always job['url'], not application_url."""
+    return (job.get("url") or _job_apply_url(job) or "").strip()
+
+
+def job_has_direct_adapter(job: dict) -> bool:
+    """True when the deterministic Playwright adapter can handle this URL."""
+    from applypilot.apply.direct import fingerprint
+    from applypilot.apply.direct.adapters import get_adapter
+
+    return get_adapter(fingerprint.ats_family(_job_apply_url(job))) is not None
+
+
+def job_runnable_in_deterministic_only(job: dict) -> bool:
+    """True when Direct Apply may run without Claude (known adapter, unknown sniff, or generic)."""
+    from applypilot.apply.direct import fingerprint
+    from applypilot.apply.direct.adapters import get_adapter
+
+    family = fingerprint.ats_family(_job_apply_url(job))
+    if get_adapter(family) is not None or family == fingerprint.UNKNOWN_FAMILY:
+        return True
+    return apply_settings.deterministic_only_enabled()
+
+
+def _persist_needs_adapter(conn, row: dict, detail: str) -> None:
+    """Mark job needs_adapter inside acquire_job (reversible, not attempts=99)."""
+    url = row["url"]
+    conn.execute(
+        """
+        UPDATE jobs
+        SET apply_status = 'needs_adapter',
+            apply_error = ?,
+            apply_not_before = NULL,
+            agent_id = NULL
+        WHERE url = ?
+        """,
+        (detail.strip()[:200], url),
+    )
+    conn.commit()
+    apply_budget.governor().note_parked_needs_adapter()
+
+
+def _job_pending_claude_rescue(job: dict) -> bool:
+    return str(job.get("apply_error") or "").startswith("pending_claude_rescue")
+
+
+def _should_defer_claude_rescue(
+    job: dict,
+    *,
+    min_score: int | None = None,
+    ats_only: bool = False,
+    priority_boards_only: bool = False,
+    include_untailored: bool = False,
+) -> bool:
+    """Defer inline Claude only while other direct-capable jobs still need Playwright.
+
+    Jobs already marked pending_claude_rescue must not be deferred again (otherwise
+    they spin forever while any direct URL remains in the DB). Jobs with no direct
+    adapter must run Claude immediately when this worker holds them.
+    """
+    if apply_settings.deterministic_only_enabled() or not apply_budget.governor().claude_allowed():
+        return False
+    if count_acquirable_direct_adapter_jobs(
+        min_score=min_score,
+        ats_only=ats_only,
+        priority_boards_only=priority_boards_only,
+        include_untailored=include_untailored,
+    ) <= 0:
+        return False
+    if _job_pending_claude_rescue(job):
+        return False
+    if not job_has_direct_adapter(job):
+        return False
+    return True
+
+
+def count_acquirable_direct_adapter_jobs(
+    *,
+    min_score: int | None = None,
+    ats_only: bool = False,
+    priority_boards_only: bool = False,
+    include_untailored: bool = False,
+) -> int:
+    """Acquirable jobs that still need a direct Playwright attempt (not parked for Claude)."""
+    direct_tier = direct_adapter_priority_sql()
+    where, params = _acquirable_jobs_where(
+        min_score=min_score,
+        ats_only=ats_only,
+        priority_boards_only=priority_boards_only,
+        include_untailored=include_untailored,
+    )
+    conn = get_connection()
+    row = conn.execute(
+        f"""
+        SELECT COUNT(*) FROM jobs
+        {where}
+          AND ({direct_tier}) = 0
+          AND COALESCE(apply_error, '') NOT LIKE 'pending_claude_rescue%'
+        """,
+        params,
+    ).fetchone()
+    return int(row[0] or 0)
 
 
 def count_acquirable_jobs(
@@ -271,7 +493,8 @@ def apply_queue_snapshot() -> dict[str, int]:
           SUM(CASE WHEN apply_status = 'failed'
                     AND COALESCE(apply_attempts, 0) >= 99 THEN 1 ELSE 0 END),
           SUM(CASE WHEN apply_status = 'submitted_unverified' THEN 1 ELSE 0 END),
-          SUM(CASE WHEN apply_status = 'manual' THEN 1 ELSE 0 END)
+          SUM(CASE WHEN apply_status = 'manual' THEN 1 ELSE 0 END),
+          SUM(CASE WHEN apply_status = 'needs_adapter' THEN 1 ELSE 0 END)
         FROM jobs
         """,
         (max_attempts,),
@@ -284,6 +507,7 @@ def apply_queue_snapshot() -> dict[str, int]:
         "failed_permanent": int(row[4] or 0),
         "submitted_unverified": int(row[5] or 0),
         "manual": int(row[6] or 0),
+        "needs_adapter": int(row[7] or 0),
     }
 
 
@@ -311,6 +535,7 @@ def format_apply_queue_hint(
         f"Failed — permanent/skip (attempts=99): {snap['failed_permanent']}",
         f"Needs check (submitted_unverified): {snap['submitted_unverified']}",
         f"Manual apply only: {snap['manual']}",
+        f"Parked — needs adapter (re-queue when shipped): {snap['needs_adapter']}",
     ]
     if acquirable == 0 and snap["failed_resettable"] > 0:
         lines.append(
@@ -368,11 +593,15 @@ def acquire_job(
         while True:
             if target_url:
                 like = f"%{target_url.split('?')[0].rstrip('/')}%"
-                tailored_clause = "" if include_untailored else "AND tailored_resume_path IS NOT NULL"
+                if include_untailored or role_resumes_available():
+                    tailored_clause = ""
+                else:
+                    tailored_clause = "AND tailored_resume_path IS NOT NULL"
                 row = conn.execute("""
                     SELECT url, title, site, application_url, tailored_resume_path,
                            fit_score, location, full_description, cover_letter_path, salary,
-                           strategy
+                           strategy, score_role_key, score_jd_fit,
+                           apply_status, apply_error, apply_attempts
                     FROM jobs
                     WHERE (url = ? OR application_url = ? OR application_url LIKE ? OR url LIKE ?)
                       {tailored_clause}
@@ -390,51 +619,154 @@ def acquire_job(
                     priority_boards_only=priority_boards_only,
                     include_untailored=include_untailored,
                 )
-                priority = ats_priority_sql_case()
-                row = conn.execute(f"""
-                    SELECT url, title, site, application_url, tailored_resume_path,
-                           fit_score, location, full_description, cover_letter_path, salary,
-                           strategy
-                    FROM jobs
-                    {where}
-                    ORDER BY {priority}, fit_score DESC, url
-                    LIMIT 1
-                """, params).fetchone()
+                use_direct = apply_settings.apply_engine() == "direct"
+                if use_direct:
+                    from applypilot.apply.direct.throttle import check_caps
+
+                row = None
+                job_row = None
+                offset = 0
+                while row is None:
+                    candidates = conn.execute(
+                        f"""
+                        SELECT url, title, site, application_url, tailored_resume_path,
+                               fit_score, location, full_description, cover_letter_path, salary,
+                               strategy, score_role_key, score_jd_fit,
+                               apply_status, apply_error, apply_attempts
+                        FROM jobs
+                        {where}
+                        ORDER BY {acquire_job_order_sql()}
+                        LIMIT ? OFFSET ?
+                        """,
+                        (*params, ACQUIRE_CANDIDATE_BATCH, offset),
+                    ).fetchall()
+                    if not candidates:
+                        break
+                    for cand in candidates:
+                        job_cand = dict(cand)
+                        if use_direct and job_has_direct_adapter(job_cand):
+                            allowed, _cap = check_caps(
+                                _job_apply_url(job_cand), conn=conn
+                            )
+                            if not allowed:
+                                continue
+                        candidate_row = dict(cand)
+                        eligibility = classify_apply_target(
+                            candidate_row,
+                            ats_only=ats_only,
+                            profile=apply_profile,
+                            min_experience_years=min_experience_years,
+                        )
+                        if eligibility.decision != ApplyDecision.ELIGIBLE:
+                            _persist_ineligible_job(conn, candidate_row, eligibility)
+                            continue
+                        resolution = resolve_job_resume(
+                            candidate_row,
+                            allow_base=include_untailored,
+                        )
+                        resume_path = resolution.path
+                        logger.info(
+                            "Resume pick %s: source=%s role=%s path=%s",
+                            (candidate_row.get("title") or "")[:60],
+                            resolution.source,
+                            resolution.role_key or "-",
+                            resume_path or "-",
+                        )
+                        if not resume_path:
+                            detail = (
+                                "needs_tailor"
+                                if resolution.source == "needs_tailor"
+                                else "resume_unresolved"
+                            )
+                            _persist_resume_pdf_missing(conn, candidate_row, detail)
+                            continue
+                        try:
+                            prompt_mod.ensure_resume_pdf(resume_path)
+                        except (ValueError, OSError) as exc:
+                            logger.warning(
+                                "Resume PDF not ready for %s: %s",
+                                candidate_row.get("url", "")[:80],
+                                exc,
+                            )
+                            _persist_resume_pdf_missing(
+                                conn, candidate_row, "resume_pdf_missing"
+                            )
+                            continue
+                        if resume_path:
+                            candidate_row["tailored_resume_path"] = resume_path
+                        if apply_settings.deterministic_only_enabled() and use_direct:
+                            status = str(candidate_row.get("apply_status") or "")
+                            if status == "needs_adapter":
+                                if not job_runnable_in_deterministic_only(
+                                    candidate_row
+                                ):
+                                    continue
+                            elif not job_runnable_in_deterministic_only(
+                                candidate_row
+                            ):
+                                _persist_needs_adapter(
+                                    conn,
+                                    candidate_row,
+                                    "deterministic_only",
+                                )
+                                continue
+                        row = cand
+                        job_row = candidate_row
+                        break
+                    if row is not None:
+                        break
+                    offset += ACQUIRE_CANDIDATE_BATCH
 
             if not row:
                 conn.rollback()
                 return None
 
-            job_row = dict(row)
-            eligibility = classify_apply_target(
-                job_row,
-                ats_only=ats_only,
-                profile=apply_profile,
-                min_experience_years=min_experience_years,
-            )
-            if eligibility.decision != ApplyDecision.ELIGIBLE:
-                _persist_ineligible_job(conn, job_row, eligibility)
-                if target_url:
-                    return None
-                conn.execute("BEGIN IMMEDIATE")
-                continue
-
-            resume_path = job_row.get("tailored_resume_path") or (
-                str(config.RESUME_PDF_PATH) if include_untailored else None
-            )
-            try:
-                prompt_mod.ensure_resume_pdf(resume_path)
-            except (ValueError, OSError) as exc:
-                logger.warning(
-                    "Resume PDF not ready for %s: %s",
-                    job_row.get("url", "")[:80],
-                    exc,
+            if target_url:
+                job_row = dict(row)
+                eligibility = classify_apply_target(
+                    job_row,
+                    ats_only=ats_only,
+                    profile=apply_profile,
+                    min_experience_years=min_experience_years,
                 )
-                _persist_resume_pdf_missing(conn, job_row, "resume_pdf_missing")
-                if target_url:
+                if eligibility.decision != ApplyDecision.ELIGIBLE:
+                    _persist_ineligible_job(conn, job_row, eligibility)
+                    conn.commit()
                     return None
-                conn.execute("BEGIN IMMEDIATE")
-                continue
+                resolution = resolve_job_resume(
+                    job_row,
+                    allow_base=include_untailored,
+                )
+                resume_path = resolution.path
+                logger.info(
+                    "Resume pick %s: source=%s role=%s path=%s",
+                    (job_row.get("title") or "")[:60],
+                    resolution.source,
+                    resolution.role_key or "-",
+                    resume_path or "-",
+                )
+                if not resume_path:
+                    detail = (
+                        "needs_tailor"
+                        if resolution.source == "needs_tailor"
+                        else "resume_unresolved"
+                    )
+                    _persist_resume_pdf_missing(conn, job_row, detail)
+                    conn.commit()
+                    return None
+                try:
+                    prompt_mod.ensure_resume_pdf(resume_path)
+                except (ValueError, OSError) as exc:
+                    logger.warning(
+                        "Resume PDF not ready for %s: %s",
+                        job_row.get("url", "")[:80],
+                        exc,
+                    )
+                    _persist_resume_pdf_missing(conn, job_row, "resume_pdf_missing")
+                    conn.commit()
+                    return None
+                if resume_path:
+                    job_row["tailored_resume_path"] = resume_path
 
             now = datetime.now(timezone.utc).isoformat()
             conn.execute("""
@@ -445,7 +777,7 @@ def acquire_job(
             """, (f"worker-{worker_id}", now, row["url"]))
             conn.commit()
 
-            return dict(row)
+            return job_row
     except Exception:
         conn.rollback()
         raise
@@ -500,6 +832,7 @@ def mark_result(url: str, status: str, error: str | None = None,
                            apply_duration_ms = ?, apply_task_id = ?,
                            apply_log_path = COALESCE(?, apply_log_path),
                            apply_form_filled = COALESCE(?, apply_form_filled),
+                           verification_confidence = COALESCE(verification_confidence, 'gmail_confirmed'),
                            apply_not_before = NULL
             WHERE url = ?
         """, (now, duration_ms, task_id, log_value, form_json, url))
@@ -512,16 +845,33 @@ def mark_result(url: str, status: str, error: str | None = None,
                            apply_form_filled = COALESCE(?, apply_form_filled)
             WHERE url = ?
         """, (now, error or "unverified", duration_ms, task_id, log_value, form_json, url))
-    else:
-        attempts = 99 if permanent else "COALESCE(apply_attempts, 0) + 1"
-        conn.execute(f"""
+    elif permanent:
+        # Permanent skip: park hard (attempts=99) and clear any retry window.
+        conn.execute("""
             UPDATE jobs SET apply_status = ?, apply_error = ?,
-                           apply_attempts = {attempts}, agent_id = NULL,
+                           apply_attempts = 99, agent_id = NULL,
+                           apply_not_before = NULL,
                            apply_duration_ms = ?, apply_task_id = ?,
                            apply_log_path = COALESCE(?, apply_log_path),
                            apply_form_filled = COALESCE(?, apply_form_filled)
             WHERE url = ?
         """, (status, error or "unknown", duration_ms, task_id, log_value, form_json, url))
+    else:
+        # Retryable failure: increment attempts AND set a cooldown so the same
+        # job is not re-acquired in a tight loop during a continuous/overnight run.
+        cooldown_h = apply_settings.apply_retry_cooldown_hours()
+        not_before = (
+            datetime.now(timezone.utc) + timedelta(hours=cooldown_h)
+        ).isoformat()
+        conn.execute("""
+            UPDATE jobs SET apply_status = ?, apply_error = ?,
+                           apply_attempts = COALESCE(apply_attempts, 0) + 1,
+                           agent_id = NULL, apply_not_before = ?,
+                           apply_duration_ms = ?, apply_task_id = ?,
+                           apply_log_path = COALESCE(?, apply_log_path),
+                           apply_form_filled = COALESCE(?, apply_form_filled)
+            WHERE url = ?
+        """, (status, error or "unknown", not_before, duration_ms, task_id, log_value, form_json, url))
     conn.commit()
 
 
@@ -553,11 +903,14 @@ def release_stale_locks(max_age_minutes: int = 45) -> int:
 
 
 def release_orphan_in_progress_locks() -> int:
-    """Release all in_progress rows (local single-user apply; prior run interrupted)."""
+    """Mark interrupted in_progress jobs failed so they are not re-acquired at attempts=0."""
     conn = get_connection()
     cur = conn.execute(
         """
-        UPDATE jobs SET apply_status = NULL, agent_id = NULL
+        UPDATE jobs SET apply_status = 'failed',
+                       apply_error = COALESCE(apply_error, 'worker_interrupted'),
+                       apply_attempts = COALESCE(apply_attempts, 0) + 1,
+                       agent_id = NULL
         WHERE apply_status = 'in_progress'
         """
     )
@@ -590,13 +943,7 @@ def gen_prompt(
     if not job:
         return None
 
-    # Read resume text
-    resume_path = job.get("tailored_resume_path")
-    txt_path = Path(resume_path).with_suffix(".txt") if resume_path else None
-    resume_text = ""
-    if txt_path and txt_path.exists():
-        resume_text = txt_path.read_text(encoding="utf-8")
-
+    resume_text = resolve_job_resume_text(job, allow_base=False)
     prompt = prompt_mod.build_prompt(job=job, tailored_resume=resume_text)
 
     # Release the lock so the job stays available
@@ -806,6 +1153,20 @@ def _resolve_apply_result(
 
         if record.status == "applied":
             if verdict.decision == "verified":
+                if apply_settings.require_gmail_confirmation():
+                    from applypilot.apply.gmail_auth import wait_for_application_receipt
+
+                    receipt = wait_for_application_receipt(job)
+                    if receipt.confirmed:
+                        if receipt.message:
+                            logger.info(
+                                "Gmail receipt confirmed for %s via %s (%s)",
+                                job.get("title"),
+                                receipt.message.from_,
+                                receipt.message.subject,
+                            )
+                        return "applied"
+                    return f"submitted_unverified:{receipt.reason}"
                 return "applied"
             if verdict.decision == "unverified":
                 return "submitted_unverified:" + ";".join(verdict.reasons)
@@ -918,13 +1279,10 @@ def run_job(
         'applied', 'expired', 'captcha', 'login_issue',
         'failed:reason', or 'skipped'.
     """
-    # Read tailored resume text
-    resume_path = job.get("tailored_resume_path")
-    txt_path = Path(resume_path).with_suffix(".txt") if resume_path else None
-    resume_text = ""
-    if txt_path and txt_path.exists():
-        resume_text = txt_path.read_text(encoding="utf-8")
+    if not apply_budget.governor().claude_allowed():
+        return "parked:needs_adapter:claude_budget_capped", 0, None
 
+    resume_text = resolve_job_resume_text(job, allow_base=False)
     worker_dir = reset_worker_dir(worker_id)
 
     try:
@@ -986,6 +1344,10 @@ def run_job(
     start = time.time()
     stats: dict = {}
     proc = None
+    # Track Claude spawn so the per-run governor counts EVERY attempt (incl.
+    # timeouts / quota / inactivity aborts), not just runs that emit usage stats.
+    claude_spawned = False
+    claude_cost_seen = 0.0
 
     try:
         popen_kwargs: dict = {}
@@ -1005,6 +1367,7 @@ def run_job(
         )
         with _claude_lock:
             _claude_procs[worker_id] = proc
+        claude_spawned = True
 
         proc.stdin.write(agent_prompt)
         proc.stdin.close()
@@ -1158,6 +1521,7 @@ def run_job(
         job_log.write_text(output, encoding="utf-8")
 
         if stats:
+            claude_cost_seen = float(stats.get("cost_usd") or 0.0)
             try:
                 from applypilot.database import record_llm_usage
 
@@ -1237,6 +1601,13 @@ def run_job(
         update_state(worker_id, status="failed", last_action=f"ERROR: {str(e)[:25]}")
         return f"failed:{str(e)[:100]}", duration_ms, None
     finally:
+        # Count every spawned Claude run against the per-run cap exactly once,
+        # even when an abort/timeout returned before usage stats were parsed.
+        if claude_spawned:
+            try:
+                apply_budget.governor().record_claude_apply(claude_cost_seen)
+            except Exception:
+                logger.debug("Failed to record Claude apply in governor", exc_info=True)
         with _claude_lock:
             _claude_procs.pop(worker_id, None)
         if proc is not None and proc.poll() is None:
@@ -1250,6 +1621,7 @@ def run_job(
 PERMANENT_FAILURES: set[str] = {
     "expired", "captcha", "login_issue",
     "not_eligible_location", "not_eligible_salary", "not_eligible_experience",
+    "not_eligible_sponsorship",
     "already_applied", "account_required",
     "not_a_job_application", "unsafe_permissions",
     "unsafe_verification",
@@ -1312,6 +1684,13 @@ def _parse_worker_result(result: str) -> tuple[str, str | None]:
 def _park_job_for_retry(url: str, *, not_before: str, error: str) -> None:
     """Mark a job as retryable, but not acquirable until not_before."""
     conn = get_connection()
+    row = conn.execute(
+        "SELECT apply_error FROM jobs WHERE url = ?",
+        (url,),
+    ).fetchone()
+    existing = str((row["apply_error"] if row else None) or "")
+    if existing.startswith("pending_claude_rescue"):
+        error = f"{existing} quota_retry_after={not_before}"
     conn.execute(
         """
         UPDATE jobs
@@ -1322,6 +1701,102 @@ def _park_job_for_retry(url: str, *, not_before: str, error: str) -> None:
         WHERE url = ?
         """,
         (error, not_before, url),
+    )
+    conn.commit()
+
+
+def _park_job_needs_adapter(url: str, reason: str) -> None:
+    """Park a job until a deterministic adapter exists (reversible, not attempts=99)."""
+    detail = (reason or "no_adapter").strip()[:200]
+    conn = get_connection()
+    conn.execute(
+        """
+        UPDATE jobs
+        SET apply_status = 'needs_adapter',
+            apply_error = ?,
+            apply_not_before = NULL,
+            agent_id = NULL
+        WHERE url = ?
+        """,
+        (detail, url),
+    )
+    conn.commit()
+    apply_budget.governor().note_parked_needs_adapter()
+
+
+def _park_job_awaiting_login(
+    url: str,
+    domain: str,
+    *,
+    reason: str = "login_required",
+) -> None:
+    """Park a job until the human logs into the provider (reversible)."""
+    reason = (reason or "login_required").strip()[:80]
+    detail = f"awaiting_login:{(domain or '').strip()[:120]};{reason}"
+    conn = get_connection()
+    conn.execute(
+        """
+        UPDATE jobs
+        SET apply_status = 'awaiting_login',
+            apply_error = ?,
+            apply_not_before = NULL,
+            agent_id = NULL
+        WHERE url = ?
+        """,
+        (detail, url),
+    )
+    conn.commit()
+
+
+def requeue_awaiting_login(domain: str | None = None) -> int:
+    """Re-queue jobs parked awaiting_login (all, or one domain) after you log in."""
+    conn = get_connection()
+    if domain:
+        cur = conn.execute(
+            """
+            UPDATE jobs SET apply_status = NULL, apply_error = NULL, agent_id = NULL
+            WHERE apply_status = 'awaiting_login'
+              AND COALESCE(apply_error, '') LIKE ?
+            """,
+            (f"awaiting_login:{domain.strip().lower()}%",),
+        )
+    else:
+        cur = conn.execute(
+            """
+            UPDATE jobs SET apply_status = NULL, apply_error = NULL, agent_id = NULL
+            WHERE apply_status = 'awaiting_login'
+            """
+        )
+    conn.commit()
+    return cur.rowcount
+
+
+def resume_login(domain: str | None = None) -> dict:
+    """Resume after login: clear the gate AND re-queue awaiting_login jobs.
+
+    Called by the dashboard Resume button and the CLI/script.
+    """
+    from applypilot.apply import login_gate
+
+    requeued = requeue_awaiting_login(domain)
+    login_gate.resume(domain)
+    return {"resumed_domain": domain or "all", "requeued": requeued}
+
+
+def _defer_job_for_claude_rescue(url: str, reason: str) -> None:
+    """Park job at the back of the queue for a later Claude pass (direct tier drained)."""
+    detail = (reason or "escalated").strip()[:120]
+    conn = get_connection()
+    conn.execute(
+        """
+        UPDATE jobs
+        SET apply_status = 'failed',
+            apply_error = ?,
+            apply_not_before = NULL,
+            agent_id = NULL
+        WHERE url = ?
+        """,
+        (f"pending_claude_rescue:{detail}", url),
     )
     conn.commit()
 
@@ -1354,8 +1829,8 @@ def _is_permanent_failure(result: str) -> bool:
     )
 
 
-def _pause_worker_for_quota(worker_id: int, *, not_before: str) -> bool:
-    """Pause worker when Claude quota is exhausted. Returns True if stop requested."""
+def _pause_worker_for_quota(worker_id: int, *, not_before: str) -> None:
+    """Briefly pause this worker after Claude quota; then continue with other jobs."""
     pause_msg = f"PAUSED: Claude quota — retry after {not_before}"
     _sync_worker_line(
         worker_id,
@@ -1368,14 +1843,168 @@ def _pause_worker_for_quota(worker_id: int, *, not_before: str) -> bool:
     try:
         target = datetime.fromisoformat(not_before.replace("Z", "+00:00"))
         sleep_s = max(0, (target - datetime.now(timezone.utc)).total_seconds())
-        return _stop_event.wait(timeout=min(float(pause_s), float(sleep_s)))
+        _stop_event.wait(timeout=min(float(pause_s), float(sleep_s)))
     except Exception:
-        return _stop_event.wait(timeout=pause_s)
+        _stop_event.wait(timeout=pause_s)
 
 
 # ---------------------------------------------------------------------------
 # Worker loop
 # ---------------------------------------------------------------------------
+
+def _try_direct_apply(
+    job: dict,
+    *,
+    port: int,
+    worker_id: int,
+    dry_run: bool,
+    defer_claude_rescue: bool = False,
+) -> tuple[str, int, Path | None] | None:
+    """Attempt the deterministic Direct Apply engine ($0 Claude/apply).
+
+    When defer_claude_rescue is True, jobs that would need Claude are parked at
+    the back of the queue (pending_claude_rescue) so the worker can take the next
+    direct-capable job instead of spending Claude budget inline.
+    """
+    from applypilot.apply.direct import fingerprint
+    from applypilot.apply.direct.adapters import get_adapter
+    from applypilot.apply.direct.throttle import check_caps, is_cap_defer
+    from applypilot.database import record_apply_outcome
+
+    row_url = _job_row_url(job)
+    apply_url = _resolve_job_apply_url(job, persist=True)
+    family = fingerprint.ats_family(apply_url)
+    # 'unknown' may still be a content-detectable ATS (e.g. Greenhouse embedded on
+    # a custom career domain like dropbox.jobs / stripe.com/jobs): let the Driver
+    # navigate and content-sniff before giving up. Other adapter-less families
+    # (workday, icims, ...) can't be rescued that way, so they defer/fail here.
+    if get_adapter(family) is None and family != fingerprint.UNKNOWN_FAMILY:
+        if apply_settings.deterministic_only_enabled():
+            pass  # generic driver handles adapter-less families in deterministic-only mode
+        elif not apply_budget.governor().claude_allowed():
+            _park_job_needs_adapter(row_url, f"no_adapter:{family}")
+            return f"parked:needs_adapter:no_adapter:{family}", 0, None
+        elif defer_claude_rescue:
+            add_event(
+                f"[W{worker_id}] Direct: no adapter for {family} — "
+                "deferred to Claude pass (direct queue first)"
+            )
+            _defer_job_for_claude_rescue(row_url, f"no_adapter:{family}")
+            return f"deferred:claude_rescue:no_adapter:{family}", 0, None
+        return f"failed:direct_no_adapter:{family}", 0, None
+
+    allowed, cap_reason = check_caps(apply_url)
+    if not allowed:
+        add_event(f"[W{worker_id}] Direct: daily cap reached ({cap_reason})")
+        return cap_reason, 0, None
+
+    from applypilot.apply.direct.driver import DriverResult, apply_via_direct
+
+    # Run the in-process Driver under a hard wall-clock guard: a hung Playwright
+    # call on an unfamiliar form must not stall the worker overnight. On timeout
+    # we abandon the (daemon) thread — the next launch_chrome recycles port 9222,
+    # which unblocks and ends the orphan — and treat the job as escalatable.
+    _holder: dict = {}
+
+    def _run() -> None:
+        try:
+            _holder["dr"] = apply_via_direct(
+                job, port=port, worker_id=worker_id, dry_run=dry_run
+            )
+        except Exception as exc:  # noqa: BLE001
+            _holder["err"] = exc
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout=apply_settings.direct_job_timeout())
+    fp = fingerprint.provider_fingerprint(apply_url)
+    if t.is_alive():
+        add_event(
+            f"[W{worker_id}] Direct timed out "
+            f"(> {apply_settings.direct_job_timeout():.0f}s)"
+        )
+        # Free the orphan: killing Chrome on this port makes the stuck
+        # Playwright call raise, so the daemon thread unwinds instead of
+        # lingering and blocking clean process exit.
+        try:
+            chrome._kill_on_port(port)
+        except Exception:  # noqa: BLE001
+            pass
+        # Park (don't escalate): the orphan thread may still hold Chrome, so a
+        # same-iteration Claude rescue could collide. Next pass relaunches Chrome
+        # clean and retries the job.
+        dr = DriverResult(
+            result="failed:direct_timeout", escalate=False,
+            escalate_reason="timeout", ats_family=family, fingerprint=fp,
+        )
+    elif "err" in _holder:
+        dr = DriverResult(
+            result="failed:direct_exception", escalate=True,
+            escalate_reason=str(_holder["err"])[:80],
+            ats_family=family, fingerprint=fp,
+        )
+    else:
+        dr = _holder["dr"]
+
+    if dr.result == "applied" and apply_settings.require_gmail_confirmation():
+        from applypilot.apply.gmail_auth import wait_for_application_receipt
+
+        receipt = wait_for_application_receipt(job)
+        if receipt.confirmed:
+            if receipt.message:
+                logger.info(
+                    "Gmail receipt confirmed for %s via %s (%s)",
+                    job.get("title"),
+                    receipt.message.from_,
+                    receipt.message.subject,
+                )
+        else:
+            dr.result = f"submitted_unverified:{receipt.reason}"
+
+    would_claude_rescue = bool(dr.escalate)
+    inline_claude = would_claude_rescue and apply_settings.direct_escalate_to_claude()
+    if is_cap_defer(dr.result):
+        return dr.result, dr.elapsed_ms, None
+    try:
+        record_apply_outcome(
+            url=apply_url,
+            ats_family=dr.ats_family or family,
+            fingerprint=dr.fingerprint,
+            result=dr.result,
+            tier_resolved=dr.tier_resolved,
+            escalated=inline_claude and not defer_claude_rescue,
+            escalate_reason=dr.escalate_reason,
+            fields_total=dr.fields_total,
+            fields_llm=dr.fields_llm,
+            elapsed_ms=dr.elapsed_ms,
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("record_apply_outcome failed", exc_info=True)
+
+    if dr.result.startswith("skipped"):
+        return "skipped", dr.elapsed_ms, None
+    if would_claude_rescue and (
+        apply_settings.deterministic_only_enabled()
+        or not apply_budget.governor().claude_allowed()
+    ):
+        reason = dr.escalate_reason or dr.result[:40]
+        _park_job_needs_adapter(row_url, reason)
+        return f"parked:needs_adapter:{reason}", dr.elapsed_ms, None
+    if would_claude_rescue and defer_claude_rescue:
+        reason = dr.escalate_reason or dr.result[:40]
+        add_event(
+            f"[W{worker_id}] Direct: deferred Claude rescue ({reason}) — next job"
+        )
+        _defer_job_for_claude_rescue(row_url, reason)
+        return f"deferred:claude_rescue:{reason}", dr.elapsed_ms, None
+    if inline_claude and would_claude_rescue:
+        add_event(
+            f"[W{worker_id}] Direct -> Claude rescue "
+            f"({dr.escalate_reason or dr.result[:30]})"
+        )
+        return None
+    return dr.result, dr.elapsed_ms, None
+
 
 def _run_job_with_optional_fallback(
     job: dict,
@@ -1386,8 +2015,57 @@ def _run_job_with_optional_fallback(
     dry_run: bool,
     pace_seconds: float,
     confirm_submit: bool,
+    min_score: int | None = None,
+    ats_only: bool = False,
+    priority_boards_only: bool = False,
+    include_untailored: bool = False,
 ) -> tuple[str, int, Path | None]:
     """Run apply once on primary model; escalate to fallback on retriable failure."""
+    # Excluded ATS families (e.g. greenhouse, ashby) are never applied to and never
+    # escalate to Claude — park them as needs_adapter (reversible) regardless of
+    # engine/mode. Configured via APPLYPILOT_SKIP_ATS_FAMILIES (apply_settings).
+    excluded_families = apply_settings.skipped_ats_families()
+    if excluded_families:
+        from applypilot.apply.direct import fingerprint
+
+        family = fingerprint.ats_family(_job_apply_url(job))
+        if family in excluded_families:
+            _park_job_needs_adapter(_job_row_url(job), f"excluded_ats:{family}")
+            return f"parked:needs_adapter:excluded_ats:{family}", 0, None
+
+    if apply_settings.apply_engine() == "direct":
+        defer_claude = _should_defer_claude_rescue(
+            job,
+            min_score=min_score,
+            ats_only=ats_only,
+            priority_boards_only=priority_boards_only,
+            include_untailored=include_untailored,
+        )
+        skip_direct = _job_pending_claude_rescue(job) and not job_has_direct_adapter(job)
+        if not skip_direct:
+            direct = _try_direct_apply(
+                job,
+                port=port,
+                worker_id=worker_id,
+                dry_run=dry_run,
+                defer_claude_rescue=defer_claude,
+            )
+            if direct is not None:
+                return direct
+        # Direct queue drained, Claude-only rescue, or APPLYPILOT_DIRECT_ESCALATE tier.
+
+    if (
+        apply_settings.deterministic_only_enabled()
+        or not apply_budget.governor().claude_allowed()
+    ):
+        cap_reason = (
+            "deterministic_only"
+            if apply_settings.deterministic_only_enabled()
+            else "claude_budget_capped"
+        )
+        _park_job_needs_adapter(_job_row_url(job), cap_reason)
+        return f"parked:needs_adapter:{cap_reason}", 0, None
+
     fallback_model = apply_settings.apply_fallback_model()
     result, duration_ms, session_log = run_job(
         job,
@@ -1441,7 +2119,7 @@ def _run_job_with_optional_fallback(
 
 def worker_loop(
     worker_id: int = 0,
-    limit: int = 1,
+    limit: int = 0,
     target_url: str | None = None,
     min_score: int | None = None,
     headless: bool = False,
@@ -1512,7 +2190,14 @@ def worker_loop(
                         continue
                 except Exception:
                     quota_retry_until = None
-            if not continuous:
+            remaining = count_acquirable_jobs(
+                min_score=min_score,
+                ats_only=ats_only,
+                priority_boards_only=priority_boards_only,
+                include_untailored=include_untailored,
+            )
+            should_poll = continuous or remaining > 0
+            if not should_poll:
                 add_event(f"[W{worker_id}] Queue empty")
                 update_state(worker_id, status="done", last_action="queue empty")
                 break
@@ -1542,6 +2227,10 @@ def worker_loop(
                 dry_run=dry_run,
                 pace_seconds=pace_seconds,
                 confirm_submit=confirm_submit,
+                min_score=min_score,
+                ats_only=ats_only,
+                priority_boards_only=priority_boards_only,
+                include_untailored=include_untailored,
             )
 
             reason, quota_not_before = _parse_worker_result(result)
@@ -1554,8 +2243,7 @@ def worker_loop(
                     not_before=not_before,
                     error=f"claude_quota_exhausted retry_after={not_before}",
                 )
-                if _pause_worker_for_quota(worker_id, not_before=not_before):
-                    break
+                _pause_worker_for_quota(worker_id, not_before=not_before)
                 continue
 
             if result in ("failed:no_result_line", "failed:incomplete") and session_log:
@@ -1571,6 +2259,10 @@ def worker_loop(
                         dry_run=dry_run,
                         pace_seconds=pace_seconds,
                         confirm_submit=confirm_submit,
+                        min_score=min_score,
+                        ats_only=ats_only,
+                        priority_boards_only=priority_boards_only,
+                        include_untailored=include_untailored,
                     )
                     reason, quota_not_before = _parse_worker_result(result)
                     if reason in QUOTA_SESSION_FAILURES:
@@ -1582,13 +2274,64 @@ def worker_loop(
                             not_before=not_before,
                             error=f"claude_quota_exhausted retry_after={not_before}",
                         )
-                        if _pause_worker_for_quota(worker_id, not_before=not_before):
-                            break
+                        _pause_worker_for_quota(worker_id, not_before=not_before)
                         continue
 
             if result == "skipped":
                 release_lock(job["url"])
                 add_event(f"[W{worker_id}] Skipped: {job['title'][:30]}")
+                jobs_done += 1
+                continue
+            elif result.startswith("parked:needs_adapter"):
+                add_event(
+                    f"[W{worker_id}] Parked (needs adapter): "
+                    f"{result.split(':', 1)[-1][:40]}"
+                )
+                jobs_done += 1
+                continue
+            elif result.startswith("awaiting_login"):
+                from applypilot.apply import login_gate
+
+                domain = result.split(":", 1)[-1] if ":" in result else "provider"
+                info = next(
+                    (
+                        p for p in login_gate.pending()
+                        if (p.get("domain") or "").lower() == domain.lower()
+                    ),
+                    {},
+                )
+                reason_detail = str(info.get("reason") or "login_required")
+                _park_job_awaiting_login(job["url"], domain, reason=reason_detail)
+                suffix = (
+                    " (no Google sign-in)"
+                    if reason_detail == "login_required_no_google"
+                    else ""
+                )
+                add_event(
+                    f"[W{worker_id}] AWAITING LOGIN: {domain}{suffix} — "
+                    "log in then Resume from the dashboard"
+                )
+                update_state(
+                    worker_id, status="awaiting_login",
+                    last_action=f"login: {domain[:24]}",
+                )
+                # Pause this worker until you log in and Resume (or timeout).
+                login_gate.wait_for_resume(domain, timeout_s=1800.0)
+                release_lock(job["url"])
+                continue
+            elif result.startswith("deferred:"):
+                release_lock(job["url"])
+                if result.startswith("deferred:claude_rescue"):
+                    add_event(
+                        f"[W{worker_id}] Deferred Claude rescue: "
+                        f"{result.split(':', 1)[-1][:40]}"
+                    )
+                else:
+                    add_event(
+                        f"[W{worker_id}] Deferred (cap): "
+                        f"{result.split(':', 1)[-1][:40]}"
+                    )
+                jobs_done += 1
                 continue
             elif result == "applied":
                 mark_result(
@@ -1638,6 +2381,7 @@ def worker_loop(
             release_lock(job["url"])
             failed += 1
             update_state(worker_id, jobs_failed=failed)
+            jobs_done += 1
         finally:
             if chrome_proc and keep_open_seconds > 0:
                 add_event(
@@ -1664,13 +2408,13 @@ def worker_loop(
 # ---------------------------------------------------------------------------
 
 def main(
-    limit: int = 1,
+    limit: int = 0,
     target_url: str | None = None,
     min_score: int | None = None,
     headless: bool = False,
     model: str = "haiku",
     dry_run: bool = False,
-    continuous: bool = False,
+    continuous: bool = True,
     poll_interval: int = 60,
     workers: int = 1,
     pace_seconds: float = 0.0,
@@ -1703,6 +2447,19 @@ def main(
     POLL_INTERVAL = poll_interval
     _stop_event.clear()
 
+    from applypilot.apply.direct import review_log as _review_log
+
+    _review_log.start_writer()
+
+    try:
+        apply_profile = config.load_profile()
+    except Exception:
+        apply_profile = {}
+    budget_snap = apply_budget.governor().reset(
+        deterministic_only=apply_settings.deterministic_only_enabled(),
+        profile=apply_profile,
+    )
+
     config.ensure_dirs()
     console = Console()
     use_live = not plain and sys.stdout.isatty()
@@ -1720,7 +2477,7 @@ def main(
         logger.info("Repaired %d invalid Claude quota retry window(s)", repaired)
         console.print(f"[dim]Repaired {repaired} Claude quota retry window(s)[/dim]")
 
-    if not continuous and not target_url:
+    if not target_url:
         acquirable = count_acquirable_jobs(
             min_score=min_score,
             ats_only=ats_only,
@@ -1739,12 +2496,20 @@ def main(
             )
             sys.exit(1)
 
-    if continuous:
+    if limit > 0:
+        effective_limit = limit
+        mode_label = f"{limit} jobs"
+    elif continuous:
         effective_limit = 0
         mode_label = "continuous"
     else:
-        effective_limit = limit
-        mode_label = f"{limit} jobs"
+        effective_limit = count_acquirable_jobs(
+            min_score=min_score,
+            ats_only=ats_only,
+            priority_boards_only=priority_boards_only,
+            include_untailored=include_untailored,
+        )
+        mode_label = f"{effective_limit} jobs (queue)"
 
     # Initialize dashboard for all workers
     for i in range(workers):
@@ -1760,6 +2525,18 @@ def main(
         f"prompt_slim={flags['prompt_slim']} session_reuse={flags['session_reuse']} "
         f"gmail_mcp={flags['gmail_mcp']}[/dim]"
     )
+    if budget_snap.deterministic_only:
+        console.print(
+            "[dim]Deterministic-only: Claude disabled; non-adapter jobs -> needs_adapter[/dim]"
+        )
+    if budget_snap.claude_max_attempts is not None:
+        console.print(
+            f"[dim]Claude cap: {budget_snap.claude_max_attempts} apply(s) per run[/dim]"
+        )
+    if budget_snap.claude_max_cost_usd is not None:
+        console.print(
+            f"[dim]Claude cap: ${budget_snap.claude_max_cost_usd:.4f} per run[/dim]"
+        )
     console.print("[dim]Ctrl+C = skip current job(s) | Ctrl+C x2 = stop[/dim]")
 
     # Double Ctrl+C handler
@@ -1871,10 +2648,28 @@ def main(
             total_applied, total_failed = _run_workers()
 
         totals = get_totals()
+        run_snap = apply_budget.governor().snapshot()
         console.print(
             f"\n[bold]Done: {total_applied} applied, {total_failed} failed "
-            f"(${totals['cost']:.3f})[/bold]"
+            f"(${totals['cost']:.3f} Claude in DB)[/bold]"
         )
+        if run_snap.deterministic_only:
+            console.print(
+                f"[dim]Run Claude spend (governor): ${run_snap.claude_cost_usd:.4f} "
+                f"({run_snap.claude_attempts} attempts)[/dim]"
+            )
+        elif run_snap.claude_attempts or run_snap.claude_cost_usd:
+            console.print(
+                f"[dim]Run Claude spend (governor): ${run_snap.claude_cost_usd:.4f} "
+                f"({run_snap.claude_attempts} attempts)"
+                + (" — cap reached" if run_snap.claude_capped else "")
+                + "[/dim]"
+            )
+        if run_snap.parked_needs_adapter:
+            console.print(
+                f"[yellow]Parked needs_adapter (re-queue when adapter ships): "
+                f"{run_snap.parked_needs_adapter}[/yellow]"
+            )
         console.print(f"Logs: {config.LOG_DIR}")
 
     except KeyboardInterrupt:
@@ -1882,3 +2677,10 @@ def main(
     finally:
         _stop_event.set()
         kill_all_chrome()
+        try:
+            from applypilot.apply.direct import review_log as _review_log
+
+            _review_log.flush()
+            _review_log.stop_writer()
+        except Exception:  # noqa: BLE001
+            logger.debug("review_log shutdown failed", exc_info=True)

@@ -1,18 +1,38 @@
 # Copy to ~/.applypilot/discover.yaml to customize discover sources.
+# Public ATS APIs are enabled by default because they provide direct,
+# deterministic apply URLs. Broad SmartExtract scraping is opt-in; it can be
+# noisy and slow across large search/site matrices.
 
 sources:
   jobspy: true
   workday: true
-  smartextract: true
+  smartextract: false
   workatastartup: true
+  wellfound: false
+  startupjobs: false
   hn_hiring: true
   himalayas: true
   remotive: true
+  remoteok: true
   weworkremotely: true
   greenhouse: true
   lever: true
+  ashby: true
+  # Opens visible Chrome with your persistent LinkedIn login and captures
+  # employer-side apply form URLs. Enable only when you can keep Chrome signed in.
+  linkedin_harvest: false
   career_targets: true
   funded_startups: false
+
+company_first:
+  enabled: true
+  # 0 means rank all configured targets without cutting volume. Set limits when
+  # you want discover to spend effort only on the highest-probability companies.
+  max_watchlist_companies: 0
+  max_workday_employers: 0
+  max_career_targets: 0
+  max_smartextract_sites: 0
+  max_funded_startup_sites: 0
 
 agent_discover:
   enabled: true
@@ -22,6 +42,30 @@ agent_discover:
 workatastartup:
   headless: true
   use_chrome_session: false
+
+wellfound:
+  # Optional fallback for Wellfound CAPTCHA/rate-limit blocks. Point this at a
+  # YAML/JSON/JSONL file of indexed public result records with title, url/href,
+  # and snippet/text fields. Rows are imported only when an employer ATS URL is
+  # present, preserving Wellfound as the discovery source.
+  indexed_results_file: ""
+
+startupjobs:
+  # Optional fallback for StartupJobs Cloudflare blocks. Same format as
+  # wellfound.indexed_results_file; rows are imported only when an employer ATS
+  # URL is present, preserving StartupJobs as the discovery source.
+  indexed_results_file: ""
+
+linkedin_harvest:
+  keywords:
+    - "backend engineer"
+    - "full stack engineer"
+  max_jobs: 15
+  expand_company: false
+  max_company_jobs: 5
+  expand_employer: true
+  max_employer_jobs: 5
+  worker_id: 0
 
 hn_hiring:
   url: "https://hnhiring.com/locations/remote"

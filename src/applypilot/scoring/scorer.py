@@ -11,10 +11,18 @@ import os
 import re
 import time
 from datetime import datetime, timezone
+from itertools import groupby
 
 from applypilot.config import RESUME_PATH, get_target_roles, load_profile, load_search_config
 from applypilot.database import get_connection, get_jobs_by_stage, refresh_source_stats_scores
 from applypilot.llm import get_client
+from applypilot.role_resumes import (
+    ResumeResolution,
+    resolve_job_resume_for_scoring,
+    resume_text_for_scoring,
+    role_aware_scoring_enabled,
+    scoring_resume_cache_key,
+)
 from applypilot.scoring import embedding_filter
 from applypilot.scoring.pre_filter import pre_score_filter
 
@@ -40,6 +48,7 @@ IMPORTANT FACTORS:
 - Visa / work authorization: if the posting requires a specific work authorization the candidate likely lacks, cap at 4 unless resume clearly states eligibility
 - Remote vs on-site: penalize only when location is clearly incompatible with candidate preferences in the resume or target roles
 - Seniority: staff/principal/CTO/founding-engineer targets should score lower on clearly junior-only roles
+- Evaluate fit against the resume variant provided below (role-specific when labeled)
 
 RECOMMENDATION (derive from score and blockers):
 - apply: score >= 7 and no hard blockers (visa, wrong seniority band)
@@ -179,11 +188,83 @@ def _format_batch_job(job: dict, index: int) -> str:
     )
 
 
+def _truncate_resume_text(resume_text: str, *, max_chars: int = 6000) -> str:
+    if len(resume_text) <= max_chars:
+        return resume_text
+    log.info("Truncating scoring resume from %d to %d chars", len(resume_text), max_chars)
+    return resume_text[:max_chars]
+
+
+def _resume_label(role_title: str | None) -> str:
+    if role_title:
+        return f"RESUME (for {role_title}):"
+    return "RESUME:"
+
+
+def _score_metadata(resolution: ResumeResolution | None) -> tuple[str | None, int | None]:
+    if resolution and resolution.source == "role_resume" and resolution.role_key:
+        return resolution.role_key, resolution.jd_score
+    return None, None
+
+
+def _format_score_reasoning(result: dict) -> str:
+    return f"{result.get('recommendation', '')}\n{result['keywords']}\n{result['reasoning']}".strip()
+
+
+def _write_scored_job(
+    conn,
+    *,
+    url: str,
+    fit_score: int,
+    score_reasoning: str,
+    resolution: ResumeResolution | None,
+    now: str,
+) -> None:
+    role_key, jd_fit = _score_metadata(resolution)
+    conn.execute(
+        """
+        UPDATE jobs
+        SET fit_score = ?,
+            score_reasoning = ?,
+            score_role_key = ?,
+            score_jd_fit = ?,
+            scored_at = ?
+        WHERE url = ?
+        """,
+        (fit_score, score_reasoning, role_key, jd_fit, now, url),
+    )
+
+
+def _attach_scoring_context(jobs: list[dict], *, role_aware: bool) -> None:
+    base_text = RESUME_PATH.read_text(encoding="utf-8") if RESUME_PATH.is_file() else ""
+    for job in jobs:
+        if role_aware:
+            resolution = resolve_job_resume_for_scoring(job)
+            resume_text = resume_text_for_scoring(resolution, job)
+        else:
+            resolution = ResumeResolution(
+                path=str(RESUME_PATH) if RESUME_PATH.is_file() else None,
+                source="base",
+                jd_score=None,
+                role_key=None,
+            )
+            resume_text = base_text
+        job["_scoring_resolution"] = resolution
+        job["_scoring_resume_text"] = resume_text
+
+
+def _scoring_batch_group(resolution: ResumeResolution) -> tuple[str, str | None]:
+    if resolution.source == "role_resume" and resolution.role_key:
+        return ("role_resume", resolution.role_key)
+    return ("base", None)
+
+
 def score_jobs_batch(
     resume_text: str,
     jobs: list[dict],
     *,
     batch_id: str,
+    role_title: str | None = None,
 ) -> list[dict]:
     """Score a batch of jobs with one LLM call.
 
@@ -193,6 +274,8 @@ def score_jobs_batch(
     jobs_block = "\n\n".join(
         _format_batch_job(job, idx) for idx, job in enumerate(jobs, 1)
     )
+    resume_block = _truncate_resume_text(resume_text)
+    resume_label = _resume_label(role_title)
     messages = [
         {
             "role": "system",
@@ -200,7 +283,7 @@ def score_jobs_batch(
         },
         {
             "role": "user",
-            "content": f"<RESUME>\n{resume_text}\n</RESUME>\n\nJOBS:\n{jobs_block}",
+            "content": f"<RESUME>\n{resume_label}\n{resume_block}\n</RESUME>\n\nJOBS:\n{jobs_block}",
         },
     ]
     client = get_client()
@@ -225,7 +308,13 @@ def _scoring_batch_size(profile: dict) -> int:
     return max(1, configured)
 
 
-def score_job(resume_text: str, job: dict, profile: dict | None = None) -> dict:
+def score_job(
+    resume_text: str,
+    job: dict,
+    profile: dict | None = None,
+    *,
+    role_title: str | None = None,
+) -> dict:
     """Score a single job against the resume.
 
     Args:
@@ -253,7 +342,10 @@ def score_job(resume_text: str, job: dict, profile: dict | None = None) -> dict:
         {"role": "system", "content": SCORE_PROMPT},
         {
             "role": "user",
-            "content": f"{roles_block}RESUME:\n{resume_text}\n\n---\n\nJOB POSTING:\n{job_text}",
+            "content": (
+                f"{roles_block}{_resume_label(role_title)}\n"
+                f"{_truncate_resume_text(resume_text)}\n\n---\n\nJOB POSTING:\n{job_text}"
+            ),
         },
     ]
 
@@ -286,10 +378,10 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
     Returns:
         {"scored": int, "errors": int, "elapsed": float, "distribution": list}
     """
-    resume_text = RESUME_PATH.read_text(encoding="utf-8")
     profile = load_profile()
     search_cfg = load_search_config()
     conn = get_connection()
+    role_aware = role_aware_scoring_enabled()
 
     if rescore:
         query = "SELECT * FROM jobs WHERE full_description IS NOT NULL"
@@ -314,38 +406,95 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
         columns = jobs[0].keys()
         jobs = [dict(zip(columns, row)) for row in jobs]
 
+    _attach_scoring_context(jobs, role_aware=role_aware)
+
     now = datetime.now(timezone.utc).isoformat()
     skipped_pre = 0
     survivors: list[dict] = []
     for job in jobs:
+        resolution: ResumeResolution = job["_scoring_resolution"]
         verdict = pre_score_filter(job, profile, search_cfg)
         if not verdict.passes:
+            reason = verdict.reason or "pre_filter:rejected"
+            note = verdict.notes[0] if verdict.notes else reason
+            _write_scored_job(
+                conn,
+                url=job["url"],
+                fit_score=verdict.pre_score,
+                score_reasoning=f"pre_filter:{reason}\nPre-score: {verdict.pre_score}/10. {note}",
+                resolution=resolution,
+                now=now,
+            )
             conn.execute(
-                "UPDATE jobs SET fit_score = 0, score_reasoning = ?, scored_at = ? WHERE url = ?",
-                (f"pre_filter:{verdict.reason}", now, job["url"]),
+                """
+                UPDATE jobs
+                SET pre_fit_score = ?,
+                    pre_filter_reason = ?,
+                    pre_filter_rejected_at = ?
+                WHERE url = ?
+                """,
+                (verdict.pre_score, reason, now, job["url"]),
             )
             skipped_pre += 1
             continue
+        job["pre_fit_score"] = verdict.pre_score
+        conn.execute(
+            """
+            UPDATE jobs
+            SET pre_fit_score = ?,
+                pre_filter_reason = NULL,
+                pre_filter_rejected_at = NULL
+            WHERE url = ?
+            """,
+            (verdict.pre_score, job["url"]),
+        )
         survivors.append(job)
     if skipped_pre:
         conn.commit()
         log.info("Pre-filter skipped %d jobs before Gemini", skipped_pre)
 
     if survivors:
-        resume_embedding = embedding_filter.encode_resume(resume_text)
         embedding_threshold = embedding_filter.threshold_from_profile(profile)
         embedding_skipped = 0
         embedding_survivors: list[dict] = []
+        embedding_cache: dict[str, object] = {}
         for job in survivors:
+            resolution = job["_scoring_resolution"]
+            cache_key = scoring_resume_cache_key(resolution)
+            if cache_key not in embedding_cache:
+                embedding_cache[cache_key] = embedding_filter.encode_resume_for_key(
+                    job["_scoring_resume_text"],
+                    cache_key,
+                )
+            resume_embedding = embedding_cache[cache_key]
             verdict = embedding_filter.pre_filter_job(
                 job,
                 resume_embedding,
                 threshold=embedding_threshold,
             )
             if not verdict.passes:
+                pre_score = int(job.get("pre_fit_score") or 4)
+                capped = min(pre_score, 4)
+                _write_scored_job(
+                    conn,
+                    url=job["url"],
+                    fit_score=capped,
+                    score_reasoning=(
+                        "pre_filter:embedding_low\n"
+                        "Pre-score capped below 7 because resume/JD embedding similarity was low."
+                    ),
+                    resolution=resolution,
+                    now=now,
+                )
                 conn.execute(
-                    "UPDATE jobs SET fit_score = 0, score_reasoning = ?, scored_at = ? WHERE url = ?",
-                    ("pre_filter:embedding_low", now, job["url"]),
+                    """
+                    UPDATE jobs
+                    SET pre_fit_score = ?,
+                        pre_filter_reason = ?,
+                        pre_filter_rejected_at = ?
+                    WHERE url = ?
+                    """,
+                    (capped, "embedding_low", now, job["url"]),
                 )
                 embedding_skipped += 1
                 continue
@@ -359,6 +508,14 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
                 embedding_threshold,
             )
         survivors = embedding_survivors
+
+    survivors.sort(
+        key=lambda job: (
+            int(job.get("pre_fit_score") or 0),
+            str(job.get("discovered_at") or ""),
+        ),
+        reverse=True,
+    )
 
     if not survivors:
         log.info("No jobs left after pre-filter.")
@@ -378,63 +535,90 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
     t0 = time.time()
     completed = 0
     errors = 0
-    results: list[dict] = []
+    scored_rows: list[tuple[dict, dict]] = []
 
-    for batch_start in range(0, len(survivors), batch_size):
-        batch = survivors[batch_start : batch_start + batch_size]
-        batch_id = f"score-batch-{(batch_start // batch_size) + 1}"
-        if batch_size > 1:
-            try:
-                batch_results = score_jobs_batch(resume_text, batch, batch_id=batch_id)
-            except Exception as e:
-                log.warning(
-                    "Batch scoring failed; falling back to single-job scoring batch_id=%s reason=%s",
-                    batch_id,
-                    e,
-                )
+    survivors.sort(key=lambda job: _scoring_batch_group(job["_scoring_resolution"]))
+    for _group_key, group_iter in groupby(
+        survivors,
+        key=lambda job: _scoring_batch_group(job["_scoring_resolution"]),
+    ):
+        group_jobs = list(group_iter)
+        resolution = group_jobs[0]["_scoring_resolution"]
+        resume_text = group_jobs[0]["_scoring_resume_text"]
+        role_title = None
+        if resolution.source == "role_resume" and resolution.role_key:
+            role_title = resolution.role_key.replace("-", " ").title()
+
+        for batch_start in range(0, len(group_jobs), batch_size):
+            batch = group_jobs[batch_start : batch_start + batch_size]
+            batch_num = (batch_start // batch_size) + 1
+            batch_id = f"score-batch-{resolution.source}-{resolution.role_key or 'base'}-{batch_num}"
+            if batch_size > 1:
+                try:
+                    batch_results = score_jobs_batch(
+                        resume_text,
+                        batch,
+                        batch_id=batch_id,
+                        role_title=role_title,
+                    )
+                except Exception as e:
+                    log.warning(
+                        "Batch scoring failed; falling back to single-job scoring batch_id=%s reason=%s",
+                        batch_id,
+                        e,
+                    )
+                    batch_results = []
+                    for job in batch:
+                        result = score_job(
+                            resume_text,
+                            job,
+                            profile=profile,
+                            role_title=role_title,
+                        )
+                        result["url"] = job["url"]
+                        batch_results.append(result)
+            else:
                 batch_results = []
                 for job in batch:
-                    result = score_job(resume_text, job, profile=profile)
+                    result = score_job(
+                        resume_text,
+                        job,
+                        profile=profile,
+                        role_title=role_title,
+                    )
                     result["url"] = job["url"]
                     batch_results.append(result)
-        else:
-            batch_results = []
-            for job in batch:
-                result = score_job(resume_text, job, profile=profile)
-                result["url"] = job["url"]
-                batch_results.append(result)
 
-        for result, job in zip(batch_results, batch, strict=True):
-            completed += 1
+            for result, job in zip(batch_results, batch, strict=True):
+                completed += 1
+                if result["score"] == 0:
+                    errors += 1
+                scored_rows.append((job, result))
+                resolution = job["_scoring_resolution"]
+                log.info(
+                    "[%d/%d] score=%d role=%s jd_fit=%s title=%s",
+                    completed,
+                    len(survivors),
+                    result["score"],
+                    resolution.role_key or "base",
+                    resolution.jd_score if resolution.jd_score is not None else "-",
+                    str(job.get("title", "?"))[:60],
+                )
 
-            if result["score"] == 0:
-                errors += 1
-
-            results.append(result)
-            log.info(
-                "[%d/%d] score=%d  %s",
-                completed,
-                len(survivors),
-                result["score"],
-                job.get("title", "?")[:60],
-            )
-
-    # Write scores to DB
-    for r in results:
-        conn.execute(
-            "UPDATE jobs SET fit_score = ?, score_reasoning = ?, scored_at = ? WHERE url = ?",
-            (
-                r["score"],
-                f"{r.get('recommendation', '')}\n{r['keywords']}\n{r['reasoning']}".strip(),
-                now,
-                r["url"],
-            ),
+    for job, result in scored_rows:
+        _write_scored_job(
+            conn,
+            url=result["url"],
+            fit_score=result["score"],
+            score_reasoning=_format_score_reasoning(result),
+            resolution=job["_scoring_resolution"],
+            now=now,
         )
     conn.commit()
     refresh_source_stats_scores(conn, run_id=os.environ.get("APPLYPILOT_RUN_ID", "").strip())
 
     elapsed = time.time() - t0
-    log.info("Done: %d scored in %.1fs (%.1f jobs/sec)", len(results), elapsed, len(results) / elapsed if elapsed > 0 else 0)
+    log.info("Done: %d scored in %.1fs (%.1f jobs/sec)", len(scored_rows), elapsed, len(scored_rows) / elapsed if elapsed > 0 else 0)
 
     # Score distribution
     dist = conn.execute("""
@@ -445,7 +629,7 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
     distribution = [(row[0], row[1]) for row in dist]
 
     return {
-        "scored": len(results),
+        "scored": len(scored_rows),
         "skipped_pre": skipped_pre,
         "errors": errors,
         "elapsed": elapsed,

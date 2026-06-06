@@ -16,6 +16,7 @@ from applypilot import config
 from applypilot.apply import apply_settings
 from applypilot.apply import prompt_scripts
 from applypilot.apply.salary import get_min_annual_inr
+from applypilot.role_resumes import resolve_job_resume_path
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,11 @@ def ensure_resume_pdf(resume_path: str | Path) -> Path:
     pdf_path = pdf_path.resolve()
     if pdf_path.exists():
         return pdf_path
+
+    parent = pdf_path.parent
+    role_named = parent / f"{parent.name}.pdf"
+    if role_named.is_file():
+        return role_named.resolve()
 
     txt_path = base if base.suffix.lower() == ".txt" else base.with_suffix(".txt")
     txt_path = txt_path.resolve()
@@ -123,8 +129,14 @@ def _build_profile_summary(profile: dict) -> str:
     # EEO
     lines.append(f"Gender: {eeo.get('gender', 'Decline to self-identify')}")
     lines.append(f"Race: {eeo.get('race_ethnicity', 'Decline to self-identify')}")
-    lines.append(f"Veteran: {eeo.get('veteran_status', 'I am not a protected veteran')}")
-    lines.append(f"Disability: {eeo.get('disability_status', 'I do not wish to answer')}")
+    veteran = str(eeo.get("veteran_status") or "").strip()
+    if not veteran or any(m in veteran.lower() for m in ("decline", "prefer not", "wish")):
+        veteran = "I am not a protected veteran"
+    disability = str(eeo.get("disability_status") or "").strip()
+    if not disability or any(m in disability.lower() for m in ("decline", "prefer not", "wish")):
+        disability = "No, I don't have a disability"
+    lines.append(f"Veteran: {veteran}")
+    lines.append(f"Disability: {disability}")
 
     return "\n".join(lines)
 
@@ -253,7 +265,9 @@ Skills and tools -> be confident. This candidate targets roles such as: {roles_l
 
 Open-ended questions ("Why do you want this role?", "Tell us about yourself", "What interests you?") -> Write 2-3 sentences. Be specific to THIS job. Reference something from the job description. Connect it to a real achievement from the resume. No generic fluff. No "I am passionate about..." -- sound like a real person.
 
-EEO/demographics -> "Decline to self-identify" or "Prefer not to say" for everything."""
+EEO/demographics -> use the profile values. If veteran or disability is unset, use
+"I am not a protected veteran" and "No, I don't have a disability". Do not use
+"I don't wish to answer" as a generic answer."""
 
 
 def _build_hard_rules(profile: dict) -> str:
@@ -616,7 +630,7 @@ def build_prompt(job: dict, tailored_resume: str,
     personal = profile["personal"]
 
     # --- Resolve resume PDF path ---
-    resume_path = job.get("tailored_resume_path")
+    resume_path = resolve_job_resume_path(job)
     if not resume_path:
         raise ValueError(f"No tailored resume for job: {job.get('title', 'unknown')}")
 
@@ -631,24 +645,16 @@ def build_prompt(job: dict, tailored_resume: str,
     shutil.copy(str(src_pdf), str(upload_pdf))
     pdf_path = str(upload_pdf)
 
-    # --- Cover letter handling ---
-    cover_letter_text = cover_letter or ""
-    cl_upload_path = ""
-    cl_path = job.get("cover_letter_path")
-    if cl_path and Path(cl_path).exists():
-        cl_src = Path(cl_path)
-        # Read text from .txt sibling (PDF is binary)
-        cl_txt = cl_src.with_suffix(".txt")
-        if cl_txt.exists():
-            cover_letter_text = cl_txt.read_text(encoding="utf-8")
-        elif cl_src.suffix == ".txt":
-            cover_letter_text = cl_src.read_text(encoding="utf-8")
-        # Upload must be PDF
-        cl_pdf_src = cl_src.with_suffix(".pdf")
-        if cl_pdf_src.exists():
-            cl_upload = dest_dir / f"{name_slug}_Cover_Letter.pdf"
-            shutil.copy(str(cl_pdf_src), str(cl_upload))
-            cl_upload_path = str(cl_upload)
+    # --- Cover letter handling (aligned with resolve_job_resume) ---
+    from applypilot.apply.cover_resolve import resolve_apply_cover_letter
+
+    if cover_letter:
+        cover_letter_text = cover_letter
+        cl_upload_path = ""
+    else:
+        cover_letter_text, _cl_txt, cl_upload_path = resolve_apply_cover_letter(
+            job, upload_dir=dest_dir
+        )
 
     # --- Build all prompt sections ---
     profile_summary = _build_profile_summary(profile)

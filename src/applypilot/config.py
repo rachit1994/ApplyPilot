@@ -15,6 +15,12 @@ RESUME_PATH = APP_DIR / "resume.txt"
 RESUME_PDF_PATH = APP_DIR / "resume.pdf"
 SEARCH_CONFIG_PATH = APP_DIR / "searches.yaml"
 ENV_PATH = APP_DIR / ".env"
+ROLE_RESUME_DIR = Path(
+    os.environ.get(
+        "APPLYPILOT_ROLE_RESUME_DIR",
+        Path(__file__).resolve().parents[2] / "role_resumes",
+    )
+)
 
 # Generated output
 TAILORED_DIR = APP_DIR / "tailored_resumes"
@@ -146,6 +152,51 @@ def get_target_roles(profile: dict | None = None) -> list[str]:
     return [str(primary).strip()] if primary else ["software engineer"]
 
 
+def _norm_search_query(text: str | None) -> str:
+    import re
+
+    return re.sub(r"[^a-z0-9+#.]+", " ", (text or "").lower()).strip()
+
+
+def _merge_role_catalog_into_search_config(cfg: dict) -> dict:
+    """Append ROLE_CATALOG discover queries and default title allowlist when enabled."""
+    if cfg.get("role_catalog_queries") is False:
+        return cfg
+    try:
+        from applypilot.role_resumes import (
+            discovery_search_query_entries,
+            discovery_title_include_keywords,
+        )
+    except Exception:
+        return cfg
+
+    profile: dict | None = None
+    try:
+        profile = load_profile()
+    except FileNotFoundError:
+        profile = None
+
+    existing = {
+        _norm_search_query(str(q.get("query")))
+        for q in (cfg.get("queries") or [])
+        if q.get("query")
+    }
+    merged_queries = list(cfg.get("queries") or [])
+    for entry in discovery_search_query_entries(profile):
+        key = _norm_search_query(str(entry.get("query")))
+        if key and key not in existing:
+            merged_queries.append(entry)
+            existing.add(key)
+    cfg["queries"] = merged_queries
+
+    if not cfg.get("include_titles"):
+        auto_titles = discovery_title_include_keywords()
+        if auto_titles:
+            cfg["include_titles"] = auto_titles
+
+    return cfg
+
+
 def load_search_config() -> dict:
     """Load search configuration from ~/.applypilot/searches.yaml."""
     import yaml
@@ -153,9 +204,12 @@ def load_search_config() -> dict:
         # Fall back to package-shipped example
         example = CONFIG_DIR / "searches.example.yaml"
         if example.exists():
-            return yaml.safe_load(example.read_text(encoding="utf-8"))
-        return {}
-    return yaml.safe_load(SEARCH_CONFIG_PATH.read_text(encoding="utf-8"))
+            cfg = yaml.safe_load(example.read_text(encoding="utf-8")) or {}
+        else:
+            cfg = {}
+    else:
+        cfg = yaml.safe_load(SEARCH_CONFIG_PATH.read_text(encoding="utf-8")) or {}
+    return _merge_role_catalog_into_search_config(cfg)
 
 
 def load_location_filter_patterns(
@@ -233,6 +287,9 @@ DEFAULTS = {
     "apply_min_experience_years": 5,
     "apply_queue_mode": "all_tailored",
     "max_apply_attempts": 3,
+    # Cooldown (hours) before a failed job can be re-acquired. Prevents a
+    # continuous/overnight run from re-applying to the same jobs in a tight loop.
+    "apply_retry_cooldown_hours": 18,
     "max_tailor_attempts": 5,
     "poll_interval": 60,
     "apply_timeout": 600,
@@ -245,7 +302,22 @@ DEFAULTS = {
     "apply_prompt_slim_enabled": True,
     "apply_session_reuse_enabled": True,
     "apply_gmail_mcp_enabled": False,
+    "apply_require_gmail_confirmation": True,
     "apply_prompt_mode": "legacy",
+    "role_resume_apply_min_score": 7,
+    # Apply uses a matched role_resumes PDF when JD alignment score is at least this (1–10).
+    "role_resume_jd_min_score": 7,
+    # Manifest title/JD score (alias=8, keyword=1 each) required to pick a role resume.
+    "role_resume_min_match_score": 3,
+    # Target depth for the apply queue (role resume or per-job tailored + apply URL).
+    "apply_queue_min_ready": 300,
+    # Cover stage: jobs processed per batch (pipeline loops until queue empty).
+    "cover_letter_batch_limit": 300,
+    # Default apply subprocess engine when APPLYPILOT_APPLY_ENGINE is unset.
+    "apply_engine": "direct",
+    # Per-run Claude apply caps (0 = unlimited). Override via profile apply.* or env.
+    "apply_claude_max_per_run": 0,
+    "apply_claude_max_cost_usd_per_run": 0.0,
 }
 
 

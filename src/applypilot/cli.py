@@ -29,8 +29,18 @@ app = typer.Typer(
 console = Console()
 log = logging.getLogger(__name__)
 
-# Valid pipeline stages (in execution order)
-VALID_STAGES = ("discover", "enrich", "score", "tailor", "pdf", "refer", "cover")
+# Valid pipeline stages (default `all` runs STAGE_ORDER; role_resumes is optional one-time prep)
+VALID_STAGES = (
+    "discover",
+    "enrich",
+    "filter",
+    "score",
+    "tailor",
+    "pdf",
+    "refer",
+    "cover",
+    "role_resumes",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -124,8 +134,13 @@ def run(
             "lenient: banned words ignored, LLM judge skipped (fastest, fewest API calls)."
         ),
     ),
+    rescore: bool = typer.Option(
+        False,
+        "--rescore",
+        help="Re-score all jobs with descriptions (not only unscored rows).",
+    ),
 ) -> None:
-    """Run pipeline stages: discover, enrich, score, tailor, cover, pdf."""
+    """Run pipeline stages (default: discover → enrich → filter → score → tailor → pdf → refer → cover)."""
     _bootstrap()
 
     from applypilot.pipeline import run_pipeline
@@ -163,10 +178,282 @@ def run(
         stream=stream,
         workers=workers,
         validation_mode=validation,
+        rescore=rescore,
     )
 
     if result.get("errors"):
         raise typer.Exit(code=1)
+
+
+@app.command("seed-qa-bank")
+def seed_qa_bank(
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Show what would be seeded without writing."
+    ),
+) -> None:
+    """Pre-seed the Resolver Tier-1 Q&A bank from config/common_questions.yaml.
+
+    Deterministic (zero LLM): token-backed answers come from your profile,
+    EEO defaults are curated literals, company-specific questions store only a
+    prompt template. Run once so the apply Driver is cache-warm from job #1.
+    """
+    _bootstrap()
+
+    from applypilot.apply.direct.seed import seed_common_questions
+
+    written = seed_common_questions(dry_run=dry_run)
+    verb = "Would seed" if dry_run else "Seeded"
+    console.print(f"[bold]{verb} {written} Q&A bank rows.[/bold]")
+
+
+playbook_app = typer.Typer(
+    help="Self-learning navigation playbook cache (nav_playbook seeds and stats).",
+    no_args_is_help=True,
+)
+app.add_typer(playbook_app, name="playbook")
+
+
+@playbook_app.command("seed")
+def playbook_seed_cmd(
+    family: Optional[list[str]] = typer.Option(
+        None,
+        "--family",
+        help="ATS family to seed (repeatable). Default: all families in nav_playbooks.yaml.",
+    ),
+) -> None:
+    """Pre-seed nav_playbook from config/nav_playbooks.yaml (status=trusted, source=seed)."""
+    _bootstrap()
+
+    from applypilot.apply.direct.playbook_seed import seed_nav_playbooks
+
+    written = seed_nav_playbooks(families=family)
+    console.print(f"[bold green]Seeded {written} nav_playbook rows.[/bold green]")
+
+
+@playbook_app.command("list")
+def playbook_list_cmd(
+    status: Optional[str] = typer.Option(
+        None,
+        "--status",
+        help="Filter by status (trial, trusted, retired, banned, pinned).",
+    ),
+) -> None:
+    """List nav_playbook rows."""
+    _bootstrap()
+
+    from applypilot.apply.direct.playbook_seed import list_nav_playbooks
+
+    rows = list_nav_playbooks(status=status)
+    if not rows:
+        console.print("[dim]No nav_playbook rows match.[/dim]")
+        return
+
+    table = Table(title="nav_playbook")
+    table.add_column("ats_family")
+    table.add_column("step")
+    table.add_column("action")
+    table.add_column("status")
+    table.add_column("source")
+    table.add_column("scope")
+    for entry in rows:
+        table.add_row(
+            entry.ats_family or "",
+            entry.step_name or "",
+            entry.action_type,
+            entry.status,
+            entry.source or "",
+            entry.scope,
+        )
+    console.print(table)
+
+
+@playbook_app.command("stats")
+def playbook_stats_cmd() -> None:
+    """Show nav_playbook counts by status, source, and ATS family."""
+    _bootstrap()
+
+    from applypilot.apply.direct.playbook_seed import playbook_stats
+
+    stats = playbook_stats()
+    console.print(f"[bold]nav_playbook total:[/bold] {stats['total']}")
+
+    for label, key in (
+        ("By status", "by_status"),
+        ("By source", "by_source"),
+        ("By ATS family", "by_ats_family"),
+    ):
+        groups = stats.get(key) or {}
+        if not groups:
+            console.print(f"[dim]{label}: (none)[/dim]")
+            continue
+        table = Table(title=label)
+        table.add_column("key")
+        table.add_column("count", justify="right")
+        for group_key, count in groups.items():
+            table.add_row(group_key or "(empty)", str(count))
+        console.print(table)
+
+
+@playbook_app.command("promote")
+def playbook_promote_cmd(
+    state_sig: str = typer.Argument(..., help="nav_playbook state_sig to promote."),
+    scope: str = typer.Option("host", "--scope", help="Playbook scope (host or family)."),
+) -> None:
+    """Mark a nav_playbook entry as trusted (owner action)."""
+    _bootstrap()
+
+    from applypilot.apply.direct import playbook
+
+    entry = playbook.promote(state_sig, scope=scope, status="trusted")
+    if entry is None:
+        console.print("[red]No nav_playbook row found for that state_sig.[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[bold green]Promoted[/bold green] {state_sig[:40]}… → status={entry.status}"
+    )
+
+
+@playbook_app.command("ban")
+def playbook_ban_cmd(
+    state_sig: str = typer.Argument(..., help="nav_playbook state_sig to ban."),
+    scope: str = typer.Option("host", "--scope", help="Playbook scope (host or family)."),
+) -> None:
+    """Ban a nav_playbook entry from Tier-1 replay."""
+    _bootstrap()
+
+    from applypilot.apply.direct import playbook
+
+    entry = playbook.promote(state_sig, scope=scope, status="banned")
+    if entry is None:
+        console.print("[red]No nav_playbook row found for that state_sig.[/red]")
+        raise typer.Exit(1)
+    console.print(f"[bold yellow]Banned[/bold yellow] {state_sig[:40]}…")
+
+
+@playbook_app.command("review")
+def playbook_review_cmd(
+    limit: int = typer.Option(30, "--limit", help="Max review_log rows to show."),
+) -> None:
+    """Show recent self-learning review_log events."""
+    _bootstrap()
+
+    from applypilot.apply.direct.review_log import list_recent
+    from applypilot.database import get_connection, init_db
+
+    init_db()
+    conn = get_connection()
+    rows = list_recent(conn, limit=max(1, min(limit, 200)))
+    if not rows:
+        console.print("[dim]No review_log events yet.[/dim]")
+        return
+
+    table = Table(title="review_log")
+    table.add_column("ts")
+    table.add_column("tier")
+    table.add_column("action")
+    table.add_column("outcome")
+    table.add_column("family")
+    table.add_column("state_sig")
+    for row in rows:
+        sig = (row.get("state_sig") or "")[:28]
+        table.add_row(
+            (row.get("ts") or "")[:19],
+            row.get("tier") or "",
+            row.get("action_type") or "",
+            row.get("outcome") or "",
+            row.get("ats_family") or "",
+            sig,
+        )
+    console.print(table)
+
+
+@playbook_app.command("induce")
+def playbook_induce_cmd(
+    min_support: int = typer.Option(3, "--min-support", help="Minimum successful rows."),
+    promote: bool = typer.Option(
+        False,
+        "--promote",
+        help="Promote each candidate to trusted (owner-gated).",
+    ),
+) -> None:
+    """List review_log clusters ready for nav_playbook promotion."""
+    _bootstrap()
+
+    from applypilot.apply.direct import playbook
+    from applypilot.apply.direct.induction import induce_candidates
+    from applypilot.database import get_connection, init_db
+
+    init_db()
+    conn = get_connection()
+    candidates = induce_candidates(conn, min_support=max(2, min_support))
+    if not candidates:
+        console.print("[dim]No induction candidates at this support threshold.[/dim]")
+        return
+
+    table = Table(title="induction candidates")
+    table.add_column("family")
+    table.add_column("action")
+    table.add_column("support")
+    table.add_column("state_sig")
+    for row in candidates:
+        table.add_row(
+            row.get("ats_family") or "",
+            row.get("action_type") or "",
+            str(row.get("support") or 0),
+            (row.get("state_sig") or "")[:40],
+        )
+    console.print(table)
+
+    if not promote:
+        console.print("[dim]Re-run with --promote to mark candidates trusted.[/dim]")
+        return
+
+    promoted = 0
+    for row in candidates:
+        entry = playbook.promote(row["state_sig"], scope="host", status="trusted")
+        if entry is not None:
+            promoted += 1
+    console.print(f"[bold green]Promoted {promoted} candidate(s).[/bold green]")
+
+
+@app.command("correct-field")
+def correct_field(
+    label: Optional[str] = typer.Argument(None, help="Field label to correct, e.g. \"Phone\"."),
+    value: Optional[str] = typer.Argument(None, help="Correct value to use everywhere."),
+    list_all: bool = typer.Option(False, "--list", help="List all saved corrections."),
+    delete: Optional[str] = typer.Option(None, "--delete", help="Delete the correction for this label."),
+) -> None:
+    """Save a field correction that the apply engine uses on EVERY future form.
+
+    Example: `applypilot correct-field "Phone" "+91 8168433423"`. The next time
+    any form has a field labelled "Phone", the Direct Apply engine fills this
+    value instead of its rule/LLM guess — for every company.
+    """
+    _bootstrap()
+    from applypilot.database import (
+        delete_field_override,
+        list_field_overrides,
+        set_field_override,
+    )
+
+    if delete:
+        ok = delete_field_override(delete)
+        console.print(f"[{'green' if ok else 'yellow'}]{'Deleted' if ok else 'No'} correction for {delete!r}[/]")
+        return
+    if list_all or (not label and not value):
+        rows = list_field_overrides()
+        if not rows:
+            console.print("[dim]No field corrections saved yet.[/dim]")
+            return
+        console.print("[bold]Field corrections (applied to all future forms):[/bold]")
+        for r in rows:
+            console.print(f"  • {r['label']!r} -> {r['value']!r}")
+        return
+    if not label or value is None:
+        console.print("[red]Provide both a LABEL and a VALUE, or use --list.[/red]")
+        raise typer.Exit(code=1)
+    set_field_override(label, value)
+    console.print(f"[green]Saved.[/green] '{label}' will be filled as '{value}' on all future forms.")
 
 
 @app.command()
@@ -187,7 +474,13 @@ def apply(
         "-m",
         help="Claude model for apply (default haiku; sonnet retries on retriable failures).",
     ),
-    continuous: bool = typer.Option(False, "--continuous", "-c", help="Run forever, polling for new jobs."),
+    continuous: bool = typer.Option(
+        True,
+        "--continuous/--no-continuous",
+        "-c",
+        help="Keep running until the queue is empty (poll for new jobs). "
+        "Use --no-continuous to stop after --limit.",
+    ),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview actions without submitting."),
     headless: bool = typer.Option(False, "--headless", help="Run browsers in headless mode."),
     pace: float = typer.Option(
@@ -246,14 +539,33 @@ def apply(
         "--prompt-mode",
         help="Apply stdin prompt: legacy (default) or playbook (worker-apply-playbook.md).",
     ),
+    engine: Optional[str] = typer.Option(
+        None,
+        "--engine",
+        help="Apply engine: direct (default, Playwright ATS applier) or claude "
+        "(Claude Code browser agent, ~$0.15/apply).",
+    ),
+    deterministic_only: bool = typer.Option(
+        False,
+        "--deterministic-only",
+        help="Only deterministic Direct Apply adapters; park others as needs_adapter "
+        "($0 Claude).",
+    ),
 ) -> None:
     """Launch auto-apply to submit job applications."""
     _bootstrap()
 
+    if engine:
+        normalized = engine.strip().lower()
+        if normalized not in ("claude", "direct"):
+            console.print(f"[red]Invalid --engine: {engine!r} (use claude|direct)[/red]")
+            raise typer.Exit(code=1)
+        os.environ["APPLYPILOT_APPLY_ENGINE"] = normalized
+
     if priority_boards_only:
         os.environ["APPLYPILOT_PRIORITY_BOARDS_ONLY"] = "1"
 
-    from applypilot.config import check_tier, PROFILE_PATH as _profile_path
+    from applypilot.config import check_tier, get_chrome_path, PROFILE_PATH as _profile_path
     from applypilot.database import get_connection
 
     # --- Utility modes (no Chrome/Claude needed) ---
@@ -323,11 +635,28 @@ def apply(
 
     from applypilot.apply import apply_settings
 
+    if deterministic_only:
+        apply_settings.set_deterministic_only_override(True)
+        os.environ["APPLYPILOT_APPLY_ENGINE"] = "direct"
+
     if prompt_mode:
         apply_settings.set_apply_prompt_mode_override(prompt_mode)
 
-    # Check 1: Tier 3 required (Claude Code CLI + Chrome)
-    check_tier(3, "auto-apply")
+    # Check 1: Full auto-apply needs Claude rescue; direct-only does not.
+    direct_without_claude = (
+        apply_settings.apply_engine() == "direct"
+        and not apply_settings.direct_escalate_to_claude()
+    )
+    if deterministic_only or direct_without_claude:
+        check_tier(2, "direct auto-apply")
+        try:
+            get_chrome_path()
+        except FileNotFoundError:
+            console.print("[red]Chrome/Chromium is required for direct auto-apply.[/red]")
+            console.print("Install Chrome or set CHROME_PATH.")
+            raise typer.Exit(code=1)
+    else:
+        check_tier(3, "auto-apply")
 
     # Check 2: Profile exists
     if not _profile_path.exists():
@@ -337,8 +666,8 @@ def apply(
         )
         raise typer.Exit(code=1)
 
-    # Check 3: Jobs the apply worker can actually acquire (skip for --gen/--url/--continuous)
-    if not (gen and url) and not continuous and not url:
+    # Check 3: Jobs the apply worker can actually acquire (skip for --gen/--url)
+    if not (gen and url) and not url:
         from applypilot.apply.launcher import count_acquirable_jobs, format_apply_queue_hint
 
         effective_min = min_score if min_score > 0 else 0
@@ -396,16 +725,30 @@ def apply(
         )
         return
 
-    from applypilot.apply.launcher import main as apply_main
+    from applypilot.apply.launcher import count_acquirable_jobs, main as apply_main
 
-    effective_limit = limit if limit is not None else (0 if continuous else 1)
+    if watch and not continuous and not url:
+        continuous = True
+
+    if limit is not None:
+        effective_limit = limit
+    elif url and not continuous:
+        effective_limit = 1
+    elif continuous:
+        effective_limit = 0
+    else:
+        effective_limit = count_acquirable_jobs(
+            min_score=min_score if min_score > 0 else 0,
+            ats_only=ats_only,
+            priority_boards_only=priority_boards_only,
+            include_untailored=include_untailored,
+        )
 
     if watch:
         if pace <= 0:
             pace = 2.0
         if keep_open <= 0:
             keep_open = 45.0
-        confirm_submit = True
         workers = 1
 
     effective_pace = pace
@@ -413,7 +756,12 @@ def apply(
     effective_confirm = confirm_submit
 
     console.print("\n[bold blue]Launching Auto-Apply[/bold blue]")
-    console.print(f"  Limit:    {'unlimited' if continuous else effective_limit}")
+    limit_label = (
+        "unlimited"
+        if continuous or effective_limit == 0
+        else str(effective_limit)
+    )
+    console.print(f"  Limit:    {limit_label}")
     console.print(f"  Workers:  {workers}")
     console.print(f"  Model:    {model}")
     console.print(f"  Headless: {headless}")
@@ -432,6 +780,8 @@ def apply(
         console.print("  ATS only: on (skip non-ATS apply URLs)")
     if priority_boards_only:
         console.print("  Boards:   LinkedIn + Wellfound only")
+    if deterministic_only:
+        console.print("  Mode:     deterministic-only (no Claude; needs_adapter parking)")
     console.print()
 
     apply_main(
@@ -724,6 +1074,11 @@ def inbox_scan(
 @inbox_app.command("classify")
 def inbox_classify(
     limit: int = typer.Option(50, "--limit", help="Max threads to classify."),
+    link: bool = typer.Option(
+        False,
+        "--link",
+        help="After classify, match human replies to applied jobs (LinkedIn).",
+    ),
 ) -> None:
     """LLM: job-related? extract role/company."""
     _bootstrap()
@@ -732,6 +1087,63 @@ def inbox_classify(
 
     result = classify_inbox(settings=load_inbox_config(), limit=limit)
     console.print(f"[green]Classify complete:[/green] {result}")
+    if link:
+        from applypilot.inbox.job_match import link_linkedin_threads
+
+        linked = link_linkedin_threads()
+        console.print(f"[green]Job link (LinkedIn):[/green] {linked}")
+
+
+@inbox_app.command("scan-gmail")
+def inbox_scan_gmail(
+    limit: int = typer.Option(50, "--limit", help="Max Gmail messages to fetch (read-only)."),
+    since_days: int = typer.Option(None, "--since-days", help="Gmail newer_than window."),
+    link: bool = typer.Option(
+        True,
+        "--link/--no-link",
+        help="After scan+classify, match replies to applied jobs.",
+    ),
+) -> None:
+    """Fetch recruiter Gmail (read-only), classify intent, optionally link to jobs."""
+    _bootstrap()
+    from applypilot.inbox.config import load_inbox_config
+    from applypilot.inbox.gmail_scanner import scan_gmail_inbox
+    from applypilot.inbox.job_match import link_all_replies
+
+    cfg = load_inbox_config()
+    console.print("[dim]Scanning Gmail (read-only, no send/archive)…[/dim]")
+    result = scan_gmail_inbox(settings=cfg, limit=limit, since_days=since_days)
+    if result.get("error"):
+        console.print(f"[red]Gmail scan failed:[/red] {result}")
+        raise typer.Exit(1)
+    console.print(f"[green]Gmail scan:[/green] {result}")
+    if link:
+        linked = link_all_replies(lookback_days=since_days or cfg.since_days)
+        console.print(f"[green]Job link:[/green] {linked}")
+
+
+@inbox_app.command("link-replies")
+def inbox_link_replies(
+    lookback_days: int = typer.Option(90, "--lookback-days", help="Applied jobs to match."),
+) -> None:
+    """Match classified LinkedIn/Gmail recruiter replies to job rows."""
+    _bootstrap()
+    from applypilot.inbox.job_match import link_all_replies
+
+    result = link_all_replies(lookback_days=lookback_days)
+    console.print(f"[green]Link complete:[/green] {result}")
+
+
+@inbox_app.command("reply-report")
+def inbox_reply_report(
+    days: int = typer.Option(7, "--days", help="Rolling window for applies and replies."),
+) -> None:
+    """Reply-rate by source: applies, verified applies, replies, interview invites."""
+    _bootstrap()
+    from applypilot.inbox.reply_report import build_reply_rate_report, format_reply_rate_report
+
+    report = build_reply_rate_report(days=days)
+    console.print(format_reply_rate_report(report))
 
 
 @inbox_app.command("list")

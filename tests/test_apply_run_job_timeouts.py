@@ -318,6 +318,66 @@ def test_run_job_wall_timeout_with_steady_output(run_job_env):
     assert env["killed"] == [4242]
 
 
+def test_run_job_fast_fail_counts_claude_attempt_in_governor(run_job_env):
+    """Aborted Claude runs must still count against the per-run budget governor."""
+    from applypilot.apply import apply_budget
+
+    env = run_job_env
+    env["monkeypatch"].setitem(env["config"].DEFAULTS, "apply_inactivity_timeout", 5.0)
+    env["monkeypatch"].setitem(env["config"].DEFAULTS, "apply_timeout", 30.0)
+    apply_budget.governor().reset()
+
+    stdout = ControllableStdout()
+    _install_fake_popen(env["monkeypatch"], stdout)
+    threading.Thread(
+        target=lambda: stdout.feed(
+            _assistant_text("You've hit your limit · resets 11am (Asia/Calcutta)")
+        ),
+        daemon=True,
+    ).start()
+
+    status, _duration_ms, _log_path = launcher.run_job(
+        env["job"], port=9222, worker_id=0
+    )
+
+    assert status.startswith("failed:claude_quota_exhausted")
+    snap = apply_budget.governor().snapshot()
+    assert snap.claude_attempts == 1
+
+
+def test_run_job_success_counts_single_claude_attempt(run_job_env):
+    """A successful run counts exactly one attempt and records its cost once."""
+    from applypilot.apply import apply_budget
+
+    env = run_job_env
+    env["monkeypatch"].setitem(env["config"].DEFAULTS, "apply_inactivity_timeout", 2.0)
+    env["monkeypatch"].setitem(env["config"].DEFAULTS, "apply_timeout", 10.0)
+    env["monkeypatch"].setattr(
+        launcher.apply_settings, "require_gmail_confirmation", lambda: False
+    )
+    apply_budget.governor().reset()
+
+    stdout = ControllableStdout()
+    _install_fake_popen(env["monkeypatch"], stdout)
+    applied_body = ">> browser_click submit-ref Send\n" f"{APPLIED_RESULT_JSON}\n"
+
+    def _emit_success() -> None:
+        stdout.feed(_assistant_text(applied_body))
+        stdout.feed(_result_msg(applied_body))
+        stdout.close_feed()
+
+    threading.Thread(target=_emit_success, daemon=True).start()
+
+    status, _duration_ms, _log_path = launcher.run_job(
+        env["job"], port=9222, worker_id=0
+    )
+
+    assert status == "applied"
+    snap = apply_budget.governor().snapshot()
+    assert snap.claude_attempts == 1
+    assert snap.claude_cost_usd == pytest.approx(0.01)
+
+
 def test_run_job_applied_via_result_json(run_job_env):
     env = run_job_env
     env["monkeypatch"].setitem(env["config"].DEFAULTS, "apply_inactivity_timeout", 2.0)

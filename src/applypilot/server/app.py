@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from applypilot.config import APP_DIR, load_env, ensure_dirs
+from applypilot.dashboard_settings import bootstrap_dashboard_settings, save_agent_settings
 from applypilot.database import init_db
 from applypilot.server import activity as activity_module
 from applypilot.server import events as events_routes
@@ -19,6 +20,8 @@ from applypilot.server import workers as workers_module
 from applypilot.server import applications as applications_module
 from applypilot.server import referrals as referrals_module
 from applypilot.server import inbox as inbox_module
+from applypilot.server import login as login_module
+from applypilot.server import learning as learning_module
 from applypilot.server import llm_usage_api
 from applypilot.server.schemas import (
     ApplicationDetailResponse,
@@ -29,6 +32,7 @@ from applypilot.server.schemas import (
     ApplyErrorSummaryRow,
     JobRow,
     JobsResponse,
+    TriageCountsResponse,
     LlmUsageResponse,
     OverviewResponse,
     ReferralActionRequest,
@@ -39,6 +43,9 @@ from applypilot.server.schemas import (
     SourceStatsResponse,
     SourceStatsRow,
     StatsResponse,
+    AgentSettingsPayload,
+    AgentSettingsResponse,
+    AgentSettingsPatch,
 )
 from applypilot.orchestration.run_controller import reconcile_orphaned_runs
 from applypilot.server.overview import build_overview
@@ -51,6 +58,7 @@ _DASHBOARD_DIST = _REPO_ROOT / "dashboard" / "web" / "dist"
 def create_app() -> FastAPI:
     load_env()
     ensure_dirs()
+    bootstrap_dashboard_settings()
     init_db()
 
     app = FastAPI(title="ApplyPilot Dashboard", version="0.1.0")
@@ -85,6 +93,8 @@ def create_app() -> FastAPI:
     api.include_router(inbox_module.router)
     api.include_router(activity_module.router)
     api.include_router(workers_module.router)
+    api.include_router(login_module.router)
+    api.include_router(learning_module.router)
 
     @api.get("/overview", response_model=OverviewResponse)
     def api_overview() -> OverviewResponse:
@@ -112,10 +122,18 @@ def create_app() -> FastAPI:
         pipeline_stage: str | None = None,
         stage: str | None = None,
         apply_status: str | None = None,
+        low_score_reason: str | None = None,
         sort: str = "activity_desc",
-        limit: int = 100,
+        limit: int = 50,
         offset: int = 0,
+        page: int | None = None,
     ) -> JobsResponse:
+        limit, query_offset, current_page, _ = jobs_module.resolve_jobs_pagination(
+            limit=limit,
+            offset=offset,
+            page=page,
+            total=0,
+        )
         rows, total = jobs_module.query_jobs(
             min_score=min_score,
             site=site,
@@ -123,11 +141,55 @@ def create_app() -> FastAPI:
             pipeline_stage=pipeline_stage,
             stage=stage,
             apply_status=apply_status,
+            low_score_reason=low_score_reason,
             sort=sort,
-            limit=min(limit, 500),
-            offset=offset,
+            limit=limit,
+            offset=query_offset,
         )
-        return JobsResponse(jobs=[JobRow(**r) for r in rows], total=total)
+        limit, offset, current_page, pages = jobs_module.resolve_jobs_pagination(
+            limit=limit,
+            offset=query_offset,
+            page=page if page is not None else current_page,
+            total=total,
+        )
+        if offset != query_offset:
+            rows, total = jobs_module.query_jobs(
+                min_score=min_score,
+                site=site,
+                search=search,
+                pipeline_stage=pipeline_stage,
+                stage=stage,
+                apply_status=apply_status,
+                low_score_reason=low_score_reason,
+                sort=sort,
+                limit=limit,
+                offset=offset,
+            )
+        return JobsResponse(
+            jobs=[JobRow(**r) for r in rows],
+            total=total,
+            limit=limit,
+            offset=offset,
+            page=current_page,
+            pages=pages,
+        )
+
+    @api.get("/jobs/triage-counts", response_model=TriageCountsResponse)
+    def api_jobs_triage_counts(
+        min_score: int | None = None,
+        site: str | None = None,
+        search: str | None = None,
+        apply_status: str | None = None,
+        low_score_reason: str | None = None,
+    ) -> TriageCountsResponse:
+        counts = jobs_module.fetch_triage_counts_filtered(
+            min_score=min_score,
+            site=site,
+            search=search,
+            apply_status=apply_status,
+            low_score_reason=low_score_reason,
+        )
+        return TriageCountsResponse(counts=counts)
 
     @api.get("/jobs/recent", response_model=JobsResponse)
     def api_jobs_recent(minutes: int = 60, limit: int = 50) -> JobsResponse:
@@ -142,6 +204,8 @@ def create_app() -> FastAPI:
         status: str | None = None,
         site: str | None = None,
         search: str | None = None,
+        claude_escalated: bool = False,
+        needs_attention: bool = False,
     ) -> ApplicationsResponse:
         rows, total = applications_module.query_applied_jobs(
             limit=min(limit, 500),
@@ -150,6 +214,8 @@ def create_app() -> FastAPI:
             status=status,
             site=site,
             search=search,
+            claude_escalated=claude_escalated,
+            needs_attention=needs_attention,
         )
         return ApplicationsResponse(
             applications=[ApplicationRow(**r) for r in rows],
@@ -182,6 +248,30 @@ def create_app() -> FastAPI:
 
             raise HTTPException(status_code=404, detail="Application not found")
         return ApplicationDetailResponse(application=row)
+
+    @api.get("/field-overrides")
+    def api_list_field_overrides() -> dict[str, object]:
+        from applypilot.database import list_field_overrides
+
+        return {"overrides": list_field_overrides()}
+
+    @api.post("/field-overrides")
+    def api_set_field_override(label: str, value: str) -> dict[str, object]:
+        """Save a correction applied to this field on every future form."""
+        from fastapi import HTTPException
+
+        from applypilot.database import set_field_override
+
+        if not (label or "").strip():
+            raise HTTPException(status_code=400, detail="label is required")
+        set_field_override(label, value)
+        return {"ok": True, "label": label, "value": value}
+
+    @api.delete("/field-overrides")
+    def api_delete_field_override(label: str) -> dict[str, object]:
+        from applypilot.database import delete_field_override
+
+        return {"ok": delete_field_override(label), "label": label}
 
     @api.post("/applications/confirm")
     def api_confirm_application(url: str) -> dict[str, object]:
@@ -250,6 +340,29 @@ def create_app() -> FastAPI:
             action=payload["action"],
             results=[ReferralActionResult(**r) for r in payload["results"]],
             summary=payload.get("summary") or {},
+        )
+
+    @api.get("/settings/agent", response_model=AgentSettingsResponse)
+    def api_get_agent_settings() -> AgentSettingsResponse:
+        from applypilot.dashboard_settings import load_dashboard_settings
+
+        payload = load_dashboard_settings()
+        return AgentSettingsResponse(
+            agent=AgentSettingsPayload.model_validate(payload["agent"]),
+            updated_at=payload.get("updated_at"),
+        )
+
+    @api.patch("/settings/agent", response_model=AgentSettingsResponse)
+    def api_patch_agent_settings(body: AgentSettingsPatch) -> AgentSettingsResponse:
+        patch = body.model_dump(exclude_unset=True)
+        if not patch:
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=400, detail="No settings fields provided")
+        saved = save_agent_settings(patch)
+        return AgentSettingsResponse(
+            agent=AgentSettingsPayload.model_validate(saved["agent"]),
+            updated_at=saved.get("updated_at"),
         )
 
     @api.get("/meta/stages")

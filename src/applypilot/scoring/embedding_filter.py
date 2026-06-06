@@ -35,6 +35,7 @@ _model: Any | None = None
 _model_load_attempted = False
 _cached_resume_text: str | None = None
 _cached_resume_embedding: Sequence[float] | None = None
+_embedding_by_key: dict[str, tuple[str, Sequence[float]]] = {}
 
 
 @dataclass(frozen=True)
@@ -47,10 +48,12 @@ class EmbeddingFilterVerdict:
 def reset_cache() -> None:
     """Clear in-process embedding cache. Intended for tests."""
     global _model, _model_load_attempted, _cached_resume_text, _cached_resume_embedding
+    global _embedding_by_key
     _model = None
     _model_load_attempted = False
     _cached_resume_text = None
     _cached_resume_embedding = None
+    _embedding_by_key = {}
 
 
 def enabled() -> bool:
@@ -93,18 +96,27 @@ def _load_model() -> Any | None:
 
 def encode_resume(resume_text: str) -> Sequence[float] | None:
     """Encode and cache the resume embedding for this Python process."""
+    return encode_resume_for_key(resume_text, "legacy:single")
+
+
+def encode_resume_for_key(resume_text: str, cache_key: str) -> Sequence[float] | None:
+    """Encode resume text with a stable cache key (e.g. role_resume:frontend-developer)."""
     global _cached_resume_text, _cached_resume_embedding
 
-    if _cached_resume_embedding is not None and _cached_resume_text == resume_text:
-        return _cached_resume_embedding
+    cached = _embedding_by_key.get(cache_key)
+    if cached and cached[0] == resume_text:
+        return cached[1]
 
     model = _load_model()
     if model is None:
         return None
 
-    _cached_resume_embedding = _to_vector(model.encode(resume_text))
-    _cached_resume_text = resume_text
-    return _cached_resume_embedding
+    embedding = _to_vector(model.encode(resume_text))
+    _embedding_by_key[cache_key] = (resume_text, embedding)
+    if cache_key == "legacy:single":
+        _cached_resume_embedding = embedding
+        _cached_resume_text = resume_text
+    return embedding
 
 
 def pre_filter_job(

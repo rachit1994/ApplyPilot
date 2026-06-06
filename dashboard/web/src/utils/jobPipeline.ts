@@ -13,6 +13,7 @@ export function jobPipelineStage(job: Job): string {
   if (job.apply_status === "applied" || (job.applied_at && !job.apply_status)) return "Applied";
   if (isReadyToApply(job)) return "Ready";
   if (job.apply_status === "failed") return "Failed";
+  if (job.pre_filter_rejected_at || job.pre_filter_reason) return "Rejected";
   if (job.tailored_resume_path) {
     if (job.cover_letter_path) return "Cover";
     return "Tailored";
@@ -72,6 +73,7 @@ export function stageBadgeClass(stage: string): string {
     case "Manual":
       return "bg-warning/10 text-warning border border-warning/25";
     case "Failed":
+    case "Rejected":
     case "Enrich error":
     case "Tailor exhausted":
       return "bg-danger/10 text-danger border border-danger/25";

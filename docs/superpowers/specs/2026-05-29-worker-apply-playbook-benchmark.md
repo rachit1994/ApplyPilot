@@ -4,7 +4,7 @@ Measured in CI via `tests/test_worker_playbook_benchmark.py` on a greenhouse fix
 
 | Metric | Legacy slim | Playbook | Delta |
 |--------|-------------|----------|-------|
-| Prompt chars | 15,376 | 10,443 | 32.1% smaller |
+| Prompt chars | 15,913 | 10,575 | 33.5% smaller |
 
 ## Mocked apply outcomes (fixture)
 

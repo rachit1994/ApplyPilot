@@ -11,6 +11,7 @@ from applypilot.inbox.audit import log_event
 from applypilot.inbox.config import InboxSettings, load_inbox_config
 from applypilot.inbox.intents import (
     INTENT_APPLY_REQUEST,
+    apply_interview_invite_precision_gate,
     keyword_pre_classify,
     normalize_intent,
 )
@@ -26,7 +27,7 @@ logger = logging.getLogger(__name__)
 _CLASSIFY_SYSTEM = """You classify LinkedIn messaging threads from the "Other" inbox tab.
 Return strict JSON only:
 {
-  "intent": "apply_request" | "rejection" | "status_update" | "spam" | "education_pitch" | "other",
+  "intent": "apply_request" | "rejection" | "status_update" | "interview_invite" | "spam" | "education_pitch" | "other",
   "confidence": number between 0 and 1,
   "extracted_title": string or null,
   "extracted_company": string or null,
@@ -37,6 +38,7 @@ Intent rules:
 - apply_request: they ask the recipient to apply for an employment role or send CV/resume for a job
 - rejection: not moving forward, filled role, poor fit, budget, visa/EP issues
 - status_update: pipeline/review updates without a new apply ask
+- interview_invite: explicit request to schedule or attend an interview (phone screen, onsite, slot)
 - education_pitch: MBA/MS/admissions/fellowship enrollment (not employment)
 - spam: webinars, surveys, sales pitches
 - other: everything else
@@ -103,6 +105,12 @@ def classify_thread_text(
         confidence=confidence,
         apply_url=ats.get("apply_url"),
         latest_inbound=latest_inbound,
+    )
+
+    intent, confidence = apply_interview_invite_precision_gate(
+        intent,
+        confidence,
+        keyword_override=keyword_override,
     )
 
     asked = intent == INTENT_APPLY_REQUEST and confidence >= threshold

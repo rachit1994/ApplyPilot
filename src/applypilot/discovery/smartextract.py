@@ -21,10 +21,8 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
-from pathlib import Path
 from urllib.parse import quote_plus
 
-import httpx
 import yaml
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
@@ -34,10 +32,9 @@ from applypilot.discovery.site_priority import (
     is_priority_site_name,
     prioritize_site_dicts,
     prioritize_target_dicts,
-    site_order_key,
 )
 from applypilot.config import CONFIG_DIR
-from applypilot.database import get_connection, init_db, store_jobs, get_stats
+from applypilot.database import init_db, get_stats
 from applypilot.llm import get_client
 
 log = logging.getLogger(__name__)
@@ -98,15 +95,17 @@ def partition_sites_by_mode(sites: list[dict] | None = None) -> tuple[list[dict]
     smart: list[dict] = []
     for site in sites:
         if (site.get("mode") or "").strip().lower() == "agent":
-            agent.append(
-                {
-                    "name": site.get("name") or "Unknown",
-                    "url": site.get("url") or "",
-                    "type": site.get("type", "static"),
-                    "mode": "agent",
-                    "source": "sites_yaml",
-                }
-            )
+            row = {
+                "name": site.get("name") or "Unknown",
+                "url": site.get("url") or "",
+                "type": site.get("type", "static"),
+                "mode": "agent",
+                "source": "sites_yaml",
+            }
+            for key in ("company_priority", "company_priority_reasons"):
+                if key in site:
+                    row[key] = site[key]
+            agent.append(row)
         else:
             smart.append(site)
     return agent, smart
@@ -394,15 +393,161 @@ or
 No explanation, no markdown, no thinking."""
 
 
+_API_DROP_URL_MARKERS = (
+    "/litms/api/",
+    "accounts.google.com/gsi/",
+    "demdex.net/",
+    "protechts.net/",
+    "sentry.io/",
+    "amplitude.com/",
+    "mixpanel.com/",
+    "segment.io/",
+    "googletagmanager",
+    "google-analytics",
+    "/analytics",
+    "/telemetry",
+    "/events",
+    "/metrics",
+    "/collector",
+    "/ingraphs/",
+    "/captcha",
+    "interstitial",
+    "/csrf",
+)
+
+_API_JOB_URL_MARKERS = (
+    "greenhouse.io",
+    "lever.co",
+    "ashbyhq.com",
+    "workday",
+    "jobs",
+    "careers",
+    "jobposting",
+    "postings",
+    "openings",
+    "requisitions",
+    "positions",
+    "vacancies",
+    "algolia",
+    "graphql",
+)
+
+_JOB_TITLE_KEYS = {
+    "title",
+    "jobtitle",
+    "job_title",
+    "positiontitle",
+    "roletitle",
+    "name",
+}
+
+_JOB_DETAIL_KEYS = {
+    "company",
+    "companyname",
+    "location",
+    "locations",
+    "city",
+    "department",
+    "team",
+    "description",
+    "jobdescription",
+    "absoluteurl",
+    "hostedurl",
+    "url",
+    "applyurl",
+    "employmenttype",
+    "reqid",
+    "requisitionid",
+}
+
+
+def _normalise_api_key(key: object) -> str:
+    return re.sub(r"[^a-z0-9_]", "", str(key).lower())
+
+
+def _dict_looks_like_job(record: dict) -> bool:
+    keys = {_normalise_api_key(k) for k in record}
+    has_title = bool(keys & _JOB_TITLE_KEYS)
+    has_detail = bool(keys & _JOB_DETAIL_KEYS)
+    if has_title and has_detail:
+        return True
+    return "job" in keys and has_detail
+
+
+def _contains_job_records(data: object, *, depth: int = 0) -> bool:
+    if depth > 4:
+        return False
+    if isinstance(data, dict):
+        if _dict_looks_like_job(data):
+            return True
+        for value in list(data.values())[:30]:
+            if _contains_job_records(value, depth=depth + 1):
+                return True
+    elif isinstance(data, list):
+        for item in data[:30]:
+            if _contains_job_records(item, depth=depth + 1):
+                return True
+    return False
+
+
+def _deterministic_api_verdict(resp: dict) -> tuple[bool, str] | None:
+    """Fast-path obvious API responses before spending an LLM call."""
+    url = str(resp.get("url") or "").lower()
+    raw_data = resp.get("_raw_data")
+    try:
+        status = int(resp.get("status") or 0)
+    except (TypeError, ValueError):
+        status = 0
+
+    if raw_data is None:
+        return False, "not structured JSON"
+
+    if _contains_job_records(raw_data):
+        return True, "job-shaped JSON"
+
+    if status and (status < 200 or status >= 300):
+        return False, f"HTTP {status}"
+
+    if any(marker in url for marker in _API_DROP_URL_MARKERS):
+        return False, "auth/tracking/telemetry endpoint"
+
+    if int(resp.get("size") or 0) < 200:
+        return False, "too small for job listings"
+
+    summary = json.dumps(
+        {
+            "keys": resp.get("keys"),
+            "first_item_keys": resp.get("first_item_keys"),
+            "first_item_sample": resp.get("first_item_sample"),
+        },
+        default=str,
+    ).lower()
+    if any(marker in url for marker in _API_JOB_URL_MARKERS) and any(
+        token in summary for token in ("title", "company", "location", "department", "description", "apply")
+    ):
+        return True, "job API URL and fields"
+
+    return None
+
+
 def judge_api_responses(api_responses: list[dict]) -> list[dict]:
-    """Use the LLM to filter API responses, keeping only job-relevant ones."""
+    """Filter API responses, keeping only job-relevant structured data."""
     if not api_responses:
         return []
 
-    client = get_client()
+    client = None
     relevant: list[dict] = []
 
     for resp in api_responses:
+        deterministic = _deterministic_api_verdict(resp)
+        if deterministic is not None:
+            is_relevant, reason = deterministic
+            log.info("Judge: %s -> %s (%s)", resp.get("url", "?")[:80],
+                     "KEEP" if is_relevant else "DROP", reason)
+            if is_relevant:
+                relevant.append(resp)
+            continue
+
         fields = ""
         sample = ""
         resp_type = resp.get("type", "unknown")
@@ -428,6 +573,8 @@ def judge_api_responses(api_responses: list[dict]) -> list[dict]:
         )
 
         try:
+            if client is None:
+                client = get_client()
             raw = client.ask(
                 prompt,
                 temperature=0.0,
@@ -464,7 +611,7 @@ def format_strategy_briefing(intel: dict) -> str:
             sections.append(f"\nJSON-LD: {len(job_postings)} JobPosting entries found (usable!)")
             sections.append(f"First JobPosting:\n{json.dumps(job_postings[0], indent=2)[:3000]}")
         else:
-            sections.append(f"\nJSON-LD: NO JobPosting entries (json_ld strategy will NOT work)")
+            sections.append("\nJSON-LD: NO JobPosting entries (json_ld strategy will NOT work)")
         if other:
             types = [j.get("@type", "?") if isinstance(j, dict) else "?" for j in other]
             sections.append(f"Other JSON-LD types (NOT job data): {types}")
@@ -963,6 +1110,34 @@ def _run_one_site(name: str, url: str) -> dict:
             len(intel["json_ld"]),
             len(intel["api_responses"]),
         )
+        full_html = intel.get("full_html", "")
+        cleaned_check = clean_page_html(full_html) if full_html else ""
+        _is_captcha = any(s in full_html.lower() for s in _captcha_signals) if full_html else False
+
+    if full_html and _is_captcha:
+        log.warning("%s: CAPTCHA/rate-limit page after retry; skipping LLM extraction", name)
+        return {
+            "name": name,
+            "status": "FAIL",
+            "strategy": "blocked_or_empty",
+            "total": 0,
+            "titles": 0,
+            "jobs": [],
+            "sample": [],
+        }
+
+    if full_html and not intel["json_ld"] and not intel["api_responses"]:
+        if len(cleaned_check) < 1000 and len(intel.get("card_candidates") or []) <= 1:
+            log.warning("%s: page too sparse after retry; skipping LLM extraction", name)
+            return {
+                "name": name,
+                "status": "FAIL",
+                "strategy": "blocked_or_empty",
+                "total": 0,
+                "titles": 0,
+                "jobs": [],
+                "sample": [],
+            }
 
     # Step 1.5: Judge filters API responses
     if intel["api_responses"]:
@@ -1193,15 +1368,21 @@ def _run_all(
                 ): target
                 for target in targets
             }
-            completed: list[tuple[dict, dict]] = []
             for future in as_completed(future_to_target):
                 target = future_to_target[future]
-                r = future.result()
-                completed.append((target, r))
-            completed.sort(
-                key=lambda pair: site_order_key(str(pair[0].get("name") or "")),
-            )
-            for target, r in completed:
+                try:
+                    r = future.result()
+                except Exception as exc:
+                    log.exception("%s smart extract failed", target.get("name", "Unknown"))
+                    r = {
+                        "name": target.get("name", "Unknown"),
+                        "status": "ERROR",
+                        "strategy": "error",
+                        "error": str(exc),
+                        "total": 0,
+                        "titles": 0,
+                        "jobs": [],
+                    }
                 results.append(r)
                 _process_result(r, target)
     else:

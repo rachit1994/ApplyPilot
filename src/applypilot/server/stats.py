@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
-from applypilot.database import get_source_stats_rollup, get_stats, init_db
+from applypilot.database import get_connection, get_source_stats_rollup, get_stats, init_db
 from applypilot.discovery.site_priority import (
     APPLY_QUEUE_ORDER_LABEL,
     PRIORITY_SITE_NAMES,
     sort_site_count_rows,
     sort_source_count_rows,
 )
+from applypilot.server.job_triage import fetch_triage_counts
+from applypilot.server.low_score_reason import display_reason
 from applypilot.server.schemas import (
+    LowScoreReason,
     ScoreBucket,
     ScoreDistributionItem,
     SiteCount,
@@ -20,6 +23,8 @@ _TOP_SITES = 5
 
 _PIPELINE_KEYS = (
     "pending_detail",
+    "pre_filter_kept",
+    "pre_filter_rejected",
     "with_description",
     "detail_errors",
     "scored",
@@ -50,9 +55,28 @@ def _score_buckets(dist: list[tuple[int, int]]) -> list[ScoreBucket]:
     return [ScoreBucket(bucket=b, count=c) for b, c in totals.items() if c > 0]
 
 
+def _low_score_reasons(conn) -> list[LowScoreReason]:
+    rows = conn.execute(
+        """
+        SELECT pre_filter_reason, score_reasoning, COUNT(*) AS cnt
+        FROM jobs
+        WHERE fit_score IS NOT NULL AND fit_score < 7
+        GROUP BY pre_filter_reason, score_reasoning
+        """
+    ).fetchall()
+    counts: dict[str, int] = {}
+    for row in rows:
+        label = display_reason(row["pre_filter_reason"], row["score_reasoning"])
+        counts[label] = counts.get(label, 0) + int(row["cnt"] or 0)
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    return [LowScoreReason(reason=reason, count=count) for reason, count in ranked[:8]]
+
+
 def fetch_stats() -> StatsPayload:
     init_db()
     raw = get_stats()
+    conn = get_connection()
+    triage_counts = fetch_triage_counts(conn)
 
     by_site_raw = sort_site_count_rows(
         [{"site": site, "count": count} for site, count in (raw.get("by_site") or [])]
@@ -92,7 +116,9 @@ def fetch_stats() -> StatsPayload:
         by_site=by_site,
         score_distribution=score_distribution,
         score_buckets=score_buckets,
+        low_score_reasons=_low_score_reasons(conn),
         pipeline=pipeline,
+        triage_counts=triage_counts,
         extra=extra,
     )
 

@@ -37,7 +37,24 @@
     "education_level": "Bachelor's Degree",
     "current_job_title": "",
     "current_company": "",
-    "target_role": "software engineer"
+    "target_role": "software engineer",
+    "target_roles": [
+      "Senior Full Stack Engineer",
+      "AI Engineer",
+      "Frontend Engineer",
+      "UI Architect",
+      "Solutions Architect",
+      "Software Architect",
+      "Staff Engineer",
+      "Principal Engineer",
+      "Tech Lead",
+      "Founding Engineer",
+      "Forward Deployed Engineer",
+      "Backend Engineer",
+      "Platform Engineer",
+      "Product Engineer",
+      "Engineering Manager"
+    ]
   },
   "skills_boundary": {
     "languages": ["Python", "SQL", "JavaScript"],
@@ -51,6 +68,12 @@
     "preserved_projects": ["Project X", "Project Y"],
     "preserved_school": "Your University",
     "real_metrics": ["50% improvement", "10x faster"]
+  },
+  "fit_filters": {
+    "checks": {
+      "blocked_keywords": true,
+      "profile_keyword_overlap": true
+    }
   },
   "eeo_voluntary": {
     "gender": "Decline to self-identify",

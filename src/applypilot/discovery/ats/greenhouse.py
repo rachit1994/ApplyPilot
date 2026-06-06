@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 
+from bs4 import BeautifulSoup
+
 from applypilot.database import get_connection, init_db, store_jobs
 from applypilot.discovery.feeds._http import get_json
 from applypilot.discovery.watchlist import load_watchlist
@@ -12,6 +14,12 @@ log = logging.getLogger(__name__)
 
 SITE_PREFIX = "Greenhouse"
 STRATEGY = "greenhouse_api"
+
+
+def _clean_html(value: str | None) -> str | None:
+    if not value:
+        return None
+    return BeautifulSoup(value, "html.parser").get_text("\n", strip=True)
 
 
 def fetch_board_jobs(board: str) -> list[dict]:
@@ -30,26 +38,29 @@ def fetch_board_jobs(board: str) -> list[dict]:
         locs = row.get("location") or {}
         if isinstance(locs, dict):
             loc = locs.get("name")
+        full_description = _clean_html(row.get("content") or row.get("description"))
         jobs.append(
             {
                 "url": job_url,
+                "application_url": job_url,
                 "title": row.get("title"),
                 "salary": None,
-                "description": None,
+                "description": full_description,
+                "full_description": full_description,
                 "location": loc,
             }
         )
     return jobs
 
 
-def run_greenhouse_discovery() -> dict:
+def run_greenhouse_discovery(companies: list[dict] | None = None) -> dict:
     init_db()
     conn = get_connection()
     total_fetched = 0
     total_new = 0
     total_dup = 0
     boards = 0
-    for company in load_watchlist():
+    for company in (companies if companies is not None else load_watchlist()):
         board = (company.get("greenhouse_board") or "").strip()
         if not board:
             continue

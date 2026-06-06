@@ -1,76 +1,223 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fetchApplications, fetchStats } from "../api";
 import { useApplyRun } from "../hooks/useApplyRun";
+import { ApplyRunPlanModal } from "./ApplyRunPlanModal";
 import { ApplicationDetailPanel } from "./ApplicationDetailPanel";
+import {
+  ApplicationRowActions,
+  type ApplyListActionInfo,
+} from "./ApplicationRowActions";
 import { PageCanvas } from "./layout/PageCanvas";
 import { VirtualScroll } from "./VirtualScroll";
 import {
+  apiNeedsAttentionForFilter,
   apiStatusForFilter,
-  applicationSummaryLine,
+  applicationAttemptAt,
+  applicationDateCaption,
+  applicationReasonLine,
+  applicationReasonTone,
+  applicationsIncludeFailedForFilter,
   applyStatusFilterFromUrl,
   formatWhen,
+  isClaudeEscalated,
   needsHumanIntervention,
   statusLabel,
   type ApplyStatusFilter,
 } from "../utils/applicationAudit";
+import { useDebouncedValue } from "../utils/useDebouncedValue";
 import { statusbarClass } from "../utils/statusbar";
 
-const APP_ROW_PX = 52;
+const APP_ROW_PX = 56;
+const PAGE_SIZES = [25, 50, 100] as const;
+
+type SortKey = "recent" | "fit" | "attempts" | "duration" | "company" | "status";
+type SortDir = "asc" | "desc";
+
+const SORT_DEFAULT_DIR: Record<SortKey, SortDir> = {
+  recent: "desc",
+  fit: "desc",
+  attempts: "desc",
+  duration: "desc",
+  company: "asc",
+  status: "asc",
+};
+
+const SORT_OPTIONS: { key: SortKey; label: string }[] = [
+  { key: "recent", label: "Most recent" },
+  { key: "fit", label: "Fit score" },
+  { key: "attempts", label: "Attempts" },
+  { key: "duration", label: "Duration" },
+  { key: "company", label: "Company" },
+];
 
 type Props = {
-  initialFilter?: string | null;
-  onFilterChange?: (filter: ApplyStatusFilter) => void;
+  searchParams: URLSearchParams;
+  onSearchParamsChange: (next: URLSearchParams) => void;
   showApplyControls?: boolean;
 };
 
+function normalizePageSize(raw: number): number {
+  return (PAGE_SIZES as readonly number[]).includes(raw) ? raw : 50;
+}
+
+function parseAppsParams(sp: URLSearchParams) {
+  const filter = applyStatusFilterFromUrl(sp.get("filter"));
+  const search = sp.get("search") ?? "";
+  const limit = normalizePageSize(Number(sp.get("limit") ?? "50") || 50);
+  const page = Math.max(1, Number(sp.get("page") ?? "1") || 1);
+  return { filter, search, limit, page };
+}
+
 export function AppliedApplicationsPage({
-  initialFilter,
-  onFilterChange,
+  searchParams,
+  onSearchParamsChange,
   showApplyControls = false,
 }: Props) {
   const applyRun = useApplyRun();
-  const [statusFilter, setStatusFilter] = useState<ApplyStatusFilter>(() =>
-    applyStatusFilterFromUrl(initialFilter ?? null),
-  );
-  const [search, setSearch] = useState("");
+  const [applyPlanOpen, setApplyPlanOpen] = useState(false);
+  const paramsKey = searchParams.toString();
+  const filters = useMemo(() => parseAppsParams(searchParams), [paramsKey]);
+  const [searchInput, setSearchInput] = useState(() => filters.search);
   const [selectedUrl, setSelectedUrl] = useState<string | null>(null);
+  const [queueNotice, setQueueNotice] = useState<string | null>(null);
+  const [sort, setSort] = useState<{ key: SortKey; dir: SortDir }>({
+    key: "recent",
+    dir: "desc",
+  });
   const scrollRef = useRef<HTMLDivElement>(null);
+  const debouncedSearch = useDebouncedValue(searchInput, 300);
+
+  const patchParams = useCallback(
+    (patch: Record<string, string | number | null | undefined>) => {
+      const next = new URLSearchParams(searchParams);
+      for (const [key, value] of Object.entries(patch)) {
+        if (value == null || value === "") {
+          next.delete(key);
+        } else {
+          next.set(key, String(value));
+        }
+      }
+      if ("filter" in patch) {
+        const slug = patch.filter;
+        if (slug == null || slug === "all") {
+          next.delete("filter");
+        } else if (slug === "submitted_unverified") {
+          next.set("filter", "unverified");
+        } else if (slug === "claude_escalated") {
+          next.set("filter", "claude");
+        } else if (typeof slug === "string") {
+          next.set("filter", slug === "needs_action" ? "needs" : slug);
+        }
+      }
+      onSearchParamsChange(next);
+    },
+    [searchParams, onSearchParamsChange],
+  );
+
+  const statusFilter = filters.filter;
+
+  useEffect(() => {
+    setSearchInput(filters.search);
+  }, [filters.search]);
+
+  useEffect(() => {
+    if (debouncedSearch === filters.search) return;
+    patchParams({ search: debouncedSearch || null, page: 1 });
+  }, [debouncedSearch, filters.search, patchParams]);
+
+  const handleApplyListAction = ({ action, title }: ApplyListActionInfo) => {
+    const who = title?.trim() || "This job";
+    setQueueNotice(
+      action === "retry"
+        ? `${who} was reset for another apply attempt. It no longer appears here because it is back in the apply queue — use Apply queue now or run applypilot apply.`
+        : `${who} was returned to the apply queue. It no longer appears in this list until apply runs again — use Apply queue now or run applypilot apply.`,
+    );
+  };
+
+  const querySearch = debouncedSearch.trim() || undefined;
+  const queryOffset = (filters.page - 1) * filters.limit;
 
   const { data: stats } = useQuery({
     queryKey: ["stats"],
     queryFn: fetchStats,
   });
 
-  const { data, isLoading, error } = useQuery({
-    queryKey: ["applications", statusFilter, search],
+  const { data, isLoading, error, isFetching } = useQuery({
+    queryKey: ["applications", statusFilter, querySearch, filters.page, filters.limit],
     queryFn: () =>
       fetchApplications({
-        limit: 300,
-        include_failed: true,
+        limit: filters.limit,
+        offset: queryOffset,
+        include_failed: applicationsIncludeFailedForFilter(statusFilter),
         status: apiStatusForFilter(statusFilter),
-        search: search.trim() || undefined,
+        claude_escalated: statusFilter === "claude_escalated",
+        needs_attention: apiNeedsAttentionForFilter(statusFilter),
+        search: querySearch,
       }),
     refetchInterval: 15_000,
   });
 
-  const applications = useMemo(() => {
-    let list = data?.applications ?? [];
-    if (statusFilter === "needs_action") {
-      list = list.filter(needsHumanIntervention);
-    }
-    return list;
-  }, [data?.applications, statusFilter]);
+  const pageAligned = isLoading || !isFetching;
+  const applications = pageAligned ? (data?.applications ?? []) : [];
+  const total = pageAligned ? (data?.total ?? 0) : 0;
+  const pages = total > 0 ? Math.ceil(total / filters.limit) : 0;
+  const currentPage = filters.page;
+  const pageStart = total === 0 ? 0 : (currentPage - 1) * filters.limit + 1;
+  const pageEnd = total === 0 ? 0 : Math.min(currentPage * filters.limit, total);
+  const listLoading = isLoading || (isFetching && !pageAligned);
 
   const manualRows = useMemo(
-    () => applications.filter(needsHumanIntervention),
-    [applications],
+    () => (statusFilter === "all" ? applications.filter(needsHumanIntervention) : []),
+    [applications, statusFilter],
   );
 
-  const appliedRows = useMemo(
-    () => applications.filter((a) => !needsHumanIntervention(a)),
-    [applications],
-  );
+  const mainListRows = useMemo(() => {
+    if (statusFilter === "all") {
+      return applications.filter((a) => !needsHumanIntervention(a));
+    }
+    return applications;
+  }, [applications, statusFilter]);
+
+  // Client-side sort of the loaded page. (Server paginates by offset; sorting
+  // the current page is the no-API-change increment — full cross-page sort
+  // would need a `sort` query param on /applications.)
+  const sortedListRows = useMemo(() => {
+    const mul = sort.dir === "asc" ? 1 : -1;
+    const rows = [...mainListRows];
+    rows.sort((a, b) => {
+      switch (sort.key) {
+        case "fit":
+          return ((a.fit_score ?? -1) - (b.fit_score ?? -1)) * mul;
+        case "attempts":
+          return ((a.apply_attempts ?? 0) - (b.apply_attempts ?? 0)) * mul;
+        case "duration":
+          return ((a.apply_duration_ms ?? 0) - (b.apply_duration_ms ?? 0)) * mul;
+        case "company":
+          return (a.site ?? "").localeCompare(b.site ?? "") * mul;
+        case "status":
+          return (
+            statusLabel(a.apply_status ?? "").localeCompare(statusLabel(b.apply_status ?? "")) *
+            mul
+          );
+        case "recent":
+        default: {
+          const ta = applicationAttemptAt(a);
+          const tb = applicationAttemptAt(b);
+          return ((ta ? Date.parse(ta) : 0) - (tb ? Date.parse(tb) : 0)) * mul;
+        }
+      }
+    });
+    return rows;
+  }, [mainListRows, sort]);
+
+  const toggleSort = useCallback((key: SortKey) => {
+    setSort((prev) =>
+      prev.key === key
+        ? { key, dir: prev.dir === "asc" ? "desc" : "asc" }
+        : { key, dir: SORT_DEFAULT_DIR[key] },
+    );
+  }, []);
 
   const selected = useMemo(
     () => applications.find((a) => a.url === selectedUrl) ?? null,
@@ -85,10 +232,15 @@ export function AppliedApplicationsPage({
   const manualCount = (stats?.extra?.apply_manual as number | undefined) ?? 0;
   const allAttemptsCount = appliedCount + failedCount + submittedUnverifiedCount + manualCount;
   const needsActionCount = submittedUnverifiedCount + manualCount;
+  const claudeEscalatedCount =
+    (stats?.extra?.claude_escalated as number | undefined) ?? 0;
 
   useEffect(() => {
-    setStatusFilter(applyStatusFilterFromUrl(initialFilter ?? null));
-  }, [initialFilter]);
+    if (!pageAligned || pages === 0) return;
+    if (filters.page > pages) {
+      patchParams({ page: pages });
+    }
+  }, [filters.page, pages, pageAligned, patchParams]);
 
   useEffect(() => {
     if (applications.length === 0) {
@@ -101,38 +253,43 @@ export function AppliedApplicationsPage({
   }, [applications, selectedUrl]);
 
   const handleStatusChange = (next: ApplyStatusFilter) => {
-    setStatusFilter(next);
-    onFilterChange?.(next);
+    patchParams({ filter: next, page: 1 });
   };
 
   const filterChips: { key: ApplyStatusFilter; label: string; count?: number }[] = [
     { key: "all", label: "All", count: allAttemptsCount },
-    { key: "applied", label: "Applied", count: appliedCount },
+    { key: "applied", label: "Applied (all time)", count: appliedCount },
     { key: "failed", label: "Failed", count: failedCount },
     { key: "submitted_unverified", label: "Unverified", count: submittedUnverifiedCount },
+    { key: "claude_escalated", label: "Escalated to Claude", count: claudeEscalatedCount },
     { key: "needs_action", label: "Needs help", count: needsActionCount },
   ];
+
+  const panelCount =
+    statusFilter === "all"
+      ? allAttemptsCount
+      : statusFilter === "applied"
+        ? appliedCount
+        : statusFilter === "failed"
+          ? failedCount
+          : statusFilter === "submitted_unverified"
+            ? submittedUnverifiedCount
+            : statusFilter === "claude_escalated"
+              ? claudeEscalatedCount
+              : statusFilter === "needs_action"
+                ? needsActionCount
+                : total;
 
   return (
     <PageCanvas>
       <div className="apps__hd">
-        <div>
-          <div className="section-title" style={{ marginBottom: 4 }}>
-            Queue
-          </div>
-          <div
-            style={{
-              fontFamily: "var(--display)",
-              fontSize: 15,
-              fontWeight: 600,
-              color: "var(--ink)",
-              letterSpacing: "-0.015em",
-            }}
-          >
-            {readyCount} jobs ready to apply · {manualRows.length} need your help
+        <div className="apps__hd-copy">
+          <div className="apps__hd-kicker">Queue</div>
+          <div className="apps__hd-line">
+            {readyCount} jobs ready to apply · {needsActionCount} need your help
           </div>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
+        <div className="apps__hd-actions">
           {showApplyControls ? (
             <>
               <button
@@ -147,7 +304,7 @@ export function AppliedApplicationsPage({
                 type="button"
                 className="btn btn--accent btn--lg"
                 disabled={applyRun.isRunning || applyRun.starting}
-                onClick={() => void applyRun.handleStart()}
+                onClick={() => setApplyPlanOpen(true)}
               >
                 {applyRun.starting ? "Starting…" : "Apply queue now"}
               </button>
@@ -159,6 +316,33 @@ export function AppliedApplicationsPage({
           )}
         </div>
       </div>
+
+      {queueNotice ? (
+        <div className="apps__notice" role="status">
+          <p className="apps__notice-text">{queueNotice}</p>
+          <div className="apps__notice-actions">
+            {showApplyControls ? (
+              <button
+                type="button"
+                className="btn btn--sm btn--accent"
+                onClick={() => {
+                  setQueueNotice(null);
+                  setApplyPlanOpen(true);
+                }}
+              >
+                Apply queue now
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="btn btn--sm btn--ghost"
+              onClick={() => setQueueNotice(null)}
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       <div className="apps__filterbar">
         {filterChips.map((chip) => {
@@ -175,24 +359,45 @@ export function AppliedApplicationsPage({
             </button>
           );
         })}
-        <label className="control" style={{ marginLeft: "auto", minWidth: 200 }}>
+        <label className="control">
           <span className="control__label">Search</span>
           <input
             className="control__input"
             type="search"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
             placeholder="Company or role…"
           />
         </label>
+        <div className="apps__sort">
+          <span className="apps__sort-label">Sort</span>
+          <select
+            className="apps__sort-select"
+            value={sort.key}
+            onChange={(e) => {
+              const key = e.target.value as SortKey;
+              setSort({ key, dir: SORT_DEFAULT_DIR[key] });
+            }}
+          >
+            {SORT_OPTIONS.map((o) => (
+              <option key={o.key} value={o.key}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
 
       <div className="apps">
         <div className="apps__list">
-          {manualRows.length > 0 && statusFilter !== "applied" ? (
+          {manualRows.length > 0 ? (
             <div className="errors-band">
               <div className="errors-band__hd">
-                <span className="errors-band__title">Need your apply</span>
+                <span className="errors-band__pulse" aria-hidden />
+                <span className="errors-band__title">Needs you</span>
+                <span className="errors-band__sub">
+                  — jobs the agent couldn&rsquo;t finish on its own
+                </span>
                 <span className="errors-band__count">{manualRows.length}</span>
               </div>
               {manualRows.map((app) => (
@@ -202,6 +407,7 @@ export function AppliedApplicationsPage({
                   manual
                   selected={selectedUrl === app.url}
                   onSelect={() => setSelectedUrl(app.url)}
+                  onApplyListAction={handleApplyListAction}
                 />
               ))}
             </div>
@@ -217,79 +423,153 @@ export function AppliedApplicationsPage({
                       ? "Unverified"
                       : statusFilter === "needs_action"
                         ? "Needs help"
-                        : statusFilter === "applied"
-                          ? "Applied"
-                          : "All attempts"}
+                        : statusFilter === "claude_escalated"
+                          ? "Escalated to Claude"
+                          : statusFilter === "applied"
+                            ? "Applied"
+                            : "All attempts"}
                 </div>
                 <div className="panel__sub">
-                  {(statusFilter === "all"
-                    ? allAttemptsCount
-                    : statusFilter === "applied"
-                      ? appliedCount
-                      : statusFilter === "failed"
-                        ? failedCount
-                        : statusFilter === "submitted_unverified"
-                          ? submittedUnverifiedCount
-                          : needsActionCount) || "—"}{" "}
-                  {statusFilter === "applied" ? "submissions" : "attempts"} · audit ledger
+                  {panelCount || "—"}{" "}
+                  {statusFilter === "applied"
+                    ? "verified submissions · all time"
+                    : "matching · audit ledger"}
                 </div>
               </div>
             </div>
-            {isLoading ? (
-              <p className="panel__sub" style={{ padding: 16 }}>
-                Loading…
+
+            <div className="jobs__pager apps__pager" aria-label="Applications list pagination">
+              <label className="control jobs__pager-size">
+                <span className="control__label">Per page</span>
+                <select
+                  className="control__input"
+                  value={filters.limit}
+                  onChange={(e) =>
+                    patchParams({ limit: normalizePageSize(Number(e.target.value)), page: 1 })
+                  }
+                >
+                  {PAGE_SIZES.map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <p className="jobs__pager-meta panel__sub">
+                {listLoading ? (
+                  "Loading…"
+                ) : total === 0 ? (
+                  "No rows match these filters."
+                ) : (
+                  <>
+                    Showing <strong>{pageStart}</strong>–<strong>{pageEnd}</strong> of{" "}
+                    <strong>{total}</strong>
+                    {pages > 1 ? (
+                      <>
+                        {" "}
+                        · page <strong>{currentPage}</strong> of <strong>{pages}</strong>
+                      </>
+                    ) : null}
+                  </>
+                )}
               </p>
-            ) : error ? (
+              <div className="jobs__pager-actions">
+                <button
+                  type="button"
+                  className="btn btn--sm"
+                  disabled={currentPage <= 1 || listLoading}
+                  onClick={() => patchParams({ page: currentPage - 1 })}
+                >
+                  Previous
+                </button>
+                <button
+                  type="button"
+                  className="btn btn--sm"
+                  disabled={pages === 0 || currentPage >= pages || listLoading}
+                  onClick={() => patchParams({ page: currentPage + 1 })}
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+
+            {error ? (
               <p className="panel__sub" style={{ padding: 16 }}>
                 {error instanceof Error ? error.message : "Error"}
               </p>
-            ) : appliedRows.length === 0 ? (
+            ) : sortedListRows.length === 0 && !listLoading ? (
               <p className="panel__sub" style={{ padding: 16 }}>
                 No applications match these filters.
               </p>
             ) : (
-              <div className="apps__scroll">
-                <VirtualScroll
-                  scrollRef={scrollRef}
-                  className="panel__body panel__body--tight"
-                  items={appliedRows}
-                  getItemKey={(app) => app.url}
-                  estimateSize={APP_ROW_PX}
-                  overscan={12}
-                >
-                  {(app) => (
-                    <AppRow
-                      app={app}
-                      selected={selectedUrl === app.url}
-                      onSelect={() => setSelectedUrl(app.url)}
-                    />
-                  )}
-                </VirtualScroll>
-              </div>
+              <>
+                <div className="apps__thead" role="row">
+                  <SortableTh label="Status" sortKey="status" sort={sort} onSort={toggleSort} />
+                  <SortableTh
+                    label="Role / Company"
+                    sortKey="company"
+                    sort={sort}
+                    onSort={toggleSort}
+                  />
+                  <SortableTh
+                    label="Fit"
+                    sortKey="fit"
+                    sort={sort}
+                    onSort={toggleSort}
+                    align="center"
+                  />
+                  <SortableTh label="When" sortKey="recent" sort={sort} onSort={toggleSort} />
+                  <span className="apps__th">Outcome</span>
+                  <SortableTh
+                    label="Tries"
+                    sortKey="attempts"
+                    sort={sort}
+                    onSort={toggleSort}
+                    align="center"
+                  />
+                  <span className="apps__th apps__th--right">Actions</span>
+                </div>
+                <div className="apps__scroll">
+                  <VirtualScroll
+                    scrollRef={scrollRef}
+                    className="panel__body panel__body--tight"
+                    items={sortedListRows}
+                    getItemKey={(app) => app.url}
+                    estimateSize={APP_ROW_PX}
+                    overscan={12}
+                  >
+                    {(app) => (
+                      <AppRow
+                        app={app}
+                        selected={selectedUrl === app.url}
+                        onSelect={() => setSelectedUrl(app.url)}
+                        onApplyListAction={handleApplyListAction}
+                      />
+                    )}
+                  </VirtualScroll>
+                </div>
+              </>
             )}
           </div>
         </div>
 
         <div className="apps__detail">
-          {selected ? (
-            <div className="panel apps__detailPanel">
-              <ApplicationDetailPanel app={selected} />
-            </div>
-          ) : (
-            <div className="panel apps__detailPanel">
-              <div className="panel__head panel__head--inset">
-                <div>
-                  <div className="panel__title">Details</div>
-                  <div className="panel__sub">Select an application to see its audit ledger.</div>
-                </div>
-              </div>
-              <div className="panel__body">
-                <p className="panel__sub">No selection.</p>
-              </div>
-            </div>
-          )}
+          <ApplicationDetailPanel app={selected} onApplyListAction={handleApplyListAction} />
         </div>
       </div>
+
+      {showApplyControls ? (
+        <ApplyRunPlanModal
+          open={applyPlanOpen}
+          settings={applyRun.applySettings}
+          readyCount={stats?.ready_to_apply ?? readyCount}
+          onCancel={() => setApplyPlanOpen(false)}
+          onConfirm={() => {
+            setApplyPlanOpen(false);
+            void applyRun.handleStart();
+          }}
+        />
+      ) : null}
     </PageCanvas>
   );
 }
@@ -299,47 +579,106 @@ function AppRow({
   manual = false,
   selected,
   onSelect,
+  onApplyListAction,
 }: {
   app: import("../api").Application;
   manual?: boolean;
   selected: boolean;
   onSelect: () => void;
+  onApplyListAction?: (info: ApplyListActionInfo) => void;
 }) {
   const status = app.apply_status ?? "unknown";
-  const label = manual ? "Manual" : statusLabel(status);
-  const reason = applicationSummaryLine(app) || app.apply_error || "";
+  const label = manual
+    ? "Manual"
+    : isClaudeEscalated(app)
+      ? "Claude queue"
+      : statusLabel(status);
+  const whenIso = applicationAttemptAt(app);
+  const reason = applicationReasonLine(app);
+  const reasonTone = applicationReasonTone(manual ? "manual" : status);
+
+  const fit = app.fit_score;
 
   return (
-    <div className={selected ? "app-row app-row--selected" : "app-row"}>
+    <div
+      className={selected ? "app-row app-row--selected" : "app-row"}
+      onClick={onSelect}
+    >
       <span className={statusbarClass(label)}>{label}</span>
-      <button type="button" className="app-row__main" onClick={onSelect} style={{ textAlign: "left" }}>
+      <button type="button" className="app-row__main app-row__select" onClick={onSelect}>
         <div className="app-row__title">{app.title ?? "Untitled"}</div>
-        <div className="app-row__company">
-          {app.site ?? "—"}
-          {app.applied_at ? ` · ${formatWhen(app.applied_at)}` : ""}
-        </div>
+        <div className="app-row__company">{app.site ?? "—"}</div>
       </button>
-      {manual ? (
-        <>
-          <div className="app-row__reason">{reason || "Needs review"}</div>
-          {app.url ? (
-            <a className="btn btn--sm btn--accent" href={app.url} target="_blank" rel="noreferrer">
-              Apply now
-            </a>
-          ) : (
-            <button type="button" className="btn btn--sm btn--accent">
-              Apply now
-            </button>
-          )}
-        </>
-      ) : (
-        <div className="app-row__date">{app.applied_at ? formatWhen(app.applied_at) : "—"}</div>
-      )}
-      <button type="button" className="chev" onClick={onSelect} aria-label="Open details">
-        <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.6" aria-hidden>
-          <path d="m5 3 4 4-4 4" />
-        </svg>
-      </button>
+      <div className={fit != null && fit >= 8 ? "app-row__fit app-row__fit--hi" : "app-row__fit"}>
+        {fit != null ? fit : "—"}
+      </div>
+      <div className="app-row__when">
+        <span className="app-row__when-cap">{applicationDateCaption(app)}</span>
+        <span className="app-row__when-val">{formatWhen(whenIso)}</span>
+      </div>
+      <div className="app-row__outcome">
+        {reason ? (
+          <div
+            className={`app-row__reason app-row__reason--${reasonTone}`}
+            title={app.apply_error ?? undefined}
+          >
+            {reason}
+          </div>
+        ) : (
+          <div className="app-row__reason app-row__reason--muted">—</div>
+        )}
+      </div>
+      <div className="app-row__tries">{app.apply_attempts ?? 0}</div>
+      <div className="app-row__action-col" onClick={(e) => e.stopPropagation()}>
+        <ApplicationRowActions
+          app={app}
+          layout="row"
+          onApplyListAction={onApplyListAction}
+        />
+        {manual && app.url ? (
+          <a
+            className="btn btn--sm"
+            href={app.url}
+            target="_blank"
+            rel="noreferrer"
+            onClick={(e) => e.stopPropagation()}
+          >
+            Open job
+          </a>
+        ) : null}
+      </div>
     </div>
+  );
+}
+
+function SortableTh({
+  label,
+  sortKey,
+  sort,
+  onSort,
+  align,
+}: {
+  label: string;
+  sortKey: SortKey;
+  sort: { key: SortKey; dir: SortDir };
+  onSort: (key: SortKey) => void;
+  align?: "center";
+}) {
+  const active = sort.key === sortKey;
+  const cls = [
+    "apps__th",
+    "apps__th--btn",
+    active ? "apps__th--sorted" : "",
+    align === "center" ? "apps__th--center" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return (
+    <button type="button" className={cls} onClick={() => onSort(sortKey)}>
+      {label}
+      <span className="apps__th-caret" aria-hidden>
+        {active ? (sort.dir === "asc" ? "▲" : "▼") : "↕"}
+      </span>
+    </button>
   );
 }

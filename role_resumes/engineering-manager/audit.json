@@ -1,0 +1,694 @@
+{
+  "role": {
+    "key": "engineering-manager",
+    "title": "Engineering Manager",
+    "aliases": [
+      "engineering manager",
+      "vp engineering",
+      "head of engineering",
+      "cto",
+      "engineering lead"
+    ],
+    "keywords": [
+      "engineering manager",
+      "manager",
+      "vp engineering",
+      "cto",
+      "leadership",
+      "team",
+      "roadmap",
+      "delivery",
+      "technical debt"
+    ],
+    "summary": "Engineering leadership profile with 10+ years of hands-on software delivery, tech lead experience, technical debt reduction, system modernization, and cross-functional product execution.",
+    "skills": [
+      [
+        "Engineering Leadership",
+        "Technical planning, delivery ownership, code review, mentoring, roadmap execution, technical debt reduction"
+      ],
+      [
+        "Architecture",
+        "Distributed systems, platform modernization, reliability, performance, API design"
+      ],
+      [
+        "Stack Fluency",
+        "React, Node.js, Python, TypeScript, AWS, PostgreSQL, Redis, Kafka"
+      ],
+      [
+        "AI Product Delivery",
+        "RAG, agentic workflows, LLMOps, evals, cost dashboards"
+      ]
+    ]
+  },
+  "benchmark_job": {
+    "source": "jobicy_research_only",
+    "url": "https://jobicy.com/jobs/144516-sr-engineering-manager-agentic-data-plane",
+    "title": "Sr. Engineering Manager, Agentic Data Plane",
+    "company": "Redpanda Data",
+    "salary": "",
+    "salary_usd_max": 80000,
+    "location": "Poland",
+    "description": "Redpanda is pioneering the Agentic Data Plane (ADP) - a new category in AI infrastructure that makes it simple and secure to connect AI agents with enterprise data and systems. Built on a multi-modal data streaming engine, Redpanda empowers agentic applications that reason and act in real-time with speed, autonomy, and precision.\nGlobal leaders including Activision Blizzard, Cisco, Moody's, Texas Instruments, Vodafone and 2 of the top 5 banks in the U.S. rely on Redpanda to process hundreds of terabytes of data a day.\nBacked by premier venture investors Lightspeed, GV and Haystack VC, Redpanda is a diverse, people-first organization with teams distributed around the globe.\nWe are looking for an accomplished and forward-thinking Senior Engineering Manager to lead one of our Cloud engineering teams. Reporting to the Director of Cloud Engineering, you will own the day-to-day delivery, quality, and operational excellence for a team of 7-10 engineers building core services in Redpanda Cloud's Agentic Data Plane, the platform that connects AI agents with enterprise data and systems in real time.Your team sits within a globally distributed Redpanda engineering organization, with peers in the US and across EMEA. The team itself is a mix of Warsaw-based hybrid engineers and fully-remote engineers elsewhere in EMEA, so you'll be running async-first practices and building trust across timezones as a core part of the job. You'll partner closely with Product, peer engineering leaders, and field teams to ship and operate reliable services that customers run in production today.\nThis is a hybrid role based in our central Warsaw office, with a minimum of 3 days/week on-site. As the most senior Redpanda employee in the Warsaw office, you'll also act as a light-touch local point of contact for office logistics and onboarding new hires in-region — a small but visible part of the role, not a facilities job.\nYou will:\nLead and manage a team of 7-10 engineers building services for Redpanda’s\nAgentic Data Plane\nOwn end-to-end delivery for your team's roadmap: scoping, prioritization, execution, and on-time, high-quality launches\nMaintain a high bar bar for operational excellence, including incident response, on-call health, SLOs, and day-2 operations\nProvide regular career development, coaching, and performance feedback that helps engineers level up\nHire, onboard, and retain top-tier engineers; participate actively in interview loops and calibrations\nLead a team that spans hybrid working in the Warsaw office and fully remote across EMEA, running effective async-first practices and maintaining strong working relationships with peer teams in the US\nAct as Redpanda's senior on-site presence in Warsaw, supporting new hires and light office coordination as the team grows in-region\nPartner with Product Management to shape the team's roadmap and translate product priorities into clear engineering plans\nSurface risks, dependencies, and trade-offs early\nBe data driven to to identify what's working and where to invest\nCollaborate with Customer Success and Solutions Engineering to unblock customers and prioritise our roadmap\nYou have:\n7+ years of experience in software engineering, including building and operating enterprise-grade SaaS platforms.\n3+ years of experience managing highly technical engineering teams, with a track record of delivery\nExpertise in cloud infrastructure and operations, with hands-on experience in public clouds (AWS/GCP/Azure), Kubernetes, and distributed systems\nExpertise leading distributed teams across multiple timezones, including onsite and remote\nExcitement about agentic AI, the processes and infrastructure that makes it work, and AI-assisted software development lifecycles\nExperience translating product priorities into team plans and delivering predictably against them\nEagerness to thrive in a fast growing, dynamic environment and comfortable working remotely with a distributed team\nStrong verbal and written communication skills in English, and demonstrated technical leadership\nA strong sense of empathy for both customers and teammates, and a commitment to building high-trust teams.\nNice to have:\nGolang proficiency or recent hands-on technical experience\nExpertise in Linux systems used to run and operate production-grade services.\nHands-on experience with data streaming platforms, AI/ML infrastructure, databases, or distributed storage systems at scale.\nExperience enabling teams to adopt AI code generation tools in ways that measurably improve velocity while maintaining quality\nPrior experience as a leader in a satellite office or remote hub of a globally distributed company\nJoin Redpanda if you’d enjoy being part of a fast-moving, diverse, people-first organization with team members around the globe and a culture based on trust, transparency, communication, and kindness.\n#LI-Remote",
+    "eligibility_reason": "research_only: high-paying market JD, not eligible under current location/sponsorship filter"
+  },
+  "jd_analysis": {
+    "hard_requirements": [
+      "Lead a team that spans hybrid working in the Warsaw office and fully remote across EMEA, running effective async-first practices and maintaining strong working relationships with peer teams in the US",
+      "7+ years of experience in software engineering, including building and operating enterprise-grade SaaS platforms.",
+      "3+ years of experience managing highly technical engineering teams, with a track record of delivery",
+      "Expertise in cloud infrastructure and operations, with hands-on experience in public clouds (AWS/GCP/Azure), Kubernetes, and distributed systems",
+      "Experience translating product priorities into team plans and delivering predictably against them",
+      "Strong verbal and written communication skills in English, and demonstrated technical leadership",
+      "A strong sense of empathy for both customers and teammates, and a commitment to building high-trust teams.",
+      "Golang proficiency or recent hands-on technical experience",
+      "Hands-on experience with data streaming platforms, AI/ML infrastructure, databases, or distributed storage systems at scale.",
+      "Experience enabling teams to adopt AI code generation tools in ways that measurably improve velocity while maintaining quality",
+      "Prior experience as a leader in a satellite office or remote hub of a globally distributed company"
+    ],
+    "nice_to_haves": [],
+    "keywords": [
+      "engineering manager",
+      "manager",
+      "cto",
+      "leadership",
+      "team",
+      "roadmap",
+      "delivery"
+    ],
+    "missing_role_keywords": [
+      "vp engineering",
+      "technical debt"
+    ],
+    "domain_problem_signals": [
+      "scale",
+      "performance",
+      "customer",
+      "platform",
+      "data",
+      "ai",
+      "product",
+      "team",
+      "roadmap"
+    ]
+  },
+  "company_problem_hypothesis": {
+    "benchmark_company_problem": "Redpanda Data is hiring a Sr. Engineering Manager, Agentic Data Plane to solve problems around scale, performance, customer, platform, data, ai.",
+    "candidate_company_problem_map": [
+      {
+        "company": "Happening Today",
+        "domain": "event discovery and AI platform",
+        "problems": [
+          "retrieval quality and latency for event discovery",
+          "agentic workflow reliability",
+          "streaming inference, token budgets, and hallucination controls"
+        ],
+        "evidence": [
+          "RAG pipeline for event discovery with pgvector and semantic reranking",
+          "LangGraph planner/tool/critic orchestration",
+          "LLMOps evals, latency/cost dashboards, and hallucination alerts"
+        ]
+      },
+      {
+        "company": "MIRA",
+        "domain": "consumer-scale generative AI",
+        "problems": [
+          "serving GenAI to large user bases",
+          "personalization and fine-tuning quality",
+          "inference cost control and regression evaluation"
+        ],
+        "evidence": [
+          "GenAI features for 50M+ users",
+          "LoRA/QLoRA fine-tuning pipeline",
+          "35% cost reduction through compression, caching, and model routing"
+        ]
+      },
+      {
+        "company": "Delta Exchange",
+        "domain": "real-time fintech and trading",
+        "problems": [
+          "low-latency trading workflows",
+          "real-time UI reliability",
+          "technical debt and conversion improvements"
+        ],
+        "evidence": [
+          "real-time derivatives platform serving 5M+ users",
+          "60% system performance improvement",
+          "React component library and 25% conversion lift"
+        ]
+      },
+      {
+        "company": "BetterPlace",
+        "domain": "enterprise workforce SaaS",
+        "problems": [
+          "large-scale data ingestion",
+          "enterprise workflow scalability",
+          "frontend performance and microservice migration"
+        ],
+        "evidence": [
+          "3x ingestion throughput improvement",
+          "50% UI render time reduction",
+          "monolith-to-microservices migration"
+        ]
+      }
+    ]
+  },
+  "fact_support_map": [
+    {
+      "claim": "Implementing a streaming API layer (Server-Sent Events + Node.js) for high-volume product responses — Handling backpressure, request budget management, and graceful fallback on payload limit overflow.",
+      "support_ratio": 0.71,
+      "supporting_terms": [
+        "backpressure",
+        "budget",
+        "events",
+        "fallback",
+        "graceful",
+        "handling",
+        "high",
+        "implementing",
+        "layer",
+        "management",
+        "node.js",
+        "overflow."
+      ]
+    },
+    {
+      "claim": "Owning the production platform operations stack: structured configuration versioning in Git, automated quality checks (automated regression checks + release regression suite), latency/cost dashboards in CloudWatch, and quality regression rate alerting.",
+      "support_ratio": 0.95,
+      "supporting_terms": [
+        "alerting.",
+        "automated",
+        "cloudwatch",
+        "cost",
+        "dashboards",
+        "latency",
+        "owning",
+        "platform",
+        "production",
+        "quality",
+        "rate",
+        "regression"
+      ]
+    },
+    {
+      "claim": "Integrated regression gates into CI/CD to catch deployment regressions before release.",
+      "support_ratio": 0.78,
+      "supporting_terms": [
+        "before",
+        "catch",
+        "deployment",
+        "gates",
+        "integrated",
+        "into",
+        "regression"
+      ]
+    },
+    {
+      "claim": "Built and scaled backend services powering high-scale product features for 50M+ users — Including a production search and content system over proprietary content using search indexing, service orchestration, and managed APIs for responses.",
+      "support_ratio": 0.96,
+      "supporting_terms": [
+        "50m+",
+        "apis",
+        "backend",
+        "built",
+        "content",
+        "features",
+        "high",
+        "including",
+        "indexing",
+        "orchestration",
+        "over",
+        "powering"
+      ]
+    },
+    {
+      "claim": "Refactored legacy service architecture to reduce inter-service latency, achieving a 60% system performance improvement measured end-to-end.",
+      "support_ratio": 1.08,
+      "supporting_terms": [
+        "achieving",
+        "architecture",
+        "end.",
+        "improvement",
+        "inter",
+        "latency",
+        "legacy",
+        "measured",
+        "performance",
+        "reduce",
+        "refactored",
+        "service"
+      ]
+    },
+    {
+      "claim": "Led technical debt reduction initiative: migrated critical services from callback-heavy Node to async/await patterns, reducing bug rate by 40%.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "async",
+        "await",
+        "callback",
+        "critical",
+        "debt",
+        "from",
+        "heavy",
+        "initiative",
+        "migrated",
+        "node",
+        "patterns",
+        "rate"
+      ]
+    },
+    {
+      "claim": "Designed and built core trading engine features for a real-time derivatives platform serving 5M+ users — Order book rendering, WebSocket feed management, and margin calculation APIs.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "apis.",
+        "book",
+        "built",
+        "calculation",
+        "core",
+        "derivatives",
+        "designed",
+        "engine",
+        "features",
+        "feed",
+        "management",
+        "margin"
+      ]
+    },
+    {
+      "claim": "Built a React component library and shared state management layer, cutting UI feature development time significantly and boosting conversion by 25%.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "boosting",
+        "built",
+        "component",
+        "conversion",
+        "cutting",
+        "development",
+        "feature",
+        "layer",
+        "library",
+        "management",
+        "react",
+        "shared"
+      ]
+    },
+    {
+      "claim": "Built scalable SaaS modules (workforce management, compliance workflows) using React, Python (Django/Flask), and Node.js.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "built",
+        "compliance",
+        "django",
+        "flask",
+        "management",
+        "modules",
+        "node.js.",
+        "python",
+        "react",
+        "saas",
+        "scalable",
+        "using"
+      ]
+    },
+    {
+      "claim": "Designed a batched data ingestion pipeline that increased system throughput by 3x, enabling the platform to onboard enterprise clients with large worker datasets.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "batched",
+        "clients",
+        "data",
+        "datasets.",
+        "designed",
+        "enabling",
+        "enterprise",
+        "increased",
+        "ingestion",
+        "large",
+        "onboard",
+        "pipeline"
+      ]
+    },
+    {
+      "claim": "Introduced frontend performance patterns (lazy loading, memoisation, pagination) that reduced UI render times by 50%.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "frontend",
+        "introduced",
+        "lazy",
+        "loading",
+        "memoisation",
+        "pagination",
+        "patterns",
+        "performance",
+        "reduced",
+        "render",
+        "that",
+        "times"
+      ]
+    },
+    {
+      "claim": "Migrated monolith features to independently deployable microservices, improving deployment frequency and reducing rollback risk.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "deployable",
+        "deployment",
+        "features",
+        "frequency",
+        "improving",
+        "independently",
+        "microservices",
+        "migrated",
+        "monolith",
+        "reducing",
+        "risk.",
+        "rollback"
+      ]
+    },
+    {
+      "claim": "Delivered full stack features across web applications in early-career roles.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "across",
+        "applications",
+        "career",
+        "delivered",
+        "early",
+        "features",
+        "full",
+        "roles.",
+        "stack"
+      ]
+    },
+    {
+      "claim": "Built REST APIs.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "apis.",
+        "built",
+        "rest"
+      ]
+    },
+    {
+      "claim": "Integrated third-party services, and shipped React/Angular frontend modules.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "angular",
+        "frontend",
+        "integrated",
+        "modules.",
+        "party",
+        "react",
+        "services",
+        "shipped",
+        "third"
+      ]
+    }
+  ],
+  "rewrite_notes": [
+    "benchmark: jobicy_research_only — Redpanda Data (Sr. Engineering Manager, Agentic Data Plane)",
+    "deterministic rewrite: top-two employers tailored to benchmark JD; AI terms reframed or dropped"
+  ],
+  "audit": {
+    "score": 95,
+    "pass": true,
+    "keyword_coverage_score": 100,
+    "recruiter_rejection_risk_score": 5,
+    "evidence_support_score": 100,
+    "role_problem_fit_score": 95,
+    "critical_rejection_flags": [],
+    "benchmark_warnings": [],
+    "unsupported_claims": [],
+    "missing_experience_companies": [],
+    "missing_experience_title_lines": [],
+    "thin_experience_sections": [
+      {
+        "company": "Happening Today",
+        "required_bullets": 4,
+        "actual_bullets": 2
+      },
+      {
+        "company": "MIRA",
+        "required_bullets": 4,
+        "actual_bullets": 2
+      }
+    ],
+    "public_resume_quality_issues": [],
+    "tech_mismatches": [],
+    "rejection_risks": [],
+    "experience_role_lens_issues": [],
+    "improvement_instructions": [],
+    "fact_support_map": [
+      {
+        "claim": "Implementing a streaming API layer (Server-Sent Events + Node.js) for high-volume product responses — Handling backpressure, request budget management, and graceful fallback on payload limit overflow.",
+        "support_ratio": 0.71,
+        "supporting_terms": [
+          "backpressure",
+          "budget",
+          "events",
+          "fallback",
+          "graceful",
+          "handling",
+          "high",
+          "implementing",
+          "layer",
+          "management",
+          "node.js",
+          "overflow."
+        ]
+      },
+      {
+        "claim": "Owning the production platform operations stack: structured configuration versioning in Git, automated quality checks (automated regression checks + release regression suite), latency/cost dashboards in CloudWatch, and quality regression rate alerting.",
+        "support_ratio": 0.95,
+        "supporting_terms": [
+          "alerting.",
+          "automated",
+          "cloudwatch",
+          "cost",
+          "dashboards",
+          "latency",
+          "owning",
+          "platform",
+          "production",
+          "quality",
+          "rate",
+          "regression"
+        ]
+      },
+      {
+        "claim": "Integrated regression gates into CI/CD to catch deployment regressions before release.",
+        "support_ratio": 0.78,
+        "supporting_terms": [
+          "before",
+          "catch",
+          "deployment",
+          "gates",
+          "integrated",
+          "into",
+          "regression"
+        ]
+      },
+      {
+        "claim": "Built and scaled backend services powering high-scale product features for 50M+ users — Including a production search and content system over proprietary content using search indexing, service orchestration, and managed APIs for responses.",
+        "support_ratio": 0.96,
+        "supporting_terms": [
+          "50m+",
+          "apis",
+          "backend",
+          "built",
+          "content",
+          "features",
+          "high",
+          "including",
+          "indexing",
+          "orchestration",
+          "over",
+          "powering"
+        ]
+      },
+      {
+        "claim": "Refactored legacy service architecture to reduce inter-service latency, achieving a 60% system performance improvement measured end-to-end.",
+        "support_ratio": 1.08,
+        "supporting_terms": [
+          "achieving",
+          "architecture",
+          "end.",
+          "improvement",
+          "inter",
+          "latency",
+          "legacy",
+          "measured",
+          "performance",
+          "reduce",
+          "refactored",
+          "service"
+        ]
+      },
+      {
+        "claim": "Led technical debt reduction initiative: migrated critical services from callback-heavy Node to async/await patterns, reducing bug rate by 40%.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "async",
+          "await",
+          "callback",
+          "critical",
+          "debt",
+          "from",
+          "heavy",
+          "initiative",
+          "migrated",
+          "node",
+          "patterns",
+          "rate"
+        ]
+      },
+      {
+        "claim": "Designed and built core trading engine features for a real-time derivatives platform serving 5M+ users — Order book rendering, WebSocket feed management, and margin calculation APIs.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "apis.",
+          "book",
+          "built",
+          "calculation",
+          "core",
+          "derivatives",
+          "designed",
+          "engine",
+          "features",
+          "feed",
+          "management",
+          "margin"
+        ]
+      },
+      {
+        "claim": "Built a React component library and shared state management layer, cutting UI feature development time significantly and boosting conversion by 25%.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "boosting",
+          "built",
+          "component",
+          "conversion",
+          "cutting",
+          "development",
+          "feature",
+          "layer",
+          "library",
+          "management",
+          "react",
+          "shared"
+        ]
+      },
+      {
+        "claim": "Built scalable SaaS modules (workforce management, compliance workflows) using React, Python (Django/Flask), and Node.js.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "built",
+          "compliance",
+          "django",
+          "flask",
+          "management",
+          "modules",
+          "node.js.",
+          "python",
+          "react",
+          "saas",
+          "scalable",
+          "using"
+        ]
+      },
+      {
+        "claim": "Designed a batched data ingestion pipeline that increased system throughput by 3x, enabling the platform to onboard enterprise clients with large worker datasets.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "batched",
+          "clients",
+          "data",
+          "datasets.",
+          "designed",
+          "enabling",
+          "enterprise",
+          "increased",
+          "ingestion",
+          "large",
+          "onboard",
+          "pipeline"
+        ]
+      },
+      {
+        "claim": "Introduced frontend performance patterns (lazy loading, memoisation, pagination) that reduced UI render times by 50%.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "frontend",
+          "introduced",
+          "lazy",
+          "loading",
+          "memoisation",
+          "pagination",
+          "patterns",
+          "performance",
+          "reduced",
+          "render",
+          "that",
+          "times"
+        ]
+      },
+      {
+        "claim": "Migrated monolith features to independently deployable microservices, improving deployment frequency and reducing rollback risk.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "deployable",
+          "deployment",
+          "features",
+          "frequency",
+          "improving",
+          "independently",
+          "microservices",
+          "migrated",
+          "monolith",
+          "reducing",
+          "risk.",
+          "rollback"
+        ]
+      },
+      {
+        "claim": "Delivered full stack features across web applications in early-career roles.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "across",
+          "applications",
+          "career",
+          "delivered",
+          "early",
+          "features",
+          "full",
+          "roles.",
+          "stack"
+        ]
+      },
+      {
+        "claim": "Built REST APIs.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "apis.",
+          "built",
+          "rest"
+        ]
+      },
+      {
+        "claim": "Integrated third-party services, and shipped React/Angular frontend modules.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "angular",
+          "frontend",
+          "integrated",
+          "modules.",
+          "party",
+          "react",
+          "services",
+          "shipped",
+          "third"
+        ]
+      }
+    ],
+    "auditor": "deterministic"
+  }
+}

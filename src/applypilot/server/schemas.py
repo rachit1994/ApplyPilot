@@ -45,10 +45,16 @@ class JobRow(BaseModel):
     title: str | None = None
     site: str | None = None
     location: str | None = None
+    remote: str | None = None
     salary: str | None = None
     strategy: str | None = None
     fit_score: int | None = None
     score_reasoning: str | None = None
+    score_role_key: str | None = None
+    score_jd_fit: int | None = None
+    pre_fit_score: int | None = None
+    pre_filter_reason: str | None = None
+    pre_filter_rejected_at: str | None = None
     discovered_at: str | None = None
     scored_at: str | None = None
     activity_at: str | None = None
@@ -115,6 +121,16 @@ class ApplicationDetailResponse(BaseModel):
 class JobsResponse(BaseModel):
     jobs: list[JobRow]
     total: int
+    limit: int = 100
+    offset: int = 0
+    page: int = 1
+    pages: int = 0
+
+
+class TriageCountsResponse(BaseModel):
+    """Jobs tab chip counts; respects the same query filters as GET /api/jobs."""
+
+    counts: dict[str, int] = Field(default_factory=dict)
 
 
 class SiteCount(BaseModel):
@@ -132,6 +148,11 @@ class ScoreBucket(BaseModel):
     count: int
 
 
+class LowScoreReason(BaseModel):
+    reason: str
+    count: int
+
+
 class StatsPayload(BaseModel):
     """Dashboard stats snapshot from get_stats()."""
 
@@ -146,7 +167,9 @@ class StatsPayload(BaseModel):
     by_site: list[SiteCount] = Field(default_factory=list)
     score_distribution: list[ScoreDistributionItem] = Field(default_factory=list)
     score_buckets: list[ScoreBucket] = Field(default_factory=list)
+    low_score_reasons: list[LowScoreReason] = Field(default_factory=list)
     pipeline: dict[str, int] = Field(default_factory=dict)
+    triage_counts: dict[str, int] = Field(default_factory=dict)
     # Additional scalar fields from get_stats() not in pipeline
     extra: dict[str, Any] = Field(default_factory=dict)
 
@@ -324,6 +347,7 @@ class OverviewCaps(BaseModel):
     spend_today_usd: float = 0.0
     spend_cap_usd: float = 50.0
     apply_today: int = 0
+    apply_attempts_today: int = 0
     apply_cap: int = 60
     tailor_today: int = 0
     tailor_cap: int = 80
@@ -446,6 +470,27 @@ class LlmUsageApplyConfig(BaseModel):
 class LlmUsageQuotaStats(BaseModel):
     quota_blocked_jobs: int = 0
     quota_blocked_recent: int = 0
+
+
+class AgentSettingsPayload(BaseModel):
+    auto_apply_enabled: bool = True
+    apply_min_score: float = 7.0
+    tailor_per_job: bool = True
+    cover_letter: bool = True
+    cross_source_dedup: bool = True
+
+
+class AgentSettingsResponse(BaseModel):
+    agent: AgentSettingsPayload
+    updated_at: str | None = None
+
+
+class AgentSettingsPatch(BaseModel):
+    auto_apply_enabled: bool | None = None
+    apply_min_score: float | None = Field(default=None, ge=0, le=10)
+    tailor_per_job: bool | None = None
+    cover_letter: bool | None = None
+    cross_source_dedup: bool | None = None
 
 
 class LlmUsageResponse(BaseModel):

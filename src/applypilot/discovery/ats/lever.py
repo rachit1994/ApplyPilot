@@ -30,26 +30,29 @@ def fetch_site_jobs(site: str) -> list[dict]:
         cats = row.get("categories") or {}
         if isinstance(cats, dict):
             loc = cats.get("location")
+        full_description = row.get("descriptionPlain")
         jobs.append(
             {
                 "url": job_url,
+                "application_url": job_url,
                 "title": row.get("text"),
                 "salary": None,
-                "description": row.get("descriptionPlain"),
+                "description": full_description,
+                "full_description": full_description,
                 "location": loc,
             }
         )
     return jobs
 
 
-def run_lever_discovery() -> dict:
+def run_lever_discovery(companies: list[dict] | None = None) -> dict:
     init_db()
     conn = get_connection()
     total_fetched = 0
     total_new = 0
     total_dup = 0
     sites = 0
-    for company in load_watchlist():
+    for company in (companies if companies is not None else load_watchlist()):
         site = (company.get("lever_site") or "").strip()
         if not site:
             continue

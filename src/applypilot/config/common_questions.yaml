@@ -1,0 +1,136 @@
+# Curated screening-question seed for the Resolver Tier-1 Q&A bank.
+#
+# Pre-seeding makes the deterministic apply Driver cache-warm from job #1.
+# Each entry answers in ONE of three ways (checked in this order):
+#   token:    <playbook token key>  -> answer = build_playbook_tokens()[token]
+#                                       (deterministic, profile-derived, $0)
+#   literal:  <string>              -> answer = the literal string
+#   template: <prompt string>       -> answer_type forced to 'template';
+#                                       answer holds a Gemini prompt rendered at
+#                                       fill time with live {company,role,jd}.
+#
+# answer_type: text | select | bool | number | template
+# section_header (optional): disambiguates same-label fields across sections.
+#
+# Token-backed and literal rows cost $0 to seed (no LLM). Template rows store
+# only the prompt, never cached prose, so company-specific answers never read
+# as boilerplate. See docs/maxed-apply-pipeline-jun-2026.md §5.
+
+questions:
+  # --- Identity (token-backed) ---
+  - label: "First name"
+    answer_type: text
+    token: preferred_name
+  - label: "Last name"
+    answer_type: text
+    token: full_name        # store() keeps the full name; adapters split if needed
+  - label: "Full name"
+    answer_type: text
+    token: full_name
+  - label: "Email"
+    answer_type: text
+    section_header: "Personal Information"
+    token: email
+  - label: "Phone"
+    answer_type: text
+    token: phone
+  - label: "LinkedIn Profile"
+    answer_type: text
+    token: linkedin_url
+  - label: "LinkedIn URL"
+    answer_type: text
+    token: linkedin_url
+  - label: "GitHub"
+    answer_type: text
+    token: github_url
+  - label: "Website"
+    answer_type: text
+    token: portfolio_url
+  - label: "Portfolio"
+    answer_type: text
+    token: portfolio_url
+  - label: "City"
+    answer_type: text
+    token: city
+  - label: "Current location"
+    answer_type: text
+    token: city
+
+  # --- Work authorization (token-backed bool) ---
+  - label: "Are you legally authorized to work in the United States?"
+    answer_type: bool
+    token: work_auth
+  - label: "Are you authorized to work in the country of the job posting?"
+    answer_type: bool
+    token: work_auth
+  - label: "Will you now or in the future require visa sponsorship for employment?"
+    answer_type: bool
+    token: require_sponsorship
+  - label: "Do you require sponsorship?"
+    answer_type: bool
+    token: require_sponsorship
+
+  # --- Compensation / availability (token-backed) ---
+  - label: "Desired salary"
+    answer_type: number
+    token: salary_number
+  - label: "Salary expectation"
+    answer_type: number
+    token: salary_number
+  - label: "Earliest start date"
+    answer_type: text
+    token: earliest_start_date
+  - label: "When can you start?"
+    answer_type: text
+    token: earliest_start_date
+  - label: "Years of experience"
+    answer_type: number
+    token: years_experience
+
+  # --- EEO / voluntary self-identification (literal safe defaults) ---
+  - label: "Gender"
+    answer_type: select
+    literal: "Decline to self-identify"
+  - label: "Race / Ethnicity"
+    answer_type: select
+    literal: "Decline to self-identify"
+  - label: "Are you Hispanic or Latino?"
+    answer_type: select
+    literal: "Decline to self-identify"
+  - label: "Veteran status"
+    answer_type: select
+    token: veteran_status
+  - label: "Disability status"
+    answer_type: select
+    token: disability_status
+  - label: "How did you hear about this job?"
+    answer_type: text
+    literal: "LinkedIn"
+
+  # --- Workable / vendor screening (literal bool / level) ---
+  - label: "Do you have an English CV that you can share?"
+    answer_type: bool
+    literal: "Yes"
+  - label: "What is your English level?"
+    answer_type: select
+    literal: "Advanced"
+  - label: "Do you have .NET development experience of at least 5 years?"
+    answer_type: bool
+    literal: "Yes"
+  - label: "Do you have at least two years of commercial cloud development experience?"
+    answer_type: bool
+    literal: "Yes"
+
+  # --- Company-specific free text (template; re-rendered every fill) ---
+  - label: "Why do you want to work here?"
+    answer_type: template
+    template: >
+      Write a concise 2-3 sentence answer (first person) for why the candidate
+      wants the {role} role at {company}. Ground it in the job description:
+      {jd_summary}. No buzzwords, no boilerplate, specific to this company.
+  - label: "Why are you interested in this role?"
+    answer_type: template
+    template: >
+      Write a concise 2-3 sentence answer (first person) for why the candidate
+      is interested in the {role} role at {company}, grounded in: {jd_summary}.
+      Specific, no generic enthusiasm.

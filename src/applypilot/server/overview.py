@@ -17,6 +17,7 @@ from applypilot.pipeline import STAGE_ORDER, _stage_progress_snapshot
 from applypilot.server import jobs as jobs_module
 from applypilot.server.activity import list_dashboard_activity
 from applypilot.server.stats import fetch_source_stats, fetch_stats
+from applypilot.apply.direct.throttle import count_submits_today
 from applypilot.server.workers import fetch_workers_for_run
 
 
@@ -108,9 +109,10 @@ def _llm_spend_run_window(conn, started_at: str | None) -> float | None:
     return float(r2[0] or 0.0)
 
 
-def _apply_tailor_today(conn) -> tuple[int, int]:
+def _apply_attempts_today(conn) -> int:
+    """Apply ledger rows touched today (includes failed/manual, not only submits)."""
     today = _utc_today_prefix()
-    apply_row = conn.execute(
+    row = conn.execute(
         """
         SELECT COUNT(*) FROM jobs
         WHERE last_attempted_at IS NOT NULL
@@ -119,6 +121,12 @@ def _apply_tailor_today(conn) -> tuple[int, int]:
         """,
         (today,),
     ).fetchone()
+    return int(row[0] or 0)
+
+
+def _apply_tailor_today(conn) -> tuple[int, int]:
+    today = _utc_today_prefix()
+    apply_attempts = _apply_attempts_today(conn)
     tailor_row = conn.execute(
         """
         SELECT COUNT(*) FROM jobs
@@ -128,7 +136,7 @@ def _apply_tailor_today(conn) -> tuple[int, int]:
         """,
         (today,),
     ).fetchone()
-    return int(apply_row[0] or 0), int(tailor_row[0] or 0)
+    return apply_attempts, int(tailor_row[0] or 0)
 
 
 def _latest_stage_progress_map(run_id: str) -> dict[str, dict[str, Any]]:
@@ -199,9 +207,9 @@ def _ui_step_index_for_stage(stage: str | None) -> int | None:
     st = str(stage).strip().lower()
     if st == "discover":
         return 0
-    if st == "filter":
-        return 1
     if st == "enrich":
+        return 1
+    if st == "filter":
         return 2
     if st == "score":
         return 3
@@ -224,27 +232,36 @@ def _progress_percent(done: int, denom: int) -> int | None:
 
 
 def _filter_step_snapshot(conn: Connection, total: int) -> dict[str, Any]:
-    # There is no explicit "filter" stage in the pipeline yet. For Mission Control,
-    # treat "has a full description" as "passed filter".
-    row = conn.execute("SELECT COUNT(*) FROM jobs WHERE full_description IS NOT NULL").fetchone()
-    passed = int(row[0] or 0)
-    pending = max(0, total - passed)
-    denom = total if total > 0 else passed + pending
+    kept_row = conn.execute(
+        """
+        SELECT COUNT(*) FROM jobs
+        WHERE pre_fit_score IS NOT NULL
+          AND pre_filter_rejected_at IS NULL
+          AND pre_filter_reason IS NULL
+        """
+    ).fetchone()
+    rejected_row = conn.execute(
+        "SELECT COUNT(*) FROM jobs WHERE pre_filter_rejected_at IS NOT NULL"
+    ).fetchone()
+    kept = int(kept_row[0] or 0)
+    rejected = int(rejected_row[0] or 0)
+    done = kept + rejected
+    pending = max(0, total - done)
+    denom = done + pending
     return {
         "stage": "filter",
-        "done": passed,
+        "done": done,
         "pending": pending,
         "total": denom,
-        "percent": _progress_percent(passed, denom),
-        "detail": f"{passed}/{denom} passed · {pending} left",
+        "percent": _progress_percent(done, denom),
+        "detail": f"{kept} kept · {rejected} rejected · {pending} waiting",
     }
 
 
-def _apply_step_snapshot(conn: Connection, stats_payload: Any) -> dict[str, Any]:
+def _apply_step_snapshot_from_stats(stats: dict[str, Any]) -> dict[str, Any]:
     # "Apply" is not part of STAGE_ORDER; approximate with ready + applied.
-    pipeline = getattr(stats_payload, "pipeline", {}) or {}
-    ready = int(pipeline.get("ready_to_apply") or 0)
-    applied = int(pipeline.get("applied") or 0)
+    ready = int(stats.get("ready_to_apply") or 0)
+    applied = int(stats.get("applied") or 0)
     denom = ready + applied
     return {
         "stage": "apply",
@@ -262,25 +279,43 @@ def _build_steps(
     running: bool,
     current_stage: str | None,
     min_score: int = 7,
+    stream: bool = False,
+    run_stages: list[str] | None = None,
+    stats: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
+    from applypilot.orchestration.stage_ui import effective_current_stage
+
     progress_map: dict[str, dict[str, Any]] = {}
     if run_id and running:
         progress_map = _latest_stage_progress_map(run_id)
 
+    if running and stream:
+        current_stage = effective_current_stage(
+            stream=True,
+            running=True,
+            db_current_stage=current_stage,
+            run_stages=run_stages,
+            min_score=min_score,
+            run_id=run_id,
+            progress_map=progress_map,
+        )
+
     init_db()
     conn = get_connection()
+    if stats is None:
+        stats = get_stats(conn)
 
     steps: list[dict[str, Any]] = []
     # Keep this in sync with designs/dashboard-20260527/finalized.html stepper.
-    stages = ["discover", "filter", "enrich", "score", "tailor", "cover", "apply"]
+    stages = ["discover", "enrich", "filter", "score", "tailor", "cover", "apply"]
     cur_ui_idx = _ui_step_index_for_stage(current_stage) if running else None
     for stage in stages:
         if stage == "filter":
-            snap = _filter_step_snapshot(conn, int(get_stats(conn).get("total") or 0))
+            snap = _filter_step_snapshot(conn, int(stats.get("total") or 0))
         elif stage == "apply":
-            snap = _apply_step_snapshot(conn, fetch_stats())
+            snap = _apply_step_snapshot_from_stats(stats)
         else:
-            snap = _stage_progress_snapshot(stage, min_score)
+            snap = _stage_progress_snapshot(stage, min_score, stats=stats)
         live = progress_map.get(stage, {}).get("payload") or {}
         merged = {**snap, **live}
         done = merged.get("done")
@@ -333,7 +368,7 @@ def _build_steps(
 
 def _build_funnel(raw: dict[str, Any], conn: Connection) -> list[dict[str, Any]]:
     total = int(raw.get("total") or 0)
-    passed_filter = int(raw.get("with_description") or 0)
+    passed_filter = int(raw.get("pre_filter_kept") or 0)
     scored_ge7_row = conn.execute(
         "SELECT COUNT(*) FROM jobs WHERE fit_score IS NOT NULL AND fit_score >= 7"
     ).fetchone()
@@ -389,12 +424,14 @@ def build_overview() -> dict[str, Any]:
     t0 = time.perf_counter()
     init_db()
     conn = get_connection()
-    raw = get_stats(conn)
     stats_payload = fetch_stats()
+    raw = get_stats()
 
     active = get_active_run()
     run_id = active["id"] if active else None
     running = bool(active and active.get("status") == "running")
+    stream = bool(active.get("stream")) if active else False
+    run_stages = active.get("stages") if active else None
     current_stage = active.get("current_stage") if active else None
 
     pipeline = stats_payload.pipeline
@@ -402,7 +439,8 @@ def build_overview() -> dict[str, Any]:
     ready = int(pipeline.get("ready_to_apply") or 0)
     applied_30d = _count_applied_30d(conn)
     spend_today = _llm_spend_today(conn)
-    apply_today, tailor_today = _apply_tailor_today(conn)
+    apply_attempts_today, tailor_today = _apply_tailor_today(conn)
+    apply_submits_today = count_submits_today(conn=conn)
     # Keep these aligned with the copy in finalized.html (can be made configurable later).
     spend_cap = 10.0
     apply_cap = 60
@@ -442,6 +480,9 @@ def build_overview() -> dict[str, Any]:
             running=running,
             current_stage=current_stage,
             min_score=7,
+            stream=stream,
+            run_stages=run_stages,
+            stats=raw,
         ),
         "metrics": {
             "throughput_per_min": None,
@@ -507,16 +548,21 @@ def build_overview() -> dict[str, Any]:
 
     activity = list_dashboard_activity(limit=25)
 
+    apply_subtitle = f"{apply_submits_today} submits today"
+    if apply_attempts_today != apply_submits_today:
+        apply_subtitle = f"{apply_subtitle} · {apply_attempts_today} attempts"
+
     caps = {
         "spend_today_usd": spend_today,
         "spend_cap_usd": spend_cap,
-        "apply_today": apply_today,
+        "apply_today": apply_submits_today,
+        "apply_attempts_today": apply_attempts_today,
         "apply_cap": apply_cap,
         "tailor_today": tailor_today,
         "tailor_cap": tailor_cap,
         "llm_provider_hint": "Claude Code + APIs",
         "llm_spend_subtitle": "local ledger · see Claude usage panel",
-        "apply_subtitle": "submissions queued today",
+        "apply_subtitle": apply_subtitle,
         "tailor_subtitle": "per-job rewrite",
     }
 

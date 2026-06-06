@@ -1,0 +1,677 @@
+{
+  "role": {
+    "key": "founding-engineer",
+    "title": "Founding Engineer",
+    "aliases": [
+      "founding engineer",
+      "founding software engineer",
+      "early engineer",
+      "startup engineer"
+    ],
+    "keywords": [
+      "founding",
+      "startup",
+      "0 to 1",
+      "full stack",
+      "product",
+      "ownership",
+      "architecture",
+      "shipping"
+    ],
+    "summary": "Founding engineer profile with 10+ years building and scaling full-stack, AI, fintech, and SaaS products from architecture through production ownership.",
+    "skills": [
+      [
+        "0-to-1 Product Engineering",
+        "Product ownership, rapid iteration, architecture, full stack delivery, production monitoring"
+      ],
+      [
+        "Stack",
+        "React, Next.js, Node.js, Python, TypeScript, AWS"
+      ],
+      [
+        "AI",
+        "RAG, LangChain, LangGraph, OpenAI, Claude, LLMOps"
+      ],
+      [
+        "Systems",
+        "Distributed systems, performance, databases, messaging, CI/CD"
+      ]
+    ]
+  },
+  "benchmark_job": {
+    "source": "fallback",
+    "url": "",
+    "title": "High-paying Founding Engineer",
+    "company": "No eligible live benchmark found",
+    "salary": "$80,000+",
+    "salary_usd_max": 80000,
+    "location": "Remote/global benchmark unavailable",
+    "description": "Senior Founding Engineer role owning founding, startup, 0 to 1, full stack, product, ownership, architecture, shipping. Responsibilities: founding engineer, founding software engineer, early engineer, startup engineer, production systems, APIs, reliability, and cross-functional delivery at scale. This fallback is used only when the DB and RemoteOK do not expose an eligible salary-qualified posting aligned to the role family.",
+    "eligibility_reason": "fallback: no live eligible benchmark found"
+  },
+  "jd_analysis": {
+    "hard_requirements": [],
+    "nice_to_haves": [],
+    "keywords": [
+      "founding",
+      "startup",
+      "0 to 1",
+      "full stack",
+      "product",
+      "ownership",
+      "architecture",
+      "shipping"
+    ],
+    "missing_role_keywords": [],
+    "domain_problem_signals": [
+      "scale",
+      "reliability",
+      "architecture",
+      "product"
+    ]
+  },
+  "company_problem_hypothesis": {
+    "benchmark_company_problem": "No eligible live benchmark found is hiring a High-paying Founding Engineer to solve problems around scale, reliability, architecture, product.",
+    "candidate_company_problem_map": [
+      {
+        "company": "Happening Today",
+        "domain": "event discovery and AI platform",
+        "problems": [
+          "retrieval quality and latency for event discovery",
+          "agentic workflow reliability",
+          "streaming inference, token budgets, and hallucination controls"
+        ],
+        "evidence": [
+          "RAG pipeline for event discovery with pgvector and semantic reranking",
+          "LangGraph planner/tool/critic orchestration",
+          "LLMOps evals, latency/cost dashboards, and hallucination alerts"
+        ]
+      },
+      {
+        "company": "MIRA",
+        "domain": "consumer-scale generative AI",
+        "problems": [
+          "serving GenAI to large user bases",
+          "personalization and fine-tuning quality",
+          "inference cost control and regression evaluation"
+        ],
+        "evidence": [
+          "GenAI features for 50M+ users",
+          "LoRA/QLoRA fine-tuning pipeline",
+          "35% cost reduction through compression, caching, and model routing"
+        ]
+      },
+      {
+        "company": "Delta Exchange",
+        "domain": "real-time fintech and trading",
+        "problems": [
+          "low-latency trading workflows",
+          "real-time UI reliability",
+          "technical debt and conversion improvements"
+        ],
+        "evidence": [
+          "real-time derivatives platform serving 5M+ users",
+          "60% system performance improvement",
+          "React component library and 25% conversion lift"
+        ]
+      },
+      {
+        "company": "BetterPlace",
+        "domain": "enterprise workforce SaaS",
+        "problems": [
+          "large-scale data ingestion",
+          "enterprise workflow scalability",
+          "frontend performance and microservice migration"
+        ],
+        "evidence": [
+          "3x ingestion throughput improvement",
+          "50% UI render time reduction",
+          "monolith-to-microservices migration"
+        ]
+      }
+    ]
+  },
+  "fact_support_map": [
+    {
+      "claim": "Implementing a streaming API layer (Server-Sent Events + Node.js) for high-volume product responses — Handling backpressure, request budget management, and graceful fallback on payload limit overflow.",
+      "support_ratio": 0.71,
+      "supporting_terms": [
+        "backpressure",
+        "budget",
+        "events",
+        "fallback",
+        "graceful",
+        "handling",
+        "high",
+        "implementing",
+        "layer",
+        "management",
+        "node.js",
+        "overflow."
+      ]
+    },
+    {
+      "claim": "Owning the production platform operations stack: structured configuration versioning in Git, automated quality checks (automated regression checks + release regression suite), latency/cost dashboards in CloudWatch, and quality regression rate alerting.",
+      "support_ratio": 0.95,
+      "supporting_terms": [
+        "alerting.",
+        "automated",
+        "cloudwatch",
+        "cost",
+        "dashboards",
+        "latency",
+        "owning",
+        "platform",
+        "production",
+        "quality",
+        "rate",
+        "regression"
+      ]
+    },
+    {
+      "claim": "Built and scaled backend services powering high-scale product features for 50M+ users — Including a production search and content system over proprietary content using search indexing, service orchestration, and managed APIs for responses.",
+      "support_ratio": 0.96,
+      "supporting_terms": [
+        "50m+",
+        "apis",
+        "backend",
+        "built",
+        "content",
+        "features",
+        "high",
+        "including",
+        "indexing",
+        "orchestration",
+        "over",
+        "powering"
+      ]
+    },
+    {
+      "claim": "Integrated regression gates into CI/CD to catch deployment regressions before release.",
+      "support_ratio": 0.78,
+      "supporting_terms": [
+        "before",
+        "catch",
+        "deployment",
+        "gates",
+        "integrated",
+        "into",
+        "regression"
+      ]
+    },
+    {
+      "claim": "Refactored legacy service architecture to reduce inter-service latency, achieving a 60% system performance improvement measured end-to-end.",
+      "support_ratio": 1.08,
+      "supporting_terms": [
+        "achieving",
+        "architecture",
+        "end.",
+        "improvement",
+        "inter",
+        "latency",
+        "legacy",
+        "measured",
+        "performance",
+        "reduce",
+        "refactored",
+        "service"
+      ]
+    },
+    {
+      "claim": "Designed and built core trading engine features for a real-time derivatives platform serving 5M+ users — Order book rendering, WebSocket feed management, and margin calculation APIs.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "apis.",
+        "book",
+        "built",
+        "calculation",
+        "core",
+        "derivatives",
+        "designed",
+        "engine",
+        "features",
+        "feed",
+        "management",
+        "margin"
+      ]
+    },
+    {
+      "claim": "Built a React component library and shared state management layer, cutting UI feature development time significantly and boosting conversion by 25%.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "boosting",
+        "built",
+        "component",
+        "conversion",
+        "cutting",
+        "development",
+        "feature",
+        "layer",
+        "library",
+        "management",
+        "react",
+        "shared"
+      ]
+    },
+    {
+      "claim": "Led technical debt reduction initiative: migrated critical services from callback-heavy Node to async/await patterns, reducing bug rate by 40%.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "async",
+        "await",
+        "callback",
+        "critical",
+        "debt",
+        "from",
+        "heavy",
+        "initiative",
+        "migrated",
+        "node",
+        "patterns",
+        "rate"
+      ]
+    },
+    {
+      "claim": "Built scalable SaaS modules (workforce management, compliance workflows) using React, Python (Django/Flask), and Node.js.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "built",
+        "compliance",
+        "django",
+        "flask",
+        "management",
+        "modules",
+        "node.js.",
+        "python",
+        "react",
+        "saas",
+        "scalable",
+        "using"
+      ]
+    },
+    {
+      "claim": "Designed a batched data ingestion pipeline that increased system throughput by 3x, enabling the platform to onboard enterprise clients with large worker datasets.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "batched",
+        "clients",
+        "data",
+        "datasets.",
+        "designed",
+        "enabling",
+        "enterprise",
+        "increased",
+        "ingestion",
+        "large",
+        "onboard",
+        "pipeline"
+      ]
+    },
+    {
+      "claim": "Introduced frontend performance patterns (lazy loading, memoisation, pagination) that reduced UI render times by 50%.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "frontend",
+        "introduced",
+        "lazy",
+        "loading",
+        "memoisation",
+        "pagination",
+        "patterns",
+        "performance",
+        "reduced",
+        "render",
+        "that",
+        "times"
+      ]
+    },
+    {
+      "claim": "Migrated monolith features to independently deployable microservices, improving deployment frequency and reducing rollback risk.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "deployable",
+        "deployment",
+        "features",
+        "frequency",
+        "improving",
+        "independently",
+        "microservices",
+        "migrated",
+        "monolith",
+        "reducing",
+        "risk.",
+        "rollback"
+      ]
+    },
+    {
+      "claim": "Delivered full stack features across web applications in early-career roles.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "across",
+        "applications",
+        "career",
+        "delivered",
+        "early",
+        "features",
+        "full",
+        "roles.",
+        "stack"
+      ]
+    },
+    {
+      "claim": "Built REST APIs.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "apis.",
+        "built",
+        "rest"
+      ]
+    },
+    {
+      "claim": "Integrated third-party services, and shipped React/Angular frontend modules.",
+      "support_ratio": 1.0,
+      "supporting_terms": [
+        "angular",
+        "frontend",
+        "integrated",
+        "modules.",
+        "party",
+        "react",
+        "services",
+        "shipped",
+        "third"
+      ]
+    }
+  ],
+  "rewrite_notes": [
+    "benchmark: fallback — No eligible live benchmark found (High-paying Founding Engineer)",
+    "deterministic rewrite: top-two employers tailored to benchmark JD; AI terms reframed or dropped"
+  ],
+  "audit": {
+    "score": 95,
+    "pass": true,
+    "keyword_coverage_score": 100,
+    "recruiter_rejection_risk_score": 5,
+    "evidence_support_score": 100,
+    "role_problem_fit_score": 95,
+    "critical_rejection_flags": [],
+    "benchmark_warnings": [
+      "no_live_salary_qualified_benchmark"
+    ],
+    "unsupported_claims": [],
+    "missing_experience_companies": [],
+    "missing_experience_title_lines": [],
+    "thin_experience_sections": [
+      {
+        "company": "Happening Today",
+        "required_bullets": 4,
+        "actual_bullets": 2
+      },
+      {
+        "company": "MIRA",
+        "required_bullets": 4,
+        "actual_bullets": 2
+      }
+    ],
+    "public_resume_quality_issues": [],
+    "tech_mismatches": [],
+    "rejection_risks": [
+      "no_live_salary_qualified_benchmark"
+    ],
+    "experience_role_lens_issues": [],
+    "improvement_instructions": [],
+    "fact_support_map": [
+      {
+        "claim": "Implementing a streaming API layer (Server-Sent Events + Node.js) for high-volume product responses — Handling backpressure, request budget management, and graceful fallback on payload limit overflow.",
+        "support_ratio": 0.71,
+        "supporting_terms": [
+          "backpressure",
+          "budget",
+          "events",
+          "fallback",
+          "graceful",
+          "handling",
+          "high",
+          "implementing",
+          "layer",
+          "management",
+          "node.js",
+          "overflow."
+        ]
+      },
+      {
+        "claim": "Owning the production platform operations stack: structured configuration versioning in Git, automated quality checks (automated regression checks + release regression suite), latency/cost dashboards in CloudWatch, and quality regression rate alerting.",
+        "support_ratio": 0.95,
+        "supporting_terms": [
+          "alerting.",
+          "automated",
+          "cloudwatch",
+          "cost",
+          "dashboards",
+          "latency",
+          "owning",
+          "platform",
+          "production",
+          "quality",
+          "rate",
+          "regression"
+        ]
+      },
+      {
+        "claim": "Built and scaled backend services powering high-scale product features for 50M+ users — Including a production search and content system over proprietary content using search indexing, service orchestration, and managed APIs for responses.",
+        "support_ratio": 0.96,
+        "supporting_terms": [
+          "50m+",
+          "apis",
+          "backend",
+          "built",
+          "content",
+          "features",
+          "high",
+          "including",
+          "indexing",
+          "orchestration",
+          "over",
+          "powering"
+        ]
+      },
+      {
+        "claim": "Integrated regression gates into CI/CD to catch deployment regressions before release.",
+        "support_ratio": 0.78,
+        "supporting_terms": [
+          "before",
+          "catch",
+          "deployment",
+          "gates",
+          "integrated",
+          "into",
+          "regression"
+        ]
+      },
+      {
+        "claim": "Refactored legacy service architecture to reduce inter-service latency, achieving a 60% system performance improvement measured end-to-end.",
+        "support_ratio": 1.08,
+        "supporting_terms": [
+          "achieving",
+          "architecture",
+          "end.",
+          "improvement",
+          "inter",
+          "latency",
+          "legacy",
+          "measured",
+          "performance",
+          "reduce",
+          "refactored",
+          "service"
+        ]
+      },
+      {
+        "claim": "Designed and built core trading engine features for a real-time derivatives platform serving 5M+ users — Order book rendering, WebSocket feed management, and margin calculation APIs.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "apis.",
+          "book",
+          "built",
+          "calculation",
+          "core",
+          "derivatives",
+          "designed",
+          "engine",
+          "features",
+          "feed",
+          "management",
+          "margin"
+        ]
+      },
+      {
+        "claim": "Built a React component library and shared state management layer, cutting UI feature development time significantly and boosting conversion by 25%.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "boosting",
+          "built",
+          "component",
+          "conversion",
+          "cutting",
+          "development",
+          "feature",
+          "layer",
+          "library",
+          "management",
+          "react",
+          "shared"
+        ]
+      },
+      {
+        "claim": "Led technical debt reduction initiative: migrated critical services from callback-heavy Node to async/await patterns, reducing bug rate by 40%.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "async",
+          "await",
+          "callback",
+          "critical",
+          "debt",
+          "from",
+          "heavy",
+          "initiative",
+          "migrated",
+          "node",
+          "patterns",
+          "rate"
+        ]
+      },
+      {
+        "claim": "Built scalable SaaS modules (workforce management, compliance workflows) using React, Python (Django/Flask), and Node.js.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "built",
+          "compliance",
+          "django",
+          "flask",
+          "management",
+          "modules",
+          "node.js.",
+          "python",
+          "react",
+          "saas",
+          "scalable",
+          "using"
+        ]
+      },
+      {
+        "claim": "Designed a batched data ingestion pipeline that increased system throughput by 3x, enabling the platform to onboard enterprise clients with large worker datasets.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "batched",
+          "clients",
+          "data",
+          "datasets.",
+          "designed",
+          "enabling",
+          "enterprise",
+          "increased",
+          "ingestion",
+          "large",
+          "onboard",
+          "pipeline"
+        ]
+      },
+      {
+        "claim": "Introduced frontend performance patterns (lazy loading, memoisation, pagination) that reduced UI render times by 50%.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "frontend",
+          "introduced",
+          "lazy",
+          "loading",
+          "memoisation",
+          "pagination",
+          "patterns",
+          "performance",
+          "reduced",
+          "render",
+          "that",
+          "times"
+        ]
+      },
+      {
+        "claim": "Migrated monolith features to independently deployable microservices, improving deployment frequency and reducing rollback risk.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "deployable",
+          "deployment",
+          "features",
+          "frequency",
+          "improving",
+          "independently",
+          "microservices",
+          "migrated",
+          "monolith",
+          "reducing",
+          "risk.",
+          "rollback"
+        ]
+      },
+      {
+        "claim": "Delivered full stack features across web applications in early-career roles.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "across",
+          "applications",
+          "career",
+          "delivered",
+          "early",
+          "features",
+          "full",
+          "roles.",
+          "stack"
+        ]
+      },
+      {
+        "claim": "Built REST APIs.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "apis.",
+          "built",
+          "rest"
+        ]
+      },
+      {
+        "claim": "Integrated third-party services, and shipped React/Angular frontend modules.",
+        "support_ratio": 1.0,
+        "supporting_terms": [
+          "angular",
+          "frontend",
+          "integrated",
+          "modules.",
+          "party",
+          "react",
+          "services",
+          "shipped",
+          "third"
+        ]
+      }
+    ],
+    "auditor": "deterministic"
+  }
+}

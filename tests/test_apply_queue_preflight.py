@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -87,7 +88,7 @@ def test_quota_retry_timestamp_preserves_iso_colons_and_reopens_after_reset(appl
 
     conn = apply_db
     _insert_ready(conn, "https://jobs.example/quota", status="failed", attempts=0)
-    not_before = "2026-05-27T10:00:00+00:00"
+    not_before = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat(timespec="seconds")
 
     reason, detail = launcher._parse_worker_result(
         f"failed:claude_quota_exhausted:{not_before}"

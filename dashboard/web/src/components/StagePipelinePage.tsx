@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { Job } from "../api";
-import { fetchJobs, fetchRecentJobs } from "../api";
+import { fetchJobs, fetchRecentJobs, fetchStats } from "../api";
 import { jobMatchesStage, STAGE_LABELS, type PipelineStageId } from "../dashboardNav";
 import { useStageRun } from "../hooks/useStageRun";
 import { useDebouncedValue } from "../utils/useDebouncedValue";
@@ -20,6 +20,7 @@ import { DiscoverSourcePanel } from "./pipeline/DiscoverSourcePanel";
 import { StageControlBar } from "./StageControlBar";
 import { PhaseStepper } from "./PhaseStepper";
 import { useApplyRun } from "../hooks/useApplyRun";
+import { ApplyRunPlanModal } from "./ApplyRunPlanModal";
 
 type Props = {
   stage: PipelineStageId;
@@ -30,6 +31,13 @@ export function StagePipelinePage({ stage, onJobSelect }: Props) {
   const run = useStageRun(stage);
   const applyRun = useApplyRun();
   const [showPlan, setShowPlan] = useState(false);
+  const [applyPlanOpen, setApplyPlanOpen] = useState(false);
+
+  const { data: stats } = useQuery({
+    queryKey: ["stats"],
+    queryFn: fetchStats,
+    refetchInterval: 5000,
+  });
   const [minScoreFilter, setMinScoreFilter] = useState(0);
   const [jobSearch, setJobSearch] = useState("");
   const [stageJobsOnly, setStageJobsOnly] = useState(true);
@@ -148,7 +156,7 @@ export function StagePipelinePage({ stage, onJobSelect }: Props) {
               type="button"
               className="btn btn--accent"
               disabled={applyRun.isRunning || applyRun.starting}
-              onClick={() => void applyRun.handleStart()}
+              onClick={() => setApplyPlanOpen(true)}
             >
               {applyRun.starting ? "Starting…" : "Apply queue now"}
             </button>
@@ -255,6 +263,17 @@ export function StagePipelinePage({ stage, onJobSelect }: Props) {
         onConfirm={() => {
           setShowPlan(false);
           void run.handleStart();
+        }}
+      />
+
+      <ApplyRunPlanModal
+        open={applyPlanOpen}
+        settings={applyRun.applySettings}
+        readyCount={stats?.ready_to_apply}
+        onCancel={() => setApplyPlanOpen(false)}
+        onConfirm={() => {
+          setApplyPlanOpen(false);
+          void applyRun.handleStart();
         }}
       />
     </div>

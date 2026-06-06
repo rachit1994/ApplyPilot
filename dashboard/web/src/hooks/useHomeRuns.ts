@@ -12,6 +12,10 @@ import {
   type RunEvent,
 } from "../api";
 import { PIPELINE_STAGE_IDS, type PipelineStageId } from "../dashboardNav";
+import {
+  applySettingsToCliOptions,
+  buildApplyCliCommand,
+} from "../utils/applyCliCommand";
 
 export function useHomeRuns() {
   const queryClient = useQueryClient();
@@ -30,16 +34,59 @@ export function useHomeRuns() {
   const [watch, setWatch] = useState(true);
   const [pace, setPace] = useState(false);
   const [headless, setHeadless] = useState(false);
-  const [continuous, setContinuous] = useState(false);
+  const [continuous, setContinuous] = useState(true);
   const [applyDryRun, setApplyDryRun] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [pipelineStartRequested, setPipelineStartRequested] = useState(false);
   const eventsRef = useRef(events);
+  const activeRunSigRef = useRef("");
 
   useEffect(() => {
     eventsRef.current = events;
   }, [events]);
+
+  const syncActiveRunPoll = useCallback(
+    (run: Run | null) => {
+      const sig = run
+        ? `${run.id}:${run.status}:${run.current_stage ?? ""}`
+        : "";
+      if (sig !== activeRunSigRef.current) {
+        activeRunSigRef.current = sig;
+        if (run) {
+          queryClient.invalidateQueries({ queryKey: ["overview"] });
+          queryClient.invalidateQueries({ queryKey: ["runs", "active"] });
+        }
+      }
+      setActiveRun((prev) => {
+        if (!run) {
+          if (prev?.status === "running" && prev.id) {
+            fetchRun(prev.id)
+              .then((fresh) => {
+                if (fresh.status !== "running") {
+                  activeRunSigRef.current = `${fresh.id}:${fresh.status}:${fresh.current_stage ?? ""}`;
+                  setActiveRun(fresh);
+                  queryClient.invalidateQueries({ queryKey: ["overview"] });
+                  queryClient.invalidateQueries({ queryKey: ["runs", "active"] });
+                }
+              })
+              .catch(() => {});
+            return prev;
+          }
+          return null;
+        }
+        if (
+          prev?.id === run.id &&
+          prev.status === run.status &&
+          prev.current_stage === run.current_stage
+        ) {
+          return prev;
+        }
+        return run;
+      });
+    },
+    [queryClient],
+  );
 
   const { data: stagesMeta } = useQuery({
     queryKey: ["stages"],
@@ -51,8 +98,8 @@ export function useHomeRuns() {
   useEffect(() => {
     fetchActiveRun()
       .then((run) => {
+        syncActiveRunPoll(run);
         if (!run) return;
-        setActiveRun(run);
         fetchRunEventsHistory(run.id)
           .then((history) => {
             setEvents((prev) => {
@@ -70,31 +117,17 @@ export function useHomeRuns() {
           .catch(() => {});
       })
       .catch(() => {});
-  }, []);
+  }, [syncActiveRunPoll]);
 
   useEffect(() => {
     const tick = () => {
       fetchActiveRun()
-        .then((run) => {
-          setActiveRun((prev) => {
-            if (!run) {
-              return prev?.status === "running" ? null : prev;
-            }
-            if (
-              prev?.id === run.id &&
-              prev.status === run.status &&
-              prev.current_stage === run.current_stage
-            ) {
-              return prev;
-            }
-            return run;
-          });
-        })
+        .then(syncActiveRunPoll)
         .catch(() => {});
     };
     const id = window.setInterval(tick, 3000);
     return () => window.clearInterval(id);
-  }, []);
+  }, [syncActiveRunPoll]);
 
   const refreshRun = useCallback((runId: string) => {
     fetchRun(runId)
@@ -251,18 +284,41 @@ export function useHomeRuns() {
     return parts.join(" ");
   }, [selectedStages, pipelineMinScore, workers, stream, dryRun]);
 
-  const applyCli = useMemo(() => {
-    const parts = ["applypilot", "apply"];
-    if (applyLimit !== "") parts.push("--limit", String(applyLimit));
-    parts.push("--min-score", String(applyMinScore));
-    parts.push("--workers", String(applyWorkers));
-    if (watch) parts.push("--watch");
-    if (pace) parts.push("--pace");
-    if (headless) parts.push("--headless");
-    if (continuous) parts.push("--continuous");
-    if (applyDryRun) parts.push("--dry-run");
-    return parts.join(" ");
-  }, [applyLimit, applyMinScore, applyWorkers, watch, pace, headless, continuous, applyDryRun]);
+  const applyCli = useMemo(
+    () =>
+      buildApplyCliCommand(
+        applySettingsToCliOptions({
+          limit: applyLimit,
+          setLimit: setApplyLimit,
+          minScore: applyMinScore,
+          setMinScore: setApplyMinScore,
+          workers: applyWorkers,
+          setWorkers: setApplyWorkers,
+          watch,
+          setWatch,
+          pace,
+          setPace,
+          headless,
+          setHeadless,
+          continuous,
+          setContinuous,
+          dryRun: applyDryRun,
+          setDryRun: setApplyDryRun,
+          isRunning,
+        }),
+      ),
+    [
+      applyDryRun,
+      applyLimit,
+      applyMinScore,
+      applyWorkers,
+      continuous,
+      headless,
+      isRunning,
+      pace,
+      watch,
+    ],
+  );
 
   return {
     activeRun,
