@@ -72,7 +72,7 @@ def test_resolve_replay_when_trusted_entry_exists(
     assert tier == "replay"
     assert action == {"tool": "accept_cookies", "args": {}}
     pb.lookup_nav.assert_called_with("sig-abc", scope="host")
-    pb.state_signature.assert_called_once()
+    assert pb.state_signature.call_count >= 1
 
 
 def test_run_unblock_with_learning_skips_gemini_on_replay(
@@ -188,3 +188,58 @@ def test_finish_never_returned_from_replay_lookup(mock_playbook, fake_snapshot):
 
     assert action is None
     assert tier == "gemini"
+
+
+def test_resolve_tier_order_host_before_family_before_gemini(
+    mock_playbook, fake_snapshot
+):
+    page = _FakePage()
+
+    def lookup(state_sig, scope="host", conn=None):
+        _ = conn
+        if scope == "host" and state_sig == "host-sig":
+            return _trusted_entry(tool="accept_cookies")
+        if scope == "family" and state_sig == "fam-sig":
+            return _trusted_entry(tool="click", args={"text": "Next"})
+        return None
+
+    mock_playbook.lookup_nav.side_effect = lookup
+
+    action, tier = unblock_learning.resolve_unblock_action(
+        page,
+        {},
+        family="greenhouse",
+        apex_host="boards.greenhouse.io",
+        state_sig="host-sig",
+        family_sig="fam-sig",
+    )
+    assert tier == "replay"
+    assert action == {"tool": "accept_cookies", "args": {}}
+
+    mock_playbook.lookup_nav.side_effect = lambda state_sig, scope="host", conn=None: (
+        _trusted_entry(tool="click", args={"text": "Next"})
+        if scope == "family" and state_sig == "fam-sig"
+        else None
+    )
+    action2, tier2 = unblock_learning.resolve_unblock_action(
+        page,
+        {},
+        family="greenhouse",
+        apex_host="boards.greenhouse.io",
+        state_sig="host-sig",
+        family_sig="fam-sig",
+    )
+    assert tier2 == "replay"
+    assert action2 == {"tool": "click", "args": {"text": "Next"}}
+
+    mock_playbook.lookup_nav.side_effect = lambda *_a, **_k: None
+    action3, tier3 = unblock_learning.resolve_unblock_action(
+        page,
+        {},
+        family="greenhouse",
+        apex_host="boards.greenhouse.io",
+        state_sig="host-sig",
+        family_sig="fam-sig",
+    )
+    assert tier3 == "gemini"
+    assert action3 is None

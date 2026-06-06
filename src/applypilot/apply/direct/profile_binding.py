@@ -99,6 +99,39 @@ def _location(tokens: dict) -> str:
     return ", ".join(str(p).strip() for p in parts if str(p).strip())
 
 
+def _postal_code(tokens: dict) -> str:
+    explicit = str(tokens.get("postal_code") or "").strip()
+    if explicit:
+        return explicit
+    city = _norm(tokens.get("city"))
+    country = _norm(tokens.get("country"))
+    if city in {"bengaluru", "bangalore"} and country == "india":
+        return "560001"
+    return ""
+
+
+def _salary_for_label(label: str, tokens: dict) -> str:
+    raw = str(tokens.get("salary_number") or "").strip()
+    if not raw:
+        return ""
+    try:
+        annual = float(re.sub(r"[^0-9.]+", "", raw))
+    except ValueError:
+        return raw
+    if annual <= 0:
+        return raw
+
+    currency = _norm(tokens.get("salary_currency") or "USD")
+    value = annual
+    if "usd" in label and currency in {"inr", "rs", "rupee", "rupees"}:
+        # Keep this conservative and deterministic. Forms need a practical
+        # number; profile currency remains the source of truth for local roles.
+        value = annual / 83.0
+    if any(marker in label for marker in ("monthly", "per month", "/ month")):
+        value /= 12.0
+    return str(int(round(value / 100.0) * 100 if value >= 1000 else round(value)))
+
+
 # Each rule: (list of label substrings, token_key OR callable(tokens)->str)
 FIELD_MAP: tuple[tuple[tuple[str, ...], object], ...] = (
     (("first and last name", "first & last name"), "full_name"),
@@ -107,20 +140,27 @@ FIELD_MAP: tuple[tuple[tuple[str, ...], object], ...] = (
     (("full name", "your name", "legal name"), "full_name"),
     (("preferred name",), "preferred_name"),
     (("email",), "email"),
+    # Workable (and similar) split phone into country-code combobox + local number.
+    # Must precede the generic phone rule — "telephone" alone would bind phone_e164.
+    (
+        ("telephone country code", "phone country code", "country calling code", "calling code"),
+        "country",
+    ),
     (("phone", "mobile", "telephone"), "phone_e164"),
     (("location",), _location),
     (("address", "street"), "address"),
     (("city", "town"), "city"),
     (("state", "province"), "province_state"),
     (("country",), "country"),
-    (("zip", "postal"), "postal_code"),
+    (("zip", "postal", "postcode"), _postal_code),
     (("linkedin",), "linkedin_url"),
     (("github",), "github_url"),
     (("portfolio", "website", "personal site"), "portfolio_url"),
+    (("current company", "current employer"), "current_company"),
     (("current title", "current job title", "most recent title"), "current_job_title"),
     (("years of experience", "years experience"), "years_experience"),
     (("education", "degree", "highest level"), "education_level"),
-    (("salary", "compensation", "expected pay", "desired salary"), "salary_number"),
+    (("salary", "compensation", "expected pay", "desired salary"), _salary_for_label),
     # Date-picker phrasings need a real date, not "Immediately" — checked before
     # the generic start/availability rule below.
     (
@@ -144,8 +184,9 @@ ATTR_MAP: tuple[tuple[tuple[str, ...], str], ...] = (
     (("tel", "phone"), "phone_e164"),
     (("given-name", "fname", "first_name", "firstname"), "full_name"),  # refined below
     (("family-name", "lname", "last_name", "lastname"), "full_name"),
-    (("postal-code", "zip"), "postal_code"),
+    (("postal-code", "postcode", "postal", "zip"), "postal_code"),
     (("address-line1", "street-address"), "address"),
+    (("city",), "city"),
     (("country",), "country"),
 )
 
@@ -156,7 +197,20 @@ ATTR_MAP: tuple[tuple[tuple[str, ...], str], ...] = (
 
 # (substrings, literal_or_token, is_token)
 QUESTION_MAP: tuple[tuple[tuple[str, ...], str, bool], ...] = (
+    (("only for us based positions", "roles posted in the us only"), "Not applicable", False),
+    (("does this range meet your compensation", "meet your compensation requirements"), "Yes", False),
     (("authorized to work", "legally authorized", "eligible to work"), "Yes", False),
+    (
+        (
+            "minimum education",
+            "education requirement",
+            "bachelor's degree",
+            "bachelor degree",
+            "fulfill our minimum education",
+        ),
+        "Yes",
+        False,
+    ),
     (
         (
             "require sponsorship",
@@ -174,7 +228,7 @@ QUESTION_MAP: tuple[tuple[tuple[str, ...], str, bool], ...] = (
     (("criminal", "felony", "convicted"), "No", False),
     (("previously worked", "worked here before", "former employee"), "No", False),
     (("interviewed", "interview before", "previously interviewed", "interview with"), "No", False),
-    (("how did you hear", "referral source", "source"), "Online Job Board", False),
+    (("how did you hear", "referral source", "source"), "LinkedIn", False),
     (("ai policy", "acknowledge", "i have read", "i agree", "i confirm", "candidate privacy", "terms"), "Yes", False),
     (("by checking this box", "i consent", "consent to", "i authorize", "i certify"), "Yes", False),
     (("willing to relocate", "relocation", "relocate"), "Yes", False),
@@ -191,6 +245,14 @@ QUESTION_MAP: tuple[tuple[tuple[str, ...], str, bool], ...] = (
         False,
     ),
     (("work remotely", "comfortable remote", "remote work"), "Yes", False),
+    (("english cv", "english resume that you can share"), "Yes", False),
+    (("english level", "level of english", "proficiency in english"), "Advanced", False),
+    ((".net development", "dotnet development experience"), "Yes", False),
+    (
+        ("commercial cloud development", "cloud development experience of at least"),
+        "Yes",
+        False,
+    ),
     (("gender",), "gender", True),
     (("race", "ethnicity"), "race_ethnicity", True),
     (("hispanic", "latino"), "race_ethnicity", True),
@@ -348,7 +410,10 @@ def _match_field_map(label: str, tokens: dict) -> tuple[str, str] | None:
     for substrings, target in FIELD_MAP:
         if any(sub in label for sub in substrings):
             if callable(target):
-                value = target(tokens)
+                try:
+                    value = target(label, tokens)
+                except TypeError:
+                    value = target(tokens)
             else:
                 value = tokens.get(target, "")
             if value:
@@ -367,6 +432,9 @@ def _match_attr_map(field: Field, tokens: dict) -> tuple[str, str] | None:
         return (v, "attr") if v else None
     if any(k in blob for k in ("family-name", "lname", "last_name", "lastname")):
         v = _last_word(tokens)
+        return (v, "attr") if v else None
+    if any(k in blob for k in ("postal-code", "postcode", "postal", "zip")):
+        v = _postal_code(tokens)
         return (v, "attr") if v else None
     for keys, token_key in ATTR_MAP:
         if any(k in blob for k in keys):
@@ -388,6 +456,83 @@ def _match_question_map(label: str, tokens: dict) -> tuple[str, str] | None:
             if value:
                 return value, "label"
             return None
+    return None
+
+
+_YES_NO_OPTIONS = frozenset({"yes", "no"})
+
+LOCATION_REQUIREMENT_MARKERS = (
+    "physically located",
+    "located and working within",
+    "within europe",
+    "must be in europe",
+    "european union",
+    "located in the united states",
+    "must be based in the us",
+    "based in the us",
+    "us time zone",
+    "legally authorized to work in the us",
+    "authorized to work in the us",
+    "based in the uk",
+    "within the uk",
+)
+
+SKILL_REQUIREMENT_MARKERS = (
+    "experience:",
+    "minimum of",
+    "proficiency in",
+    "strong understanding",
+    "excellent communication",
+    "proven experience",
+    "demonstrated",
+    "years of experience",
+    "technical skills",
+    "cloud platforms",
+    "python",
+    " sql",
+    "data analysis",
+    "bi tools",
+    "client-facing",
+    "communication skills",
+    "requirements:",
+    "ability to",
+)
+
+
+def is_yes_no_radiogroup(field: Field) -> bool:
+    if not field.options:
+        return False
+    opts = {_norm(o) for o in field.options}
+    return opts <= _YES_NO_OPTIONS
+
+
+def is_location_requirement_trap(label: str) -> bool:
+    blob = _norm(label)
+    return any(marker in blob for marker in LOCATION_REQUIREMENT_MARKERS)
+
+
+def remaining_gaps_are_location_traps(fields: list[Field]) -> bool:
+    if not fields:
+        return False
+    return all(
+        is_location_requirement_trap(f"{f.section_header} {f.label}".strip())
+        for f in fields
+    )
+
+
+def _workable_self_assessment(field: Field, tokens: dict) -> Resolution | None:
+    """Workable requirement fieldsets: Yes/No self-assessment per requirement."""
+    if not is_yes_no_radiogroup(field):
+        return None
+    context = _question_context(field)
+    if any(marker in context for marker in SKILL_REQUIREMENT_MARKERS):
+        pick = choose_select_option("Yes", field.options)
+        if pick:
+            return Resolution(answer=pick, confidence=0.88, via="label")
+    if len(context) > 40:
+        pick = choose_select_option("Yes", field.options)
+        if pick:
+            return Resolution(answer=pick, confidence=0.75, via="label")
     return None
 
 
@@ -438,6 +583,16 @@ def resolve_field(field: Field, tokens: dict) -> Resolution | None:
     q = _match_question_map(_question_context(field), tokens)
     if q:
         return Resolution(answer=q[0], confidence=0.9, via=q[1])
+
+    # 2b. Workable per-requirement Yes/No radiogroups — before field map so a
+    #     "Location: … within Europe" requirement is not mistaken for address.
+    if is_yes_no_radiogroup(field):
+        context = _question_context(field)
+        if is_location_requirement_trap(context):
+            return None
+        wa_req = _workable_self_assessment(field, tokens)
+        if wa_req:
+            return wa_req
 
     # 3. Identity / contact / scalar fields.
     fm = _match_field_map(label, tokens)

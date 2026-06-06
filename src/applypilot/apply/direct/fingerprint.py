@@ -57,7 +57,7 @@ _FAMILY_HOST_FRAGMENTS: dict[str, tuple[str, ...]] = {
 # Families with a hand-written deterministic adapter (Phase B/C). Jobs on a
 # family NOT in this set fall through to Claude rescue or get marked manual.
 ADAPTER_FAMILIES: frozenset[str] = frozenset(
-    {"greenhouse", "lever", "ashby", "workday", "workatastartup"}
+    {"greenhouse", "lever", "ashby", "workable", "workday", "workatastartup"}
 )
 
 UNKNOWN_FAMILY = "unknown"

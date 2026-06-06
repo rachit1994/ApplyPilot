@@ -27,6 +27,14 @@ def test_extract_code_from_text_six_char():
     assert email_verify.extract_code_from_text("Code: A1B2C3", code_length=6) == "A1B2C3"
 
 
+def test_extract_code_from_text_prefers_numeric_passcode_over_names():
+    body = (
+        "Hi Rachit, Just one more step before you get started. "
+        "Use the one-time pass code: 130604. Thank You, BNY Talent Acquisition"
+    )
+    assert email_verify.extract_code_from_text(body, code_length=6) == "130604"
+
+
 @patch("applypilot.apply.direct.email_verify.gmail_auth.credentials_exist", return_value=True)
 @patch("applypilot.apply.direct.email_verify._fetch_message_bodies")
 @patch("applypilot.apply.direct.email_verify.gmail_auth._search_messages")

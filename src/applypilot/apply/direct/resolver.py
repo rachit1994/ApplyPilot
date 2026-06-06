@@ -151,14 +151,10 @@ def resolve(
 
         leftovers.append(f)
 
-    # Only REQUIRED leftovers are worth a Gemini call. Optional fields the
-    # rules couldn't place are left blank (no spend, no boilerplate) — the
-    # form will still submit. This keeps Tier-2 cost proportional to genuine
-    # need, which matters under a tight LLM budget.
-    billable = [f for f in leftovers if f.required]
-    skipped = [f for f in leftovers if not f.required]
-    for f in skipped:
-        out.unresolved.append(_field_key(f))  # blank, not required -> fine
+    # Resolve every visible leftover field, including optional fields. Optional
+    # blanks submit on many ATSes, but they also make the filled application look
+    # careless and hide useful signals from the dashboard review log.
+    billable = list(leftovers)
 
     if billable and gemini_enabled:
         try:
@@ -253,7 +249,7 @@ def _gemini_batch(fields: list[Field], tokens: dict, job: dict) -> dict[str, str
     ]
     prompt = _GEMINI_PROMPT.format(
         profile=json.dumps(tokens, ensure_ascii=False),
-        company=job.get("site") or job.get("company") or "the company",
+        company=tokens.get("company") or job.get("company") or job.get("site") or "the company",
         role=job.get("title") or "this role",
         fields=json.dumps(payload_fields, ensure_ascii=False),
     )

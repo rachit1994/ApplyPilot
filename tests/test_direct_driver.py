@@ -29,7 +29,14 @@ def test_lever_ashby_adapter_dispatched(family, no_skip_ats):
     assert adapter.family == family
 
 
-@pytest.mark.parametrize("family", ["workday", "unknown", "", None])
+@pytest.mark.parametrize("family", ["workday"])
+def test_workday_adapter_dispatched(family, no_skip_ats):
+    adapter = get_adapter(family)
+    assert adapter is not None
+    assert adapter.family == family
+
+
+@pytest.mark.parametrize("family", ["unknown", "", None])
 def test_adapter_not_dispatched(family):
     assert get_adapter(family) is None
 
@@ -309,6 +316,26 @@ def test_record_row_shape():
     assert row["source"] == "direct:t0:attr"
 
 
+def test_required_empty_fields_ignores_satisfied_checkbox_group():
+    from applypilot.apply.direct.profile_binding import Field
+
+    form = driver.extractor.FormState(
+        fields=[
+            Field(label="AWS", type="checkbox", tag="input", name_attr="certs",
+                  section_header="Certs", required=True, key="c1"),
+            Field(label="GCP", type="checkbox", tag="input", name_attr="certs",
+                  section_header="Certs", required=True, key="c2", value="checked"),
+        ]
+    )
+    assert driver._required_empty_fields(form) == []
+
+
+def test_file_hint_classifiers():
+    assert driver._file_hint_is_cover("Cover letter (optional)")
+    assert driver._file_hint_is_resume("Upload resume / CV")
+    assert driver._file_hint_is_photo("Profile photo")
+
+
 def test_ashby_autofill_file_is_not_submission_resume():
     from applypilot.apply.direct.profile_binding import Field
 
@@ -356,3 +383,118 @@ def test_field_override_delete(tmp_path, monkeypatch):
     db.set_field_override("Phone", "x")
     assert db.delete_field_override("Phone") is True
     assert db.get_field_override("Phone") is None
+
+
+def test_resolve_radio_group_relocation_without_gemini():
+    from applypilot.apply.direct.profile_binding import Field
+
+    members = [
+        Field(
+            label="Yes, open to relocation",
+            type="radio",
+            tag="input",
+            name_attr="relocation",
+            key="r1",
+        ),
+        Field(
+            label="No, not open to relocation",
+            type="radio",
+            tag="input",
+            name_attr="relocation",
+            key="r2",
+        ),
+    ]
+    pick, via = driver._resolve_radio_group_pick(
+        members, tokens={}, gemini_enabled=False
+    )
+    assert pick == "Yes, open to relocation"
+    assert via == "label"
+
+
+def test_resolve_radio_group_lever_yes_no_with_section_without_gemini():
+    from applypilot.apply.direct.profile_binding import Field
+
+    question = (
+        "Would you require sponsorship for employment visa status "
+        "either now or in the future?"
+    )
+    members = [
+        Field(
+            label="Yes",
+            type="radio",
+            tag="input",
+            name_attr="cards[x][field1]",
+            section_header=question,
+            key="y",
+        ),
+        Field(
+            label="No",
+            type="radio",
+            tag="input",
+            name_attr="cards[x][field1]",
+            section_header=question,
+            key="n",
+        ),
+    ]
+    pick, via = driver._resolve_radio_group_pick(
+        members,
+        tokens={"require_sponsorship": "No"},
+        gemini_enabled=False,
+    )
+    assert pick == "No"
+    assert via == "label"
+
+
+def test_lever_extractor_populates_section_header_for_card_radios():
+    pytest.importorskip("playwright")
+    from playwright.sync_api import sync_playwright
+
+    from applypilot.apply.direct import extractor
+
+    html = """
+    <html><body>
+      <div class="application-label full-width multiple-choice">
+        <div class="text">Are you currently legally eligible for employment in the United States? <span class="required">✱</span></div>
+      </div>
+      <div class="application-field full-width required-field">
+        <ul><li><label><input type="radio" name="cards[abc][field0]" value="Yes" required><span>Yes</span></label></li>
+        <li><label><input type="radio" name="cards[abc][field0]" value="No" required><span>No</span></label></li></ul>
+      </div>
+    </body></html>
+    """
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(html)
+        state = extractor.extract_fields(page)
+        browser.close()
+    radios = [f for f in state.fields if f.type == "radio"]
+    assert len(radios) == 2
+    assert all("legally eligible" in (f.section_header or "").lower() for f in radios)
+
+
+def test_lever_extractor_card_text_uses_application_label_not_ancestor():
+    pytest.importorskip("playwright")
+    from playwright.sync_api import sync_playwright
+
+    from applypilot.apply.direct import extractor
+
+    html = """
+    <html><body>
+      <div class="application-label"><div class="text">Resume/CV ✱</div></div>
+      <div class="application-field"><input type="file" name="resume"></div>
+      <div class="application-label full-width"><div class="text">Share your salary expectations ✱</div></div>
+      <div class="application-field full-width required-field">
+        <input required class="card-field-input" type="text" name="cards[x][field0]" placeholder="Type your response">
+      </div>
+    </body></html>
+    """
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(html)
+        state = extractor.extract_fields(page)
+        browser.close()
+    text_fields = [f for f in state.fields if f.tag == "input" and f.type == "text"]
+    assert len(text_fields) == 1
+    assert "salary" in text_fields[0].label.lower()

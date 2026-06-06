@@ -24,7 +24,7 @@ import { JobDetailPane } from "./JobDetailPane";
 import { PageCanvas } from "./layout/PageCanvas";
 
 const PAGE_SIZES = [25, 50, 100] as const;
-const JOB_ROW_PX = 58;
+const JOB_ROW_PX = 48;
 
 type Props = {
   searchParams: URLSearchParams;
@@ -75,24 +75,6 @@ export function JobsExplorerPage({ searchParams, onSearchParamsChange, onJobSele
   useEffect(() => {
     setSearchInput(filters.search);
   }, [filters.search]);
-
-  // Advanced filters are hidden in the UI; stale URL params caused chip counts ≠ list.
-  useEffect(() => {
-    if (
-      filters.minScore > 0 ||
-      filters.site ||
-      filters.search ||
-      filters.applyStatus
-    ) {
-      patchParams({
-        min_score: null,
-        site: null,
-        search: null,
-        apply_status: null,
-      });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once on mount
-  }, []);
 
   useEffect(() => {
     if (debouncedSearch === filters.search) return;
@@ -315,7 +297,51 @@ export function JobsExplorerPage({ searchParams, onSearchParamsChange, onJobSele
             </div>
           ) : null}
 
-          <div className="jobs__sortbar" aria-label="Sort jobs list">
+          <div className="jobs__controls" aria-label="Filter and sort jobs">
+            <label className="control jobs__controls-search">
+              <span className="control__label">Search</span>
+              <input
+                className="control__input"
+                type="search"
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
+                placeholder="Title, company…"
+              />
+            </label>
+            <label className="control">
+              <span className="control__label">Site</span>
+              <select
+                className="control__select"
+                value={filters.site}
+                onChange={(e) => patchParams({ site: e.target.value || null, page: 1 })}
+              >
+                <option value="">All sites</option>
+                {siteOptions.map((s) => (
+                  <option key={s} value={s}>
+                    {isPriorityBoardName(s) ? `${s} ★` : s}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="control">
+              <span className="control__label">Min score</span>
+              <select
+                className="control__select"
+                value={String(filters.minScore)}
+                onChange={(e) =>
+                  patchParams({ min_score: Number(e.target.value) || 0, page: 1 })
+                }
+              >
+                <option value="0">Any</option>
+                <option value="6">6+</option>
+                <option value="7">7+</option>
+                <option value="8">8+</option>
+                <option value="9">9+</option>
+              </select>
+            </label>
+
+            <span className="jobs__controls-spacer" />
+
             <label className="control jobs__sort-control">
               <span className="control__label">Sort by</span>
               <select
@@ -352,55 +378,6 @@ export function JobsExplorerPage({ searchParams, onSearchParamsChange, onJobSele
                 ))}
               </select>
             </label>
-          </div>
-
-          <div className="jobs__filterbar jobs__filterbar--advanced" hidden aria-hidden>
-            <label className="control" style={{ flex: 1, minWidth: 140 }}>
-              <span className="control__label">Search</span>
-              <input
-                className="control__input"
-                type="search"
-                value={searchInput}
-                onChange={(e) => setSearchInput(e.target.value)}
-                placeholder="Title, company…"
-              />
-            </label>
-            <label className="control">
-              <span className="control__label">Site</span>
-              <select
-                className="control__select"
-                value={filters.site}
-                onChange={(e) => patchParams({ site: e.target.value || null, page: 1 })}
-              >
-                <option value="">All</option>
-                {siteOptions.map((s) => (
-                  <option key={s} value={s}>
-                    {isPriorityBoardName(s) ? `${s} ★` : s}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="control">
-              <span className="control__label">Min score</span>
-              <select
-                className="control__select"
-                value={String(filters.minScore)}
-                onChange={(e) =>
-                  patchParams({ min_score: Number(e.target.value) || 0, page: 1 })
-                }
-              >
-                <option value="0">Any</option>
-                <option value="6">6+</option>
-                <option value="7">7+</option>
-                <option value="8">8+</option>
-                <option value="9">9+</option>
-              </select>
-            </label>
-            <div className="control" style={{ alignSelf: "flex-end" }}>
-              <button type="button" className="btn btn--ghost btn--sm" onClick={() => void refetch()}>
-                Refresh
-              </button>
-            </div>
           </div>
 
           <div className="jobs__pager" aria-label="Jobs list pagination">
@@ -486,23 +463,49 @@ export function JobsExplorerPage({ searchParams, onSearchParamsChange, onJobSele
               </p>
             </div>
           ) : (
-            <VirtualScroll
-              key={`${stageSlug}|${filters.page}|${filters.limit}|${filters.sort}|${filters.lowScoreReason}|${querySearch}`}
-              scrollRef={scrollRef}
-              className="jobs__scroll"
-              items={jobs}
-              getItemKey={(job) => job.url}
-              estimateSize={JOB_ROW_PX}
-              overscan={16}
-            >
-              {(job) => (
-                <JobListRow
-                  job={job}
-                  selected={selectedJob?.url === job.url}
-                  onSelect={() => selectJob(job)}
+            <>
+              <div className="jobs__thead" role="row">
+                <span className="apps__th">Stage</span>
+                <JobTh
+                  label="Title / Company"
+                  field="title"
+                  sortState={sortState}
+                  onSort={setSort}
                 />
-              )}
-            </VirtualScroll>
+                <JobTh
+                  label="Score"
+                  field="score"
+                  sortState={sortState}
+                  onSort={setSort}
+                  align="center"
+                />
+                <span className="apps__th">Location</span>
+                <JobTh
+                  label="When"
+                  field="activity"
+                  sortState={sortState}
+                  onSort={setSort}
+                  align="right"
+                />
+              </div>
+              <VirtualScroll
+                key={`${stageSlug}|${filters.page}|${filters.limit}|${filters.sort}|${filters.lowScoreReason}|${querySearch}`}
+                scrollRef={scrollRef}
+                className="jobs__scroll"
+                items={jobs}
+                getItemKey={(job) => job.url}
+                estimateSize={JOB_ROW_PX}
+                overscan={16}
+              >
+                {(job) => (
+                  <JobListRow
+                    job={job}
+                    selected={selectedJob?.url === job.url}
+                    onSelect={() => selectJob(job)}
+                  />
+                )}
+              </VirtualScroll>
+            </>
           )}
         </div>
 
@@ -526,7 +529,6 @@ function JobListRow({
   const scoreClass =
     score != null && score >= 8.5 ? "job__score job__score--strong" : "job__score";
   const rawDate = job.activity_at ?? job.discovered_at ?? job.scored_at ?? null;
-  const metaParts = [job.site, job.location, job.salary].filter(Boolean);
 
   return (
     <button
@@ -539,12 +541,57 @@ function JobListRow({
         <div className="job__title-line">
           <span className="job__title">{job.title ?? "Untitled"}</span>
         </div>
-        <div className="job__meta">{metaParts.length ? metaParts.join(" · ") : "—"}</div>
+        <div className="job__company">{job.site ?? "—"}</div>
       </div>
-      <div className="job__right">
-        <div className={scoreClass}>{score ?? "—"}</div>
-        <div className="job__age">{formatJobAge(rawDate)}</div>
+      <div className={scoreClass}>{score ?? "—"}</div>
+      <div className="job__loc" title={job.location ?? undefined}>
+        {job.location || "—"}
       </div>
+      <div className="job__age">{formatJobAge(rawDate)}</div>
+    </button>
+  );
+}
+
+function JobTh({
+  label,
+  field,
+  sortState,
+  onSort,
+  align,
+}: {
+  label: string;
+  field: JobSortField;
+  sortState: { field: JobSortField; dir: JobSortDir };
+  onSort: (field: JobSortField, dir: JobSortDir) => void;
+  align?: "center" | "right";
+}) {
+  const active = sortState.field === field;
+  const dirs = jobSortDirOptions(field);
+  const handle = () => {
+    let nextDir: JobSortDir;
+    if (active) {
+      const toggled: JobSortDir = sortState.dir === "asc" ? "desc" : "asc";
+      nextDir = dirs.some((d) => d.value === toggled) ? toggled : dirs[0]?.value ?? "desc";
+    } else {
+      nextDir = dirs[0]?.value ?? "desc";
+    }
+    onSort(field, nextDir);
+  };
+  const cls = [
+    "apps__th",
+    "apps__th--btn",
+    active ? "apps__th--sorted" : "",
+    align === "center" ? "apps__th--center" : "",
+    align === "right" ? "apps__th--right" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return (
+    <button type="button" className={cls} onClick={handle}>
+      {label}
+      <span className="apps__th-caret" aria-hidden>
+        {active ? (sortState.dir === "asc" ? "▲" : "▼") : "↕"}
+      </span>
     </button>
   );
 }

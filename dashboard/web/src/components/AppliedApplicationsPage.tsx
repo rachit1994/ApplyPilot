@@ -28,8 +28,28 @@ import {
 import { useDebouncedValue } from "../utils/useDebouncedValue";
 import { statusbarClass } from "../utils/statusbar";
 
-const APP_ROW_PX = 72;
+const APP_ROW_PX = 56;
 const PAGE_SIZES = [25, 50, 100] as const;
+
+type SortKey = "recent" | "fit" | "attempts" | "duration" | "company" | "status";
+type SortDir = "asc" | "desc";
+
+const SORT_DEFAULT_DIR: Record<SortKey, SortDir> = {
+  recent: "desc",
+  fit: "desc",
+  attempts: "desc",
+  duration: "desc",
+  company: "asc",
+  status: "asc",
+};
+
+const SORT_OPTIONS: { key: SortKey; label: string }[] = [
+  { key: "recent", label: "Most recent" },
+  { key: "fit", label: "Fit score" },
+  { key: "attempts", label: "Attempts" },
+  { key: "duration", label: "Duration" },
+  { key: "company", label: "Company" },
+];
 
 type Props = {
   searchParams: URLSearchParams;
@@ -61,6 +81,10 @@ export function AppliedApplicationsPage({
   const [searchInput, setSearchInput] = useState(() => filters.search);
   const [selectedUrl, setSelectedUrl] = useState<string | null>(null);
   const [queueNotice, setQueueNotice] = useState<string | null>(null);
+  const [sort, setSort] = useState<{ key: SortKey; dir: SortDir }>({
+    key: "recent",
+    dir: "desc",
+  });
   const scrollRef = useRef<HTMLDivElement>(null);
   const debouncedSearch = useDebouncedValue(searchInput, 300);
 
@@ -154,6 +178,46 @@ export function AppliedApplicationsPage({
     }
     return applications;
   }, [applications, statusFilter]);
+
+  // Client-side sort of the loaded page. (Server paginates by offset; sorting
+  // the current page is the no-API-change increment — full cross-page sort
+  // would need a `sort` query param on /applications.)
+  const sortedListRows = useMemo(() => {
+    const mul = sort.dir === "asc" ? 1 : -1;
+    const rows = [...mainListRows];
+    rows.sort((a, b) => {
+      switch (sort.key) {
+        case "fit":
+          return ((a.fit_score ?? -1) - (b.fit_score ?? -1)) * mul;
+        case "attempts":
+          return ((a.apply_attempts ?? 0) - (b.apply_attempts ?? 0)) * mul;
+        case "duration":
+          return ((a.apply_duration_ms ?? 0) - (b.apply_duration_ms ?? 0)) * mul;
+        case "company":
+          return (a.site ?? "").localeCompare(b.site ?? "") * mul;
+        case "status":
+          return (
+            statusLabel(a.apply_status ?? "").localeCompare(statusLabel(b.apply_status ?? "")) *
+            mul
+          );
+        case "recent":
+        default: {
+          const ta = applicationAttemptAt(a);
+          const tb = applicationAttemptAt(b);
+          return ((ta ? Date.parse(ta) : 0) - (tb ? Date.parse(tb) : 0)) * mul;
+        }
+      }
+    });
+    return rows;
+  }, [mainListRows, sort]);
+
+  const toggleSort = useCallback((key: SortKey) => {
+    setSort((prev) =>
+      prev.key === key
+        ? { key, dir: prev.dir === "asc" ? "desc" : "asc" }
+        : { key, dir: SORT_DEFAULT_DIR[key] },
+    );
+  }, []);
 
   const selected = useMemo(
     () => applications.find((a) => a.url === selectedUrl) ?? null,
@@ -305,6 +369,23 @@ export function AppliedApplicationsPage({
             placeholder="Company or role…"
           />
         </label>
+        <div className="apps__sort">
+          <span className="apps__sort-label">Sort</span>
+          <select
+            className="apps__sort-select"
+            value={sort.key}
+            onChange={(e) => {
+              const key = e.target.value as SortKey;
+              setSort({ key, dir: SORT_DEFAULT_DIR[key] });
+            }}
+          >
+            {SORT_OPTIONS.map((o) => (
+              <option key={o.key} value={o.key}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
 
       <div className="apps">
@@ -312,7 +393,11 @@ export function AppliedApplicationsPage({
           {manualRows.length > 0 ? (
             <div className="errors-band">
               <div className="errors-band__hd">
-                <span className="errors-band__title">Need your apply</span>
+                <span className="errors-band__pulse" aria-hidden />
+                <span className="errors-band__title">Needs you</span>
+                <span className="errors-band__sub">
+                  — jobs the agent couldn&rsquo;t finish on its own
+                </span>
                 <span className="errors-band__count">{manualRows.length}</span>
               </div>
               {manualRows.map((app) => (
@@ -412,30 +497,58 @@ export function AppliedApplicationsPage({
               <p className="panel__sub" style={{ padding: 16 }}>
                 {error instanceof Error ? error.message : "Error"}
               </p>
-            ) : mainListRows.length === 0 && !listLoading ? (
+            ) : sortedListRows.length === 0 && !listLoading ? (
               <p className="panel__sub" style={{ padding: 16 }}>
                 No applications match these filters.
               </p>
             ) : (
-              <div className="apps__scroll">
-                <VirtualScroll
-                  scrollRef={scrollRef}
-                  className="panel__body panel__body--tight"
-                  items={mainListRows}
-                  getItemKey={(app) => app.url}
-                  estimateSize={APP_ROW_PX}
-                  overscan={12}
-                >
-                  {(app) => (
-                    <AppRow
-                      app={app}
-                      selected={selectedUrl === app.url}
-                      onSelect={() => setSelectedUrl(app.url)}
-                      onApplyListAction={handleApplyListAction}
-                    />
-                  )}
-                </VirtualScroll>
-              </div>
+              <>
+                <div className="apps__thead" role="row">
+                  <SortableTh label="Status" sortKey="status" sort={sort} onSort={toggleSort} />
+                  <SortableTh
+                    label="Role / Company"
+                    sortKey="company"
+                    sort={sort}
+                    onSort={toggleSort}
+                  />
+                  <SortableTh
+                    label="Fit"
+                    sortKey="fit"
+                    sort={sort}
+                    onSort={toggleSort}
+                    align="center"
+                  />
+                  <SortableTh label="When" sortKey="recent" sort={sort} onSort={toggleSort} />
+                  <span className="apps__th">Outcome</span>
+                  <SortableTh
+                    label="Tries"
+                    sortKey="attempts"
+                    sort={sort}
+                    onSort={toggleSort}
+                    align="center"
+                  />
+                  <span className="apps__th apps__th--right">Actions</span>
+                </div>
+                <div className="apps__scroll">
+                  <VirtualScroll
+                    scrollRef={scrollRef}
+                    className="panel__body panel__body--tight"
+                    items={sortedListRows}
+                    getItemKey={(app) => app.url}
+                    estimateSize={APP_ROW_PX}
+                    overscan={12}
+                  >
+                    {(app) => (
+                      <AppRow
+                        app={app}
+                        selected={selectedUrl === app.url}
+                        onSelect={() => setSelectedUrl(app.url)}
+                        onApplyListAction={handleApplyListAction}
+                      />
+                    )}
+                  </VirtualScroll>
+                </div>
+              </>
             )}
           </div>
         </div>
@@ -484,25 +597,39 @@ function AppRow({
   const reason = applicationReasonLine(app);
   const reasonTone = applicationReasonTone(manual ? "manual" : status);
 
+  const fit = app.fit_score;
+
   return (
-    <div className={selected ? "app-row app-row--selected" : "app-row"}>
+    <div
+      className={selected ? "app-row app-row--selected" : "app-row"}
+      onClick={onSelect}
+    >
       <span className={statusbarClass(label)}>{label}</span>
       <button type="button" className="app-row__main app-row__select" onClick={onSelect}>
         <div className="app-row__title">{app.title ?? "Untitled"}</div>
         <div className="app-row__company">{app.site ?? "—"}</div>
       </button>
-      <div className="app-row__meta">
-        <div className="app-row__date">
-          <span className="app-row__date-label">{applicationDateCaption(app)}</span>
-          <span className="app-row__date-value">{formatWhen(whenIso)}</span>
-        </div>
+      <div className={fit != null && fit >= 8 ? "app-row__fit app-row__fit--hi" : "app-row__fit"}>
+        {fit != null ? fit : "—"}
+      </div>
+      <div className="app-row__when">
+        <span className="app-row__when-cap">{applicationDateCaption(app)}</span>
+        <span className="app-row__when-val">{formatWhen(whenIso)}</span>
+      </div>
+      <div className="app-row__outcome">
         {reason ? (
-          <div className={`app-row__reason app-row__reason--${reasonTone}`} title={app.apply_error ?? undefined}>
+          <div
+            className={`app-row__reason app-row__reason--${reasonTone}`}
+            title={app.apply_error ?? undefined}
+          >
             {reason}
           </div>
-        ) : null}
+        ) : (
+          <div className="app-row__reason app-row__reason--muted">—</div>
+        )}
       </div>
-      <div className="app-row__action-col">
+      <div className="app-row__tries">{app.apply_attempts ?? 0}</div>
+      <div className="app-row__action-col" onClick={(e) => e.stopPropagation()}>
         <ApplicationRowActions
           app={app}
           layout="row"
@@ -520,11 +647,38 @@ function AppRow({
           </a>
         ) : null}
       </div>
-      <button type="button" className="chev" onClick={onSelect} aria-label="Open details">
-        <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.6" aria-hidden>
-          <path d="m5 3 4 4-4 4" />
-        </svg>
-      </button>
     </div>
+  );
+}
+
+function SortableTh({
+  label,
+  sortKey,
+  sort,
+  onSort,
+  align,
+}: {
+  label: string;
+  sortKey: SortKey;
+  sort: { key: SortKey; dir: SortDir };
+  onSort: (key: SortKey) => void;
+  align?: "center";
+}) {
+  const active = sort.key === sortKey;
+  const cls = [
+    "apps__th",
+    "apps__th--btn",
+    active ? "apps__th--sorted" : "",
+    align === "center" ? "apps__th--center" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return (
+    <button type="button" className={cls} onClick={() => onSort(sortKey)}>
+      {label}
+      <span className="apps__th-caret" aria-hidden>
+        {active ? (sort.dir === "asc" ? "▲" : "▼") : "↕"}
+      </span>
+    </button>
   );
 }

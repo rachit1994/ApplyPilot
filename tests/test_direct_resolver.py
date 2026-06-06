@@ -18,12 +18,12 @@ TOKENS = {
     "current_job_title": "Senior Software Engineer",
     "earliest_start_date": "Immediately",
     "city": "Toronto",
-    # EEO tokens are always supplied by build_playbook_tokens (with these
-    # decline defaults); the resolver reads them by key, not as literals.
+    # EEO tokens are always supplied by build_playbook_tokens; the resolver
+    # reads them by key, not as literals.
     "gender": "Decline to self-identify",
     "race_ethnicity": "Decline to self-identify",
     "veteran_status": "I am not a protected veteran",
-    "disability_status": "I do not wish to answer",
+    "disability_status": "No, I don't have a disability",
 }
 
 
@@ -118,6 +118,26 @@ def test_tier2_gemini_batch_and_writeback(conn, monkeypatch):
     out2 = rz.resolve(fields, TOKENS, conn=conn, gemini_enabled=False)
     assert out2.answers["kq"].startswith("I value autonomy")
     assert out2.tier_max == 1
+
+
+def test_tier2_answers_optional_leftovers(conn, monkeypatch):
+    class FakeClient:
+        model = "gemini-flash"
+
+        def ask(self, prompt):
+            assert '"required": false' in prompt
+            return '{"opt": "I prefer distributed teams with clear ownership."}'
+
+    monkeypatch.setattr(
+        "applypilot.llm.get_client", lambda: FakeClient(), raising=False
+    )
+
+    fields = [Field(label="Anything else?", tag="textarea", required=False, key="opt")]
+    out = rz.resolve(fields, TOKENS, conn=conn, gemini_enabled=True)
+    assert out.answers["opt"].startswith("I prefer distributed")
+    assert out.unresolved == []
+    assert out.unresolved_required == []
+    assert out.llm_field_count == 1
 
 
 def test_parse_json_answers_tolerates_fences():

@@ -188,7 +188,7 @@ def list_recent_messages(limit: int = 3) -> list[GmailMessageSummary]:
 
 _RECEIPT_QUERY = (
     "newer_than:2d "
-    "(from:ashbyhq.com OR from:greenhouse.io OR from:lever.co "
+    "(from:ashbyhq.com OR from:greenhouse.io OR from:lever.co OR from:workablemail.com "
     "OR subject:application OR subject:applying OR subject:received OR subject:thank)"
 )
 
@@ -225,6 +225,54 @@ def _norm(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
 
 
+def _compact(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", value.lower())
+
+
+_GENERIC_COMPANY_SOURCES = {
+    "ashby",
+    "greenhouse",
+    "lever",
+    "workable",
+    "workablewebsearch",
+    "workable web search",
+    "linkedin",
+}
+
+
+_COMPANY_TOKEN_STOPWORDS = {
+    "inc",
+    "llc",
+    "ltd",
+    "limited",
+    "corp",
+    "corporation",
+    "company",
+    "co",
+    "technologies",
+    "technology",
+}
+
+
+def _company_terms(value: str) -> set[str]:
+    return {
+        part
+        for part in _norm(value).split()
+        if len(part) >= 3 and part not in _COMPANY_TOKEN_STOPWORDS
+    }
+
+
+def _workable_company_candidates(slug: str) -> list[str]:
+    slug = slug.strip().strip("/")
+    if not slug:
+        return []
+    variants = {slug}
+    variants.add(re.sub(r"-\d+$", "", slug))
+    variants.add(slug.replace("-dot-com", ""))
+    variants.add(slug.replace("-main", ""))
+    return [v for v in variants if v]
+
+
 def _job_company_candidates(job: dict[str, Any]) -> list[str]:
     candidates: list[str] = []
     for key in ("company", "company_name"):
@@ -234,7 +282,7 @@ def _job_company_candidates(job: dict[str, Any]) -> list[str]:
     site = str(job.get("site") or "").strip()
     if ":" in site:
         candidates.append(site.split(":", 1)[1].strip())
-    elif site and site.lower() not in {"linkedin", "greenhouse", "lever", "ashby"}:
+    elif site and _norm(site) not in _GENERIC_COMPANY_SOURCES:
         candidates.append(site)
 
     for key in ("application_url", "url"):
@@ -247,11 +295,15 @@ def _job_company_candidates(job: dict[str, Any]) -> list[str]:
             candidates.append(parts[0])
         elif "greenhouse.io" in host and parts:
             candidates.append(parts[0])
+        elif "apply.workable.com" in host and parts:
+            candidates.extend(_workable_company_candidates(parts[0]))
 
     seen: set[str] = set()
     out: list[str] = []
     for candidate in candidates:
         norm = _norm(candidate)
+        if norm in _GENERIC_COMPANY_SOURCES:
+            continue
         if len(norm) >= 2 and norm not in seen:
             seen.add(norm)
             out.append(norm)
@@ -285,7 +337,23 @@ def _message_matches_receipt(job: dict[str, Any], message: GmailMessageSummary) 
         return False
 
     companies = _job_company_candidates(job)
-    if any(company in text for company in companies):
+    if companies:
+        compact_text = _compact(text)
+        text_terms = set(text.split())
+        company_match = any(
+            company in text or _compact(company) in compact_text
+            or (
+                (terms := _company_terms(company))
+                and terms.issubset(text_terms)
+            )
+            for company in companies
+        )
+        if not company_match:
+            return False
+        title_terms = _job_title_terms(job)
+        if title_terms:
+            overlap = {term for term in title_terms if term in text}
+            return len(overlap) >= min(2, len(title_terms))
         return True
 
     title_terms = _job_title_terms(job)

@@ -367,12 +367,14 @@ def job_has_direct_adapter(job: dict) -> bool:
 
 
 def job_runnable_in_deterministic_only(job: dict) -> bool:
-    """True when Direct Apply may run without Claude (known adapter or content-sniff unknown)."""
+    """True when Direct Apply may run without Claude (known adapter, unknown sniff, or generic)."""
     from applypilot.apply.direct import fingerprint
     from applypilot.apply.direct.adapters import get_adapter
 
     family = fingerprint.ats_family(_job_apply_url(job))
-    return get_adapter(family) is not None or family == fingerprint.UNKNOWN_FAMILY
+    if get_adapter(family) is not None or family == fingerprint.UNKNOWN_FAMILY:
+        return True
+    return apply_settings.deterministic_only_enabled()
 
 
 def _persist_needs_adapter(conn, row: dict, detail: str) -> None:
@@ -663,6 +665,13 @@ def acquire_job(
                             allow_base=include_untailored,
                         )
                         resume_path = resolution.path
+                        logger.info(
+                            "Resume pick %s: source=%s role=%s path=%s",
+                            (candidate_row.get("title") or "")[:60],
+                            resolution.source,
+                            resolution.role_key or "-",
+                            resume_path or "-",
+                        )
                         if not resume_path:
                             detail = (
                                 "needs_tailor"
@@ -729,6 +738,13 @@ def acquire_job(
                     allow_base=include_untailored,
                 )
                 resume_path = resolution.path
+                logger.info(
+                    "Resume pick %s: source=%s role=%s path=%s",
+                    (job_row.get("title") or "")[:60],
+                    resolution.source,
+                    resolution.role_key or "-",
+                    resume_path or "-",
+                )
                 if not resume_path:
                     detail = (
                         "needs_tailor"
@@ -1863,13 +1879,12 @@ def _try_direct_apply(
     # navigate and content-sniff before giving up. Other adapter-less families
     # (workday, icims, ...) can't be rescued that way, so they defer/fail here.
     if get_adapter(family) is None and family != fingerprint.UNKNOWN_FAMILY:
-        if (
-            apply_settings.deterministic_only_enabled()
-            or not apply_budget.governor().claude_allowed()
-        ):
+        if apply_settings.deterministic_only_enabled():
+            pass  # generic driver handles adapter-less families in deterministic-only mode
+        elif not apply_budget.governor().claude_allowed():
             _park_job_needs_adapter(row_url, f"no_adapter:{family}")
             return f"parked:needs_adapter:no_adapter:{family}", 0, None
-        if defer_claude_rescue:
+        elif defer_claude_rescue:
             add_event(
                 f"[W{worker_id}] Direct: no adapter for {family} — "
                 "deferred to Claude pass (direct queue first)"
@@ -2432,6 +2447,10 @@ def main(
     POLL_INTERVAL = poll_interval
     _stop_event.clear()
 
+    from applypilot.apply.direct import review_log as _review_log
+
+    _review_log.start_writer()
+
     try:
         apply_profile = config.load_profile()
     except Exception:
@@ -2658,3 +2677,10 @@ def main(
     finally:
         _stop_event.set()
         kill_all_chrome()
+        try:
+            from applypilot.apply.direct import review_log as _review_log
+
+            _review_log.flush()
+            _review_log.stop_writer()
+        except Exception:  # noqa: BLE001
+            logger.debug("review_log shutdown failed", exc_info=True)

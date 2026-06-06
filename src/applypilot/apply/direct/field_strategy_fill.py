@@ -37,7 +37,7 @@ _CLICK_OPTION_NEAR_LABEL_JS = r"""({label, answer}) => {
     }
     return false;
   };
-  const labels = [...document.querySelectorAll('label, legend, [class*="question-title"], [class*="Question"], [class*="label"], [class*="Label"]')];
+  const labels = [...document.querySelectorAll('label, legend, [id$="_label"], [class*="question-title"], [class*="Question"], [class*="label"], [class*="Label"]')];
   for (const lab of labels) {
     const txt = norm(lab.innerText).slice(0, 140);
     if (!txt || !(txt.includes(wantLabel) || wantLabel.includes(txt))) continue;
@@ -104,12 +104,16 @@ def infer_fill_method(
         return "react_select"
     if field.tag == "select":
         return "value"
+    if field.options:
+        return "click_label"
     if field.type == "checkbox":
         return "click_label" if used_click_label else "value"
     return "value"
 
 
 def _locator(page, field):
+    from applypilot.apply.direct.selector_heal import heal_locator
+
     if field.key:
         loc = page.locator(f'[data-ap-key="{field.key}"]').first
         if loc.count() > 0:
@@ -119,7 +123,22 @@ def _locator(page, field):
         loc = page.locator(f'[data-ap-key="{field.key}"]').first
         if loc.count() > 0:
             return loc
-    return page.locator(f'[data-ap-id="{field.ap_id}"]').first
+    loc = page.locator(f'[data-ap-id="{field.ap_id}"]').first
+    if loc.count() > 0:
+        return loc
+    healed = heal_locator(
+        page,
+        {
+            "label": field.label,
+            "name_attr": field.name_attr,
+            "name": field.name_attr,
+            "type": field.type,
+            "tag": field.tag or "input",
+        },
+    )
+    if healed is not None:
+        return healed
+    return loc
 
 
 def _click_option_near_label(page, field, answer: str) -> bool:
@@ -132,6 +151,88 @@ def _click_option_near_label(page, field, answer: str) -> bool:
         )
     except Exception:  # noqa: BLE001
         logger.debug("click_label failed for %r", field.label, exc_info=True)
+        return False
+
+
+_CHECKBOX_DOM_CLICK_JS = r"""({key, apId}) => {
+  let el = null;
+  if (key) el = document.querySelector(`[data-ap-key="${key}"]`);
+  if (!el && apId !== undefined && apId !== null) {
+    el = document.querySelector(`[data-ap-id="${apId}"]`);
+  }
+  if (!el || (el.type || '').toLowerCase() !== 'checkbox') return false;
+  if (!el.checked) el.click();
+  if (!el.checked) {
+    el.checked = true;
+    el.dispatchEvent(new Event('input', {bubbles: true}));
+    el.dispatchEvent(new Event('change', {bubbles: true}));
+  }
+  return !!el.checked;
+}"""
+
+
+_CLICK_FIELD_OPTION_JS = r"""({key, apId, answer}) => {
+  const norm = s => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const want = norm(answer);
+  if (!want) return false;
+  let root = null;
+  if (key) root = document.querySelector(`[data-ap-key="${key}"]`);
+  if (!root && apId !== undefined && apId !== null) {
+    root = document.querySelector(`[data-ap-id="${apId}"]`);
+  }
+  if (!root) return false;
+  const textOf = (el) => norm(
+    (el.innerText || '') ||
+    (el.labels && el.labels[0] && el.labels[0].innerText) ||
+    el.getAttribute('aria-label') ||
+    el.value ||
+    ''
+  );
+  const matches = (txt) => {
+    const t = norm(txt);
+    return t === want || t.startsWith(want + ' ') || want.startsWith(t + ' ');
+  };
+  const candidates = [
+    ...root.querySelectorAll('label, [role="radio"], [role="checkbox"], input[type="radio"], input[type="checkbox"]')
+  ];
+  for (const c of candidates) {
+    if (!matches(textOf(c))) continue;
+    const clickable = c.closest('label') || c;
+    clickable.click();
+    const input = c.matches('input') ? c : c.querySelector('input');
+    if (input && (input.type === 'radio' || input.type === 'checkbox')) {
+      if (!input.checked) input.click();
+      return !!input.checked;
+    }
+    return true;
+  }
+  return false;
+}"""
+
+
+def _click_field_option(page, field, answer: str) -> bool:
+    try:
+        return bool(
+            page.evaluate(
+                _CLICK_FIELD_OPTION_JS,
+                {"key": field.key, "apId": field.ap_id, "answer": answer},
+            )
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("field option click failed for %r", field.label, exc_info=True)
+        return False
+
+
+def _check_checkbox_dom(page, field) -> bool:
+    try:
+        return bool(
+            page.evaluate(
+                _CHECKBOX_DOM_CLICK_JS,
+                {"key": field.key, "apId": field.ap_id},
+            )
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("checkbox DOM click failed for %r", field.label, exc_info=True)
         return False
 
 
@@ -155,6 +256,9 @@ def _fill_click_label(page, field, answer: str, *, family: str) -> bool:
     if loc.count() == 0:
         return False
     loc.scroll_into_view_if_needed(timeout=3_000)
+    if field.options and field.tag != "select" and not field.combobox:
+        if _click_field_option(page, field, answer):
+            return True
     if field.type == "checkbox":
         want = answer.strip().lower() in ("yes", "true", "checked", "on", "1")
         if not want:
@@ -162,9 +266,13 @@ def _fill_click_label(page, field, answer: str, *, family: str) -> bool:
         try:
             loc.check(timeout=3_000)
         except Exception:  # noqa: BLE001
+            if _check_checkbox_dom(page, field):
+                return True
             return _click_option_near_label(page, field, answer)
         try:
             if not loc.is_checked():
+                if _check_checkbox_dom(page, field):
+                    return True
                 return _click_option_near_label(page, field, answer)
         except Exception:  # noqa: BLE001
             pass
@@ -250,6 +358,10 @@ def _lookup_method(field, family: str) -> str | None:
 def fill_field_with_strategy(page, field, answer: str, *, family: str) -> bool:
     """Try cached fill_method first, then driver-like defaults."""
     method = _lookup_method(field, family)
+    if field.options and field.tag != "select" and not field.combobox:
+        return _fill_click_label(page, field, answer, family=family)
+    if field.type in {"checkbox", "radio"}:
+        return _fill_click_label(page, field, answer, family=family)
     if method == "click_label":
         return _fill_click_label(page, field, answer, family=family)
     if method == "press_sequentially":
@@ -265,7 +377,7 @@ def fill_field_with_strategy(page, field, answer: str, *, family: str) -> bool:
             return _fill_press_sequentially(page, field, answer)
         if field.combobox or field.options:
             return _fill_react_select(page, field, answer, family=family)
-    if field.type == "checkbox":
+    if field.type in {"checkbox", "radio"}:
         return _fill_click_label(page, field, answer, family=family)
     if field.type == "tel":
         return _fill_press_sequentially(page, field, answer)

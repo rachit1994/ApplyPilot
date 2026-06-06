@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from hashlib import sha1
+
 import pytest
 
 from applypilot.apply.direct import playbook
@@ -38,6 +40,50 @@ def test_state_signature_stable_and_distinct(conn):
     )
     assert sig_a1 == sig_a2
     assert sig_a1 != sig_b
+
+
+def test_salient_clickables_canonicalizes_and_filters():
+    assert playbook._salient_clickables(
+        ["Apply for this job", "Refer and Earn", "Acme Corp"]
+    ) == ["apply"]
+    assert playbook._salient_clickables(["Apply now", "Sign in with Google"]) == [
+        "apply",
+        "sign in",
+    ]
+
+
+def test_state_signature_ignores_noise_clickables(conn):
+    base = _snapshot(clickables=["Apply now", "Refer and Earn"])
+    noisy = _snapshot(clickables=["Apply now", "Share on LinkedIn", "Job details"])
+    kwargs = {
+        "ats_family": "workday",
+        "apex_host": "acme.wd5.myworkdayjobs.com",
+        "step_name": "apply_reveal",
+    }
+    assert playbook.state_signature(base, **kwargs) == playbook.state_signature(
+        noisy, **kwargs
+    )
+
+
+def test_state_signature_differs_when_salient_clickables_differ(conn):
+    apply_snap = _snapshot(clickables=["Apply now"])
+    next_snap = _snapshot(clickables=["Next"])
+    kwargs = {
+        "ats_family": "workday",
+        "apex_host": "acme.wd5.myworkdayjobs.com",
+        "step_name": "apply_reveal",
+    }
+    assert playbook.state_signature(apply_snap, **kwargs) != playbook.state_signature(
+        next_snap, **kwargs
+    )
+
+
+def test_state_signature_uses_sig_version_two(conn):
+    snap = _snapshot(clickables=["Apply"])
+    sig = playbook.state_signature(snap, ats_family="lever", apex_host="jobs.lever.co")
+    parts_v1 = "|".join(("1", "lever", "jobs.lever.co", "", "apply", "0", "0", "0"))
+    assert sig != sha1(parts_v1.encode("utf-8")).hexdigest()
+    assert playbook.SIG_VERSION == 2
 
 
 def test_submit_never_replayable(conn):

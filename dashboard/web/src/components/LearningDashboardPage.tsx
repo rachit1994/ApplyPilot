@@ -1,11 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   fetchLearningClusters,
+  fetchLearningEscalations,
+  fetchLearningInduction,
   fetchLearningReview,
   fetchLearningStats,
+  fetchLearningTierMix,
   postLearningBan,
   postLearningPromote,
   type LearningCluster,
+  type LearningInductionCandidate,
 } from "../api";
 import { PageCanvas } from "./layout/PageCanvas";
 
@@ -27,6 +31,24 @@ export function LearningDashboardPage() {
   const { data: clusters, isLoading: clustersLoading } = useQuery({
     queryKey: ["learning", "clusters"],
     queryFn: () => fetchLearningClusters(15),
+    refetchInterval: 15_000,
+  });
+
+  const { data: tierMix, isLoading: tierMixLoading } = useQuery({
+    queryKey: ["learning", "tier-mix"],
+    queryFn: () => fetchLearningTierMix(24),
+    refetchInterval: 15_000,
+  });
+
+  const { data: escalations, isLoading: escalationsLoading } = useQuery({
+    queryKey: ["learning", "escalations"],
+    queryFn: () => fetchLearningEscalations(24),
+    refetchInterval: 15_000,
+  });
+
+  const { data: induction, isLoading: inductionLoading } = useQuery({
+    queryKey: ["learning", "induction"],
+    queryFn: () => fetchLearningInduction(3),
     refetchInterval: 15_000,
   });
 
@@ -117,6 +139,99 @@ export function LearningDashboardPage() {
             </div>
           </div>
 
+          <div className="panel">
+            <div className="panel__head panel__head--inset">
+              <div>
+                <div className="panel__title">Tier mix (24h)</div>
+                <div className="panel__sub">Which unblock tiers fired recently</div>
+              </div>
+            </div>
+            <div className="panel__body panel__body--tight">
+              {tierMixLoading ? (
+                <p className="panel__sub" style={{ padding: 12 }}>
+                  Loading tier mix…
+                </p>
+              ) : Object.keys(tierMix?.tiers ?? {}).length === 0 ? (
+                <p className="panel__sub" style={{ padding: 12 }}>
+                  No tier events yet.
+                </p>
+              ) : (
+                <div className="devlog" role="list">
+                  {Object.entries(tierMix?.tiers ?? {})
+                    .sort((a, b) => b[1] - a[1])
+                    .map(([tier, count]) => (
+                      <div key={tier} className="devlog__row" role="listitem">
+                        <div className="devlog__stage">{tier}</div>
+                        <div className="devlog__msg">{count} events</div>
+                      </div>
+                    ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="panel">
+            <div className="panel__head panel__head--inset">
+              <div>
+                <div className="panel__title">Escalation pressure</div>
+                <div className="panel__sub">Families near cap thresholds (24h)</div>
+              </div>
+            </div>
+            <div className="panel__body panel__body--tight">
+              {escalationsLoading ? (
+                <p className="panel__sub" style={{ padding: 12 }}>
+                  Loading escalations…
+                </p>
+              ) : (escalations?.families.length ?? 0) === 0 ? (
+                <p className="panel__sub" style={{ padding: 12 }}>
+                  No escalation data yet.
+                </p>
+              ) : (
+                <div className="devlog" role="list">
+                  {escalations?.families.map((row) => (
+                    <div key={row.ats_family} className="devlog__row" role="listitem">
+                      <div className="devlog__stage">{row.ats_family}</div>
+                      <div className="devlog__msg">
+                        {row.attempts} attempts · {(row.fail_fraction * 100).toFixed(0)}% fail
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="panel" style={{ gridColumn: "1 / -1" }}>
+            <div className="panel__head panel__head--inset">
+              <div>
+                <div className="panel__title">Induction queue</div>
+                <div className="panel__sub">Repeated successes ready for promotion</div>
+              </div>
+            </div>
+            <div className="panel__body panel__body--tight">
+              {inductionLoading ? (
+                <p className="panel__sub" style={{ padding: 12 }}>
+                  Loading induction candidates…
+                </p>
+              ) : (induction?.candidates.length ?? 0) === 0 ? (
+                <p className="panel__sub" style={{ padding: 12 }}>
+                  No induction candidates yet.
+                </p>
+              ) : (
+                induction?.candidates.map((row) => (
+                  <InductionRow
+                    key={`${row.state_sig}:${row.action_type ?? ""}`}
+                    row={row}
+                    busy={promoteMut.isPending}
+                    onPromote={() =>
+                      promoteMut.mutate({ sig: row.state_sig, scope: "host" })
+                    }
+                  />
+                ))
+              )}
+            </div>
+          </div>
+
           <div className="panel" style={{ gridColumn: "1 / -1" }}>
             <div className="panel__head panel__head--inset">
               <div>
@@ -181,6 +296,30 @@ function ClusterRow({
           Ban
         </button>
       </div>
+    </div>
+  );
+}
+
+function InductionRow({
+  row,
+  busy,
+  onPromote,
+}: {
+  row: LearningInductionCandidate;
+  busy: boolean;
+  onPromote: () => void;
+}) {
+  return (
+    <div className="src-row" style={{ alignItems: "center" }}>
+      <div className="src__name" style={{ flex: 1, minWidth: 0 }}>
+        <div title={row.state_sig}>{shortSig(row.state_sig)}</div>
+        <small>
+          {row.support}× · {row.ats_family ?? "—"} · {row.action_type ?? "—"}
+        </small>
+      </div>
+      <button type="button" className="btn btn--ghost" disabled={busy} onClick={onPromote}>
+        Promote
+      </button>
     </div>
   );
 }

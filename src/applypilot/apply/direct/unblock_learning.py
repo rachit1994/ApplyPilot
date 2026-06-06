@@ -7,6 +7,7 @@ import logging
 from typing import Any
 from urllib.parse import urlsplit
 
+from applypilot.apply import apply_settings
 from applypilot.apply.direct import extractor, unblock
 
 logger = logging.getLogger(__name__)
@@ -114,15 +115,7 @@ def resolve_unblock_action(
     state_sig: str | None = None,
     family_sig: str | None = None,
 ) -> tuple[dict | None, str]:
-    """Return (action, tier) where tier is 'replay' or 'gemini'.
-
-    ``state_sig`` should be the signature already computed by the caller for
-    this step so the lookup and the feedback that follows key on the SAME
-    signature (a fresh snapshot here could drift). Only recomputed if omitted.
-
-    On a host-scope miss, falls back to a family-scope lookup (``family_sig``)
-    so owner seeds and learned family-generalized entries replay across tenants.
-    """
+    """Return (action, tier) where tier is 'replay' or 'gemini'."""
     _ = job
     if _playbook is None:
         return None, "gemini"
@@ -136,19 +129,63 @@ def resolve_unblock_action(
             apex_host=apex_host or None,
             step_name=step_name or None,
         )
+    if family_sig is None:
+        family_sig = _family_state_sig(build_nav_snapshot(page), family=family)
+
+    for tier_fn in _TIERS:
+        action, tier = tier_fn(
+            state_sig=state_sig or "",
+            family_sig=family_sig,
+            scope=scope,
+        )
+        if action is not None:
+            return action, tier or "replay"
+    return None, "gemini"
+
+
+def _tier_host_replay(
+    *,
+    state_sig: str,
+    family_sig: str | None,
+    scope: str,
+) -> tuple[dict | None, str | None]:
     entry = _playbook.lookup_nav(state_sig, scope=scope)
     if entry and _replay_allowed(entry):
         action = _entry_to_action(entry)
         if _action_replay_allowed(action):
             return action, "replay"
-    # Family-scope fallback: seeds + generalized entries that apply family-wide.
-    if family_sig:
-        fam_entry = _playbook.lookup_nav(family_sig, scope=_FAMILY_SCOPE)
-        if fam_entry and _replay_allowed(fam_entry):
-            action = _entry_to_action(fam_entry)
-            if _action_replay_allowed(action):
-                return action, "replay"
+    return None, None
+
+
+def _tier_family_replay(
+    *,
+    state_sig: str,
+    family_sig: str | None,
+    scope: str,
+) -> tuple[dict | None, str | None]:
+    _ = state_sig, scope
+    if not family_sig:
+        return None, None
+    fam_entry = _playbook.lookup_nav(family_sig, scope=_FAMILY_SCOPE)
+    if fam_entry and _replay_allowed(fam_entry):
+        action = _entry_to_action(fam_entry)
+        if _action_replay_allowed(action):
+            return action, "replay"
+    return None, None
+
+
+def _tier_gemini(
+    *,
+    state_sig: str,
+    family_sig: str | None,
+    scope: str,
+) -> tuple[dict | None, str | None]:
+    _ = state_sig, family_sig, scope
     return None, "gemini"
+
+
+# Ordered escalation ladder: host replay → family replay → Gemini.
+_TIERS = (_tier_host_replay, _tier_family_replay, _tier_gemini)
 
 
 def _state_advanced(before_snap: dict, after_snap: dict) -> bool:
@@ -280,6 +317,38 @@ def run_unblock_with_learning(
 
     if not apex_host:
         apex_host = apex_host_from_url(getattr(page, "url", None) or job.get("url"))
+
+    if _review_log is not None and _get_connection is not None:
+        try:
+            conn = _get_connection()
+            cap_host = apex_host if family == "generic" else None
+            attempts, fail_fraction = _review_log.recent_fail_rate(
+                conn, ats_family=family, apex_host=cap_host
+            )
+            min_attempts = apply_settings.escalate_min_attempts()
+            fail_rate = apply_settings.escalate_fail_rate()
+            if attempts >= min_attempts and fail_fraction >= fail_rate:
+                _review_log.log_event(
+                    conn,
+                    job_url=job.get("url"),
+                    ats_family=family,
+                    apex_host=apex_host or None,
+                    tier="cap",
+                    outcome="escalate_human",
+                    failure_reason=(
+                        f"fail_rate={fail_fraction:.2f} attempts={attempts}"
+                    ),
+                )
+                logger.info(
+                    "[W%d] Unblock capped for %s (%d attempts, %.0f%% fail)",
+                    worker_id,
+                    family,
+                    attempts,
+                    fail_fraction * 100,
+                )
+                return False
+        except Exception:  # noqa: BLE001
+            logger.debug("escalation cap check failed", exc_info=True)
 
     unblock._dismiss_cookies(page)
     if unblock._has_identity_form(extractor.extract_fields(page)):

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { Application, ApplicationDetail, FormFieldSnapshot } from "../api";
 import { resolvedFormFields } from "../utils/formFilled";
@@ -26,12 +26,18 @@ type Props = {
   onApplyListAction?: (info: ApplyListActionInfo) => void;
 };
 
+// Outcome + form values answer "am I done / what was filled" — open by default.
+// Proof, agent actions, and the raw log are reference detail — collapsed.
+const DEFAULT_OPEN_SECTIONS: Record<string, boolean> = { outcome: true, form: true };
+
 export function ApplicationDetailPanel({ app, onApplyListAction }: Props) {
   const queryClient = useQueryClient();
   const [detail, setDetail] = useState<ApplicationDetail | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [showLog, setShowLog] = useState(false);
+  const [openSec, setOpenSec] = useState<Record<string, boolean>>(DEFAULT_OPEN_SECTIONS);
+  const toggleSec = (id: string) =>
+    setOpenSec((prev) => ({ ...prev, [id]: !prev[id] }));
 
   useEffect(() => {
     if (!app?.url) {
@@ -43,7 +49,7 @@ export function ApplicationDetailPanel({ app, onApplyListAction }: Props) {
     setLoading(true);
     setError(null);
     setDetail(null);
-    setShowLog(false);
+    setOpenSec(DEFAULT_OPEN_SECTIONS);
     fetchApplicationDetail(app.url)
       .then((d) => {
         if (!cancelled) setDetail(d);
@@ -204,8 +210,7 @@ export function ApplicationDetailPanel({ app, onApplyListAction }: Props) {
         {loading ? <p className="app-detail__state">Loading apply detail…</p> : null}
         {error ? <p className="app-detail__state app-detail__state--error">{error}</p> : null}
 
-        <section className="app-detail__card">
-          <h3 className="app-detail__card-title">Outcome</h3>
+        <Section id="outcome" title="Outcome" open={Boolean(openSec.outcome)} onToggle={toggleSec}>
           {parsed?.result_line ? <p className="app-detail__lead">{parsed.result_line}</p> : null}
           {resultReason ? <p className="app-detail__warn-line">Agent: {resultReason}</p> : null}
           {dbReasons.length > 0 ? (
@@ -238,25 +243,16 @@ export function ApplicationDetailPanel({ app, onApplyListAction }: Props) {
           {!hasOutcome && !loading ? (
             <p className="app-detail__muted">No structured outcome recorded.</p>
           ) : null}
-        </section>
-
-        {parsed?.verification || parsed?.result_json ? (
-          <section className="app-detail__card">
-            <h3 className="app-detail__card-title">Submit proof</h3>
-            <dl className="app-detail__proof-grid">
-              <ProofRow label="Decision" value={parsed.verification?.decision} />
-              <ProofRow label="Submit button" value={parsed.verification?.submit_button_text} />
-              <ProofRow label="Confirmation" value={parsed.verification?.confirmation_copy} />
-              <ProofRow label="Pre-submit URL" value={parsed.verification?.pre_submit_url} />
-              <ProofRow label="Post-submit URL" value={parsed.verification?.post_submit_url} />
-              <ProofRow label="Screenshot" value={parsed.verification?.screenshot_path} />
-            </dl>
-          </section>
-        ) : null}
+        </Section>
 
         {formFields.length > 0 ? (
-          <section className="app-detail__card">
-            <h3 className="app-detail__card-title">Form values filled</h3>
+          <Section
+            id="form"
+            title="Form values filled"
+            badge={formFields.length}
+            open={Boolean(openSec.form)}
+            onToggle={toggleSec}
+          >
             {formMeta?.form_url ? (
               <p className="app-detail__muted app-detail__muted--break">{formMeta.form_url}</p>
             ) : null}
@@ -267,53 +263,105 @@ export function ApplicationDetailPanel({ app, onApplyListAction }: Props) {
               </p>
             ) : null}
             <FormValuesTable fields={formFields} />
-          </section>
+          </Section>
         ) : !loading ? (
           <p className="app-detail__muted app-detail__muted--inset">
             No structured form values were saved. Open the raw log below if the agent ran field fills.
           </p>
         ) : null}
 
+        {parsed?.verification || parsed?.result_json ? (
+          <Section
+            id="proof"
+            title="Submit proof"
+            open={Boolean(openSec.proof)}
+            onToggle={toggleSec}
+          >
+            <dl className="app-detail__proof-grid">
+              <ProofRow label="Decision" value={parsed.verification?.decision} />
+              <ProofRow label="Submit button" value={parsed.verification?.submit_button_text} />
+              <ProofRow label="Confirmation" value={parsed.verification?.confirmation_copy} />
+              <ProofRow label="Pre-submit URL" value={parsed.verification?.pre_submit_url} />
+              <ProofRow label="Post-submit URL" value={parsed.verification?.post_submit_url} />
+              <ProofRow label="Screenshot" value={parsed.verification?.screenshot_path} />
+            </dl>
+          </Section>
+        ) : null}
+
         {parsed?.fill_actions?.length ? (
-          <section className="app-detail__card">
-            <h3 className="app-detail__card-title">Agent actions</h3>
+          <Section
+            id="actions"
+            title="Agent actions"
+            badge={parsed.fill_actions.length}
+            open={Boolean(openSec.actions)}
+            onToggle={toggleSec}
+          >
             <ol className="app-detail__actions-log">
               {parsed.fill_actions.map((action) => (
                 <li key={action}>{action}</li>
               ))}
             </ol>
-          </section>
+          </Section>
         ) : null}
 
-        {detail?.tailored_resume_path ? (
-          <section className="app-detail__card">
-            <h3 className="app-detail__card-title">Resume</h3>
-            <p className="app-detail__mono app-detail__mono--break">{detail.tailored_resume_path}</p>
-          </section>
-        ) : null}
-
-        {detail?.log_detail?.log_excerpt ? (
-          <section className="app-detail__card app-detail__card--log">
-            <button
-              type="button"
-              className="app-detail__log-toggle"
-              onClick={() => setShowLog((v) => !v)}
-              aria-expanded={showLog}
-            >
-              {showLog ? "Hide raw log" : "Show raw log"}
-            </button>
-            {detail.log_detail.log_path ? (
+        {detail?.tailored_resume_path || detail?.log_detail?.log_excerpt ? (
+          <Section
+            id="log"
+            title="Resume & raw log"
+            open={Boolean(openSec.log)}
+            onToggle={toggleSec}
+          >
+            {detail?.tailored_resume_path ? (
+              <p className="app-detail__mono app-detail__mono--break">
+                {detail.tailored_resume_path}
+              </p>
+            ) : null}
+            {detail?.log_detail?.log_path ? (
               <p className="app-detail__mono app-detail__mono--break app-detail__mono--dim">
                 {detail.log_detail.log_path}
               </p>
             ) : null}
-            {showLog ? (
+            {detail?.log_detail?.log_excerpt ? (
               <pre className="app-detail__log">{detail.log_detail.log_excerpt}</pre>
             ) : null}
-          </section>
+          </Section>
         ) : null}
       </div>
     </aside>
+  );
+}
+
+function Section({
+  id,
+  title,
+  badge,
+  open,
+  onToggle,
+  children,
+}: {
+  id: string;
+  title: string;
+  badge?: number;
+  open: boolean;
+  onToggle: (id: string) => void;
+  children: ReactNode;
+}) {
+  return (
+    <section className={open ? "app-detail__sect app-detail__sect--open" : "app-detail__sect"}>
+      <button
+        type="button"
+        className="app-detail__sect-head"
+        onClick={() => onToggle(id)}
+        aria-expanded={open}
+      >
+        <span>{title}</span>
+        {badge != null ? <span className="app-detail__sect-badge">{badge}</span> : null}
+        <span className="app-detail__sect-chev" aria-hidden>
+          ▶
+        </span>
+      </button>
+      {open ? <div className="app-detail__sect-body">{children}</div> : null}
+    </section>
   );
 }
 

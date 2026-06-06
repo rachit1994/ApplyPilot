@@ -9,6 +9,12 @@ Design rationale (already decided, do not relitigate): see
 `docs/self-learning-apply-architecture.md`, `docs/scaled-self-learning-apply-plan.md`,
 and the leaner review in `docs/behavior-tree-apply-recommended-algorithms-may-2026.md`.
 
+> This file is the one-shot **build** plan (W1–W9, build it then stop). Once these
+> land, the continuous **engine-improvement** loop — observe escalations, patch the
+> deterministic path, repeat — runs from
+> `docs/worker-deterministic-apply-handbook.md`. Its fix recipes (R4/R5/R10) assume
+> W1, W6, W3 are built.
+
 ---
 
 ## Ground rules for every ticket

@@ -398,6 +398,28 @@ def deterministic_only_enabled() -> bool:
     return _env_bool("APPLYPILOT_APPLY_DETERMINISTIC_ONLY", False)
 
 
+def escalate_min_attempts() -> int:
+    """Minimum review_log attempts before per-family escalation cap applies."""
+    raw = os.environ.get("APPLYPILOT_ESCALATE_MIN_ATTEMPTS")
+    if raw is None:
+        return 6
+    try:
+        return max(1, int(raw.strip()))
+    except ValueError:
+        return 6
+
+
+def escalate_fail_rate() -> float:
+    """Fail fraction threshold (0–1) for per-family escalation cap."""
+    raw = os.environ.get("APPLYPILOT_ESCALATE_FAIL_RATE")
+    if raw is None:
+        return 0.8
+    try:
+        return min(1.0, max(0.0, float(raw.strip())))
+    except ValueError:
+        return 0.8
+
+
 _SKIP_ATS_FAMILIES_DEFAULT = ""
 
 

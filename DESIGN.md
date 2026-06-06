@@ -110,3 +110,42 @@ grid gap:        14–22px
 - No metric dashboards on the default page — that's the Pipeline tab's job
 - No uppercase mono labels with wide letter-spacing as the dominant label style — use sentence case
 - No bare numbers as page content without a verb or noun attached
+
+## Data-density tier (added 2026-06-06)
+
+The Applications **Apps** tab carries a 200+ row audit ledger that the soft Mail-row
+default can't scan or sort. A dense table tier was added so data-heavy surfaces can
+opt in without each page reinventing it. Pages may use this tier only when the content
+is genuinely a sortable ledger (Apps + Jobs today; Pipeline may adopt later).
+
+```
+--row-h:        46px            /* dense table row (default rows ~72px) */
+--col-head-h:   34px
+--surface-table:#161618         /* table body sits a hair below --surface */
+--row-hover:    rgba(255,255,255,0.035)
+--row-sel:      rgba(10,132,255,0.10)   /* selected row tint + 3px accent strip */
+```
+
+Rules for the tier:
+- Sticky, sortable column headers; sort caret in accent on the active column only.
+- Numerals stay `tabular-nums`. Status still reads by **shape** (filled dot = applied,
+  hollow ring = unverified, etc.), never by a colored block.
+- **Scoped exception to the green/amber/red "Don't":** faint `--warn`/`--bad` text is
+  allowed *only* on the ledger's Outcome column and the Needs-you reason line, where
+  failure-vs-success scanning is the table's whole job. Tones stay text-only, never fills.
+
+## Apps tab pattern (Needs-you lane + ledger + collapsible case file)
+
+- **Needs-you lane**: manual / unverified / escalated jobs pin above the ledger in an
+  accent-bordered band with a live pulse. Accent is justified here (same rationale as the
+  Today callbacks band) — this is the page's primary call to action.
+- **Ledger**: the data-density table above, with filter chips, search, and a sort control.
+- **Detail = collapsible case file**: Outcome + Form values open by default; Submit proof,
+  Agent actions, and Resume/raw-log collapse. Replaces the old six-card scroll.
+
+## Decisions Log
+
+| Date | Decision | Rationale |
+|------|----------|-----------|
+| 2026-06-06 | Apps tab redesign: Needs-you lane, sortable density-tier ledger, collapsible detail | Old page buried urgent manual jobs, had no sorting, and dumped six cards in a cramped rail. See /design-consultation session. |
+| 2026-06-06 | Jobs tab: density-tier sortable table + surfaced Search/Site/Min-score filters | List was soft 3-col rows; Search/Site/Min-score were hidden and force-cleared on mount. Now a sortable table (clickable Title/Score/When headers) with all filters visible and working. |

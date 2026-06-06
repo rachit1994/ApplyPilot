@@ -51,6 +51,14 @@ _FILL_DELAY = (0.15, 0.5)        # pause between fields
 _SUBMIT_SETTLE_S = 6.0           # wait after submit click before reading result
 _RESUME_LABEL_HINTS = ("resume", "cv", "résumé", "curriculum")
 _COVER_LABEL_HINTS = ("cover letter", "cover_letter", "coverletter")
+_PHOTO_LABEL_HINTS = (
+    "photo",
+    "avatar",
+    "headshot",
+    "profile picture",
+    "profile_photo",
+    "image",
+)
 
 
 @dataclass
@@ -237,6 +245,193 @@ def _record_row(label: str, value: str, *, ftype: str, via: str) -> dict:
     }
 
 
+def _required_empty_fields(form_state) -> list:
+    """Required fields still empty after fill (checkbox/radio groups handled)."""
+    checked_group_names: set[str] = set()
+    checked_group_sections: set[str] = set()
+    for f in form_state.fields:
+        if f.type == "checkbox" and str(f.value).strip():
+            if f.name_attr:
+                checked_group_names.add(f.name_attr)
+            if f.section_header:
+                checked_group_sections.add(f.section_header)
+    checked_radio_names = {
+        f.name_attr for f in form_state.fields
+        if f.type == "radio" and f.name_attr and str(f.value).strip()
+    }
+    return [
+        f for f in form_state.fields
+        if f.required and not f.combobox and not str(f.value).strip()
+        and not (f.type == "checkbox" and f.name_attr in checked_group_names)
+        and not (
+            f.type == "checkbox"
+            and f.section_header
+            and f.section_header in checked_group_sections
+        )
+        and not (f.type == "radio" and f.name_attr in checked_radio_names)
+    ]
+
+
+_FILE_UPLOAD_AUDIT_JS = r"""() => {
+  const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
+  const rows = [];
+  document.querySelectorAll('input[type="file"]').forEach((el) => {
+    const label = norm(
+      (el.labels && el.labels[0] && el.labels[0].innerText) ||
+      el.getAttribute('aria-label') ||
+      el.getAttribute('placeholder') ||
+      el.name ||
+      el.id ||
+      'file'
+    );
+    rows.push({
+      label: label.slice(0, 120),
+      name: norm(el.name || el.id || ''),
+      required: !!(el.required || el.getAttribute('aria-required') === 'true'),
+      has_file: !!(el.files && el.files.length),
+      file_name: (el.files && el.files[0] && el.files[0].name) || '',
+    });
+  });
+  return rows;
+}"""
+
+
+def _audit_file_uploads(page) -> list[dict]:
+    try:
+        rows = page.evaluate(_FILE_UPLOAD_AUDIT_JS)
+        return rows if isinstance(rows, list) else []
+    except Exception:  # noqa: BLE001
+        logger.debug("file upload audit failed", exc_info=True)
+        return []
+
+
+def _file_hint_is_cover(hint: str) -> bool:
+    h = hint.lower()
+    return any(token in h for token in _COVER_LABEL_HINTS)
+
+
+def _file_hint_is_photo(hint: str) -> bool:
+    h = hint.lower()
+    return any(token in h for token in _PHOTO_LABEL_HINTS)
+
+
+def _file_hint_is_resume(hint: str) -> bool:
+    h = hint.lower()
+    return any(token in h for token in _RESUME_LABEL_HINTS)
+
+
+def _pre_submit_audit(
+    page,
+    *,
+    filled_rows: list[dict],
+    resume_pdf: str,
+    cover_pdf: str | None,
+    worker_id: int,
+    family: str,
+) -> tuple[list[dict], list[dict], str | None]:
+    """Re-read every form control from the DOM immediately before submit."""
+    from applypilot.apply.direct import profile_binding
+
+    form = extractor.extract_fields(page)
+    still_empty = _required_empty_fields(form)
+    location_traps = [
+        f for f in form.fillable()
+        if profile_binding.is_yes_no_radiogroup(f)
+        and profile_binding.is_location_requirement_trap(
+            f"{f.section_header} {f.label}".strip()
+        )
+        and f.empty
+    ]
+    filled_map = {r["label"]: r for r in filled_rows}
+    audit_rows: list[dict] = []
+    for field in form.fillable():
+        dom_value = str(field.value or "").strip()
+        prev = filled_map.get(field.label)
+        value = dom_value or str((prev or {}).get("value") or "").strip()
+        via = "dom"
+        if prev:
+            src = str(prev.get("source") or "")
+            via = src.replace("direct:", "", 1) if src.startswith("direct:") else src or "filled"
+        audit_rows.append(
+            _record_row(field.label, value, ftype=field.type or field.tag, via=via)
+        )
+
+    uploads = _audit_file_uploads(page)
+    resume_name = Path(resume_pdf).name if resume_pdf else ""
+    cover_name = Path(cover_pdf).name if cover_pdf else ""
+    logger.info(
+        "[W%d] Pre-submit audit (%s): %d field(s), resume=%s, cover=%s",
+        worker_id,
+        family,
+        len(audit_rows),
+        resume_name or "missing",
+        cover_name or "none",
+    )
+    for row in audit_rows:
+        shown = row["value"]
+        if len(shown) > 140:
+            shown = shown[:137] + "..."
+        logger.info(
+            "[W%d]   %s = %r (%s empty=%s via=%s)",
+            worker_id,
+            row["label"],
+            shown,
+            row["type"],
+            row["empty"],
+            row["source"],
+        )
+
+    if location_traps:
+        labels = "; ".join(f.label[:80] for f in location_traps[:3])
+        logger.info(
+            "[W%d] Location requirement unmet (will not submit): %s",
+            worker_id,
+            labels,
+        )
+        return audit_rows, uploads, "not_eligible_location"
+
+    body = _body_text_lower(page)
+    resume_attached = resume_name.lower() in body if resume_name else False
+    for up in uploads:
+        hint = f"{up.get('label', '')} {up.get('name', '')}"
+        if _file_hint_is_photo(hint):
+            continue
+        logger.info(
+            "[W%d]   upload %r required=%s has_file=%s file=%r",
+            worker_id,
+            up.get("label"),
+            up.get("required"),
+            up.get("has_file"),
+            up.get("file_name"),
+        )
+        is_cover = _file_hint_is_cover(hint)
+        is_resume = _file_hint_is_resume(hint) or (
+            not is_cover and family not in {"lever"}
+        )
+        if is_resume and (up.get("has_file") or up.get("file_name")):
+            resume_attached = True
+        if is_cover and cover_pdf and (up.get("has_file") or up.get("file_name")):
+            logger.info("[W%d]   cover letter file attached on form", worker_id)
+
+    resume_inputs = [
+        up for up in uploads
+        if not _file_hint_is_photo(f"{up.get('label', '')} {up.get('name', '')}")
+        and not _file_hint_is_cover(f"{up.get('label', '')} {up.get('name', '')}")
+    ]
+    if resume_inputs and resume_pdf and not resume_attached:
+        required_resume = any(up.get("required") for up in resume_inputs)
+        if required_resume or len(resume_inputs) == 1:
+            return audit_rows, uploads, "resume_not_uploaded"
+
+    if still_empty:
+        if profile_binding.remaining_gaps_are_location_traps(still_empty):
+            return audit_rows, uploads, "not_eligible_location"
+        blocking = "; ".join(f.label for f in still_empty[:10])
+        return audit_rows, uploads, f"empty_required={blocking}"
+
+    return audit_rows, uploads, None
+
+
 def _persist_form_filled(url: str, record: dict) -> None:
     """Save the per-company filled-values record so the dashboard can show it."""
     try:
@@ -340,7 +535,7 @@ _CLICK_OPTION_NEAR_LABEL_JS = r"""({label, answer}) => {
     }
     return false;
   };
-  const labels = [...document.querySelectorAll('label, legend, [class*="question-title"], [class*="Question"], [class*="label"], [class*="Label"]')];
+  const labels = [...document.querySelectorAll('label, legend, [id$="_label"], [class*="question-title"], [class*="Question"], [class*="label"], [class*="Label"]')];
   for (const lab of labels) {
     const txt = norm(lab.innerText).slice(0, 140);
     if (!txt || !(txt.includes(wantLabel) || wantLabel.includes(txt))) continue;
@@ -363,6 +558,36 @@ def _click_option_near_label(page, field, answer: str) -> bool:
         )
     except Exception:  # noqa: BLE001
         logger.debug("option click fallback failed for %r", field.label, exc_info=True)
+        return False
+
+
+_CHECKBOX_DOM_CLICK_JS = r"""({key, apId}) => {
+  let el = null;
+  if (key) el = document.querySelector(`[data-ap-key="${key}"]`);
+  if (!el && apId !== undefined && apId !== null) {
+    el = document.querySelector(`[data-ap-id="${apId}"]`);
+  }
+  if (!el || (el.type || '').toLowerCase() !== 'checkbox') return false;
+  if (!el.checked) el.click();
+  if (!el.checked) {
+    el.checked = true;
+    el.dispatchEvent(new Event('input', {bubbles: true}));
+    el.dispatchEvent(new Event('change', {bubbles: true}));
+  }
+  return !!el.checked;
+}"""
+
+
+def _check_checkbox_dom(page, field) -> bool:
+    try:
+        return bool(
+            page.evaluate(
+                _CHECKBOX_DOM_CLICK_JS,
+                {"key": field.key, "apId": field.ap_id},
+            )
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("checkbox DOM click failed for %r", field.label, exc_info=True)
         return False
 
 
@@ -433,12 +658,16 @@ def _fill_field_legacy(page, field, answer: str, *, family: str = "") -> bool:
                 try:
                     loc.check(timeout=3_000)
                 except Exception:  # noqa: BLE001
+                    if _check_checkbox_dom(page, field):
+                        return True
                     return _click_option_near_label(page, field, answer)
                 # Styled checkboxes (e.g. Greenhouse "I acknowledge") wrap a
                 # visually-hidden input; .check() reports success but the bound
                 # state never flips. Confirm, and click the label if it didn't.
                 try:
                     if not loc.is_checked():
+                        if _check_checkbox_dom(page, field):
+                            return True
                         return _click_option_near_label(page, field, answer)
                 except Exception:  # noqa: BLE001
                     pass
@@ -470,6 +699,13 @@ def _fill_field(page, field, answer: str, *, family: str = "") -> bool:
     from applypilot.apply.direct import field_strategy_fill
     from applypilot.apply.direct.playbook import lookup_field_strategy
 
+    if field.options and field.tag != "select" and not field.combobox:
+        ok = field_strategy_fill.fill_field_with_strategy(
+            page, field, answer, family=family,
+        )
+        if ok:
+            field_strategy_fill.record_fill_outcome(field, family, "click_label", True)
+        return ok
     cached = lookup_field_strategy(field_strategy_fill.field_sig(field), family)
     if cached:
         ok = field_strategy_fill.fill_field_with_strategy(
@@ -483,7 +719,7 @@ def _fill_field(page, field, answer: str, *, family: str = "") -> bool:
             field,
             family,
             succeeded=True,
-            used_click_label=field.type == "checkbox",
+            used_click_label=field.type in {"checkbox", "radio"},
         )
         field_strategy_fill.record_fill_outcome(field, family, method, True)
     return ok
@@ -498,6 +734,21 @@ def _resolve_checkbox_group_pick(
 ) -> tuple[str | None, str]:
     labels = tuple(m.label for m in members)
     question = next((m.section_header for m in members if m.section_header), "")
+    qnorm = question.strip().lower()
+    if "us time zone" in qnorm or "us time zones" in qnorm:
+        pick = profile_binding.choose_select_option("Yes", labels)
+        if pick:
+            return pick, "group"
+    if "sponsor" in qnorm or "h-1b" in qnorm or "visa status" in qnorm:
+        if "us only" in qnorm or "posted in the us" in qnorm:
+            pick = profile_binding.choose_select_option("Not applicable", labels)
+            if pick:
+                return pick, "group"
+        pick = profile_binding.choose_select_option(
+            str(tokens.get("require_sponsorship") or "No"), labels
+        )
+        if pick:
+            return pick, "group"
     pick = profile_binding.choose_checkbox_group_option(question, labels)
     if pick:
         return pick, "group"
@@ -549,6 +800,78 @@ def _fill_checkbox_group(
         return "filled", pick, via
     except Exception:  # noqa: BLE001
         logger.debug("checkbox group fill failed for %r", question, exc_info=True)
+        return "unresolved", None, ""
+
+
+def _resolve_radio_group_pick(
+    members,
+    *,
+    tokens: dict,
+    job: dict | None = None,
+    gemini_enabled: bool = True,
+) -> tuple[str | None, str]:
+    labels = tuple(m.label for m in members)
+    lower = {str(label).strip().lower() for label in labels}
+    if {"onsite", "remote", "hybrid"} & lower:
+        for preferred in ("Remote", "Hybrid", "NA"):
+            pick = profile_binding.choose_select_option(preferred, labels)
+            if pick:
+                return pick, "group"
+    question = next((m.section_header for m in members if m.section_header), "")
+    combined_label = f"{question} {' | '.join(labels)}".strip() or (labels[0] if labels else "")
+    synthetic = profile_binding.Field(
+        label=combined_label,
+        type="radio",
+        tag="input",
+        name_attr=members[0].name_attr if members else "",
+        section_header=question,
+        required=True,
+        options=labels,
+        key=f"radio_group|{members[0].name_attr if members else question}",
+    )
+    tier0 = profile_binding.resolve_field(synthetic, tokens)
+    if tier0:
+        pick = profile_binding.choose_select_option(tier0.answer, labels)
+        if pick:
+            return pick, tier0.via or "label"
+    if not gemini_enabled or not labels:
+        return None, ""
+    outcome = resolver.resolve([synthetic], tokens, job=job, gemini_enabled=True)
+    answer = outcome.answers.get(synthetic.key)
+    if answer and answer in labels:
+        return answer, outcome.via.get(synthetic.key, "t2:gemini")
+    return None, ""
+
+
+def _fill_radio_group(
+    page,
+    members,
+    *,
+    tokens: dict,
+    job: dict | None = None,
+    gemini_enabled: bool = True,
+) -> tuple[str, str | None, str]:
+    pick, via = _resolve_radio_group_pick(
+        members, tokens=tokens, job=job, gemini_enabled=gemini_enabled
+    )
+    if not pick:
+        return "unresolved", None, ""
+    target = next((m for m in members if m.label == pick), None)
+    if target is None:
+        return "unresolved", None, ""
+    try:
+        loc = _locator(page, target)
+        if loc.count() == 0:
+            return "unresolved", None, ""
+        loc.scroll_into_view_if_needed(timeout=3_000)
+        try:
+            loc.check(timeout=4_000)
+        except Exception:  # noqa: BLE001
+            if not _click_option_near_label(page, target, pick):
+                return "unresolved", None, ""
+        return "filled", pick, via
+    except Exception:  # noqa: BLE001
+        logger.debug("radio group fill failed for %r", pick, exc_info=True)
         return "unresolved", None, ""
 
 
@@ -625,6 +948,7 @@ def _upload_files(
     family: str = "",
 ) -> None:
     uploaded_resume = False
+    lever_resume_uploaded = False
     if family == "ashby":
         uploaded_resume = _upload_ashby_required_resume_input(page, resume_pdf)
     for f in form.fields:
@@ -635,7 +959,13 @@ def _upload_files(
         # Use label + name + section so the resume/cover inputs (both labelled
         # "Attach" on modern Greenhouse) are told apart by their name/id.
         hint = f"{f.label} {f.name_attr} {f.section_header}".lower()
+        if any(h in hint for h in _PHOTO_LABEL_HINTS):
+            continue
         is_cover = any(h in hint for h in _COVER_LABEL_HINTS)
+        if family == "lever" and is_cover:
+            continue
+        if family == "lever" and not is_cover and lever_resume_uploaded:
+            continue
         if is_cover:
             if not cover_pdf or not Path(cover_pdf).exists():
                 continue
@@ -647,6 +977,8 @@ def _upload_files(
             _file_input_locator(page, f).set_input_files(target, timeout=8_000)
             if not is_cover:
                 uploaded_resume = True
+                if family == "lever":
+                    lever_resume_uploaded = True
             _wait_upload_complete(page)
         except Exception:  # noqa: BLE001
             logger.debug("file upload failed for %r", f.label, exc_info=True)
@@ -705,7 +1037,11 @@ _VERIFY_MARKERS = (
     "enter the 8-character code",
     "code to confirm you're a human",
     "a verification code was sent",
+    "the verification code was sent",
+    "verification code was sent to this email",
     "enter the code we sent",
+    "confirm your identity",
+    "one-time pass code",
 )
 
 
@@ -726,6 +1062,57 @@ def _locate_code_input(page):
     return None
 
 
+def _code_digit_fields(page) -> list:
+    try:
+        form = extractor.extract_fields(page)
+    except Exception:  # noqa: BLE001
+        return []
+    fields = []
+    for field in form.fields:
+        blob = f"{field.label} {field.name_attr} {field.autocomplete}".lower()
+        if (
+            field.tag == "input"
+            and field.type in {"number", "text", "tel"}
+            and (
+                "verification code" in blob
+                or "security code" in blob
+                or "one-time" in blob
+            )
+        ):
+            fields.append(field)
+    return sorted(fields, key=lambda f: f.ap_id)
+
+
+def _fill_verification_code(page, code: str, code_input) -> bool:
+    digit_fields = _code_digit_fields(page)
+    if len(digit_fields) >= 4:
+        for ch, field in zip(code, digit_fields):
+            loc = _locator(page, field)
+            if loc.count() == 0:
+                return False
+            loc.fill(ch, timeout=5_000)
+            page.wait_for_timeout(100)
+        return True
+    if code_input is None or code_input.count() == 0:
+        return False
+    code_input.fill(code, timeout=5_000)
+    return True
+
+
+def _click_verification_continue(page) -> bool:
+    for text in ("verify", "continue", "next", "confirm"):
+        if unblock._click_text(page, text):
+            return True
+    return False
+
+
+def _verification_company_hint(job: dict) -> str:
+    company = str(job.get("company") or job.get("site") or "").strip()
+    if company.lower() in {"", "linkedin", "linkedin->company", "unknown"}:
+        return ""
+    return company
+
+
 def _try_clear_verification_wall(
     page,
     job: dict,
@@ -741,7 +1128,7 @@ def _try_clear_verification_wall(
     if not _verification_wall_present(body):
         return True, None
 
-    company = str(job.get("site") or job.get("company") or "").strip()
+    company = _verification_company_hint(job)
     since = time.time() - 120.0
     code_input = _locate_code_input(page)
 
@@ -750,7 +1137,8 @@ def _try_clear_verification_wall(
         page.wait_for_timeout(2_000)
         code_input = _locate_code_input(page)
 
-    code_len = 8
+    digit_fields = _code_digit_fields(page)
+    code_len = len(digit_fields) if len(digit_fields) >= 4 else 8
     if code_input is not None and code_input.count() > 0:
         try:
             ml = code_input.get_attribute("maxlength", timeout=2_000)
@@ -769,11 +1157,12 @@ def _try_clear_verification_wall(
         logger.info("[W%d] Verification code not received in time", worker_id)
         return False, "email_verification_code"
 
-    if code_input is None or code_input.count() == 0:
+    if (code_input is None or code_input.count() == 0) and not digit_fields:
         return False, "email_verification_code"
 
     try:
-        code_input.fill(code, timeout=5_000)
+        if not _fill_verification_code(page, code, code_input):
+            return False, "email_verification_code"
         page.wait_for_timeout(400)
     except Exception:  # noqa: BLE001
         logger.debug("Failed to fill verification code", exc_info=True)
@@ -784,6 +1173,8 @@ def _try_clear_verification_wall(
             logger.info("[W%d] reCAPTCHA v2 present but not solved", worker_id)
             return False, "captcha_unsolved"
 
+    _click_verification_continue(page)
+    page.wait_for_timeout(1_800)
     return True, None
 
 
@@ -837,7 +1228,7 @@ def _multistep_max_pages() -> int:
         return 6
 
 
-def _find_advance_button(page):
+def _find_advance_button(page, *, family: str = ""):
     """Return a clickable 'Next/Continue' control for a multi-step form, or None.
 
     Only matches pure-navigation controls (never a final Submit/Apply or an
@@ -847,11 +1238,20 @@ def _find_advance_button(page):
         cands = page.evaluate(unblock._CLICKABLES_JS)
     except Exception:  # noqa: BLE001
         return None
+    deny = _ADVANCE_DENY
+    advance_texts = _ADVANCE_BUTTON_TEXTS
+    if family == "workday":
+        # Workday starts with a required account-creation step before the actual
+        # application pages. This is not the final application submit.
+        deny = tuple(d for d in _ADVANCE_DENY if d not in {"create account"})
+        advance_texts = (*_ADVANCE_BUTTON_TEXTS, "create account")
     for text in cands:
         low = text.strip().lower()
-        if not low or any(d in low for d in _ADVANCE_DENY):
+        if family == "workday" and low == "create account":
+            return text
+        if not low or any(d in low for d in deny):
             continue
-        if any(low == t or low.startswith(t) for t in _ADVANCE_BUTTON_TEXTS):
+        if any(low == t or low.startswith(t) for t in advance_texts):
             return text
     return None
 
@@ -877,7 +1277,7 @@ _OPTION_SELECTOR = _OPTION_SELECTOR_GREENHOUSE
 def _option_selector(family: str) -> str:
     if family == "ashby":
         return _OPTION_SELECTOR_ASHBY
-    if family == "lever":
+    if family in {"lever", "workable"}:
         return _OPTION_SELECTOR_LEVER
     return _OPTION_SELECTOR_GREENHOUSE
 
@@ -1158,6 +1558,10 @@ def apply_via_direct(
             except Exception:  # noqa: BLE001
                 pass
         page.wait_for_timeout(1_200)
+        try:
+            unblock._dismiss_cookies(page)
+        except Exception:  # noqa: BLE001
+            logger.debug("cookie dismiss failed", exc_info=True)
 
         # Login wall? Pause for a human to sign in rather than failing. The job is
         # parked awaiting_login (reversible); after you log in + Resume it retries.
@@ -1339,19 +1743,6 @@ def apply_via_direct(
                 "engine": "direct",
             }
 
-        def _required_empty_fields(form_state):
-            # A required checkbox GROUP is satisfied once any one member is
-            # checked; the other members staying empty is expected, not a block.
-            checked_group_names = {
-                f.name_attr for f in form_state.fields
-                if f.type == "checkbox" and f.name_attr and str(f.value).strip()
-            }
-            return [
-                f for f in form_state.fields
-                if f.required and not f.combobox and not str(f.value).strip()
-                and not (f.type == "checkbox" and f.name_attr in checked_group_names)
-            ]
-
         for page_num in range(max_pages):
             if page_num > 0:
                 # New page after clicking Next: wait for the next step's form to
@@ -1376,17 +1767,56 @@ def apply_via_direct(
             # Required checkbox GROUPS (>=2 checkboxes sharing a name) need exactly
             # one option checked — pull their members out of the per-field resolve.
             checkbox_groups: dict[str, list] = {}
+            radio_groups: dict[str, list] = {}
             for f in non_combo:
-                if f.type == "checkbox" and f.name_attr:
-                    checkbox_groups.setdefault(f.name_attr, []).append(f)
+                if f.type == "checkbox":
+                    group_key = ""
+                    if f.section_header:
+                        group_key = f"section:{f.section_header}"
+                    elif f.name_attr:
+                        group_key = f.name_attr
+                    if group_key:
+                        checkbox_groups.setdefault(group_key, []).append(f)
+                if f.type == "radio" and f.name_attr:
+                    radio_groups.setdefault(f.name_attr, []).append(f)
             multi_group_keys = [k for k, v in checkbox_groups.items() if len(v) > 1]
+            def _yes_no_option_pair(members: list) -> bool:
+                labels = {m.label.strip().lower() for m in members}
+                return labels == {"yes", "no"} or labels <= {"yes", "no", "n/a"}
+
+            multi_radio_group_keys = [
+                k for k, v in radio_groups.items()
+                if len(v) > 1
+                and (
+                    not _yes_no_option_pair(v)
+                    or any(m.section_header for m in v)
+                )
+            ]
             group_member_keys = {
                 f.key for k in multi_group_keys for f in checkbox_groups[k]
             }
+            group_member_keys.update(
+                f.key for k in multi_radio_group_keys for f in radio_groups[k]
+            )
             regular = [f for f in non_combo if f.key not in group_member_keys]
 
             # Let JS widgets (intl-tel-input, react-select) finish initializing.
             page.wait_for_timeout(1_500)
+
+            if _verification_wall_present(_body_text_lower(page)):
+                cleared, wall_reason = _try_clear_verification_wall(
+                    page, job, adapter=adapter, worker_id=worker_id
+                )
+                if not cleared:
+                    _persist_form_filled(job.get("url") or url, _form_record())
+                    return done(
+                        "failed:direct_needs_verification",
+                        escalate=True,
+                        reason=wall_reason or "email_verification_code",
+                        outcome=outcome,
+                        fields_total=len(fields),
+                    )
+                continue
 
             page_outcome = resolver.resolve(
                 regular, tokens, job=job, gemini_enabled=gemini_enabled
@@ -1408,6 +1838,11 @@ def apply_via_direct(
 
             unresolved_required = list(page_outcome.unresolved_required)
             unresolved_labels: list[str] = []
+            regular_by_key = {f.key: f for f in regular}
+            for key in page_outcome.unresolved_required:
+                f = regular_by_key.get(key)
+                if f:
+                    unresolved_labels.append(f"{f.label[:50]} [batch]")
             for f in combos:
                 status, sub = _fill_combobox(
                     page, f, tokens, gemini_enabled=gemini_enabled, family=family
@@ -1441,6 +1876,25 @@ def apply_via_direct(
                     unresolved_required.append(gkey)
                     unresolved_labels.append(
                         f"{(members[0].section_header or members[0].label)[:50]} [group]"
+                    )
+                _sleep_fill()
+
+            for gkey in multi_radio_group_keys:
+                members = radio_groups[gkey]
+                status, pick, via = _fill_radio_group(
+                    page, members, tokens=tokens, job=job, gemini_enabled=gemini_enabled,
+                )
+                if status == "filled":
+                    filled_rows.append(
+                        _record_row(
+                            members[0].section_header or "radio group",
+                            pick or "", ftype="radio", via=via or "group",
+                        )
+                    )
+                elif any(m.required for m in members):
+                    unresolved_required.append(gkey)
+                    unresolved_labels.append(
+                        f"{(members[0].section_header or members[0].label)[:50]} [radio]"
                     )
                 _sleep_fill()
 
@@ -1518,11 +1972,21 @@ def apply_via_direct(
                 verify = extractor.extract_fields(page)
                 still_empty = _required_empty_fields(verify)
             if still_empty:
+                from applypilot.apply.direct import profile_binding
+
                 blocking = [f"{f.label} ({f.tag}/{f.type})" for f in still_empty]
                 logger.info(
                     "[W%d] Direct verify incomplete on %s p%d — %d required empty: %s",
                     worker_id, family, page_num, len(still_empty), "; ".join(blocking[:12]),
                 )
+                if profile_binding.remaining_gaps_are_location_traps(still_empty):
+                    return done(
+                        "failed:not_eligible_location",
+                        escalate=False,
+                        reason="location_requirement_unmet",
+                        outcome=outcome,
+                        fields_total=len(fields),
+                    )
                 return done(
                     "failed:direct_verify_incomplete",
                     escalate=True, reason=f"empty_required={len(still_empty)}",
@@ -1531,7 +1995,7 @@ def apply_via_direct(
 
             # Page complete and valid. Multi-step? Click Next and fill the next
             # page; otherwise drop out to the final-submit section below.
-            advance = _find_advance_button(page)
+            advance = _find_advance_button(page, family=family)
             if advance and page_num < max_pages - 1:
                 logger.info(
                     "[W%d] Direct multi-step: page %d filled, advancing via %r",
@@ -1548,6 +2012,45 @@ def apply_via_direct(
 
         if outcome is None:
             return done("failed:direct_no_form", escalate=True, reason="no_form")
+
+        audit_rows, upload_rows, audit_block = _pre_submit_audit(
+            page,
+            filled_rows=filled_rows,
+            resume_pdf=resume_pdf or "",
+            cover_pdf=cover_upload,
+            worker_id=worker_id,
+            family=family,
+        )
+        audit_record = _form_record()
+        audit_record["fields"] = audit_rows
+        audit_record["field_count"] = len(audit_rows)
+        audit_record["pre_submit"] = True
+        audit_record["uploads"] = upload_rows
+        audit_record["resume_pdf"] = resume_pdf
+        audit_record["cover_pdf"] = cover_upload
+        _persist_form_filled(job.get("url") or url, audit_record)
+        if audit_block:
+            logger.info(
+                "[W%d] Pre-submit audit blocked submit on %s: %s",
+                worker_id,
+                url[:80],
+                audit_block,
+            )
+            if audit_block == "not_eligible_location":
+                return done(
+                    "failed:not_eligible_location",
+                    escalate=False,
+                    reason="location_requirement_unmet",
+                    outcome=outcome,
+                    fields_total=len(audit_rows),
+                )
+            return done(
+                "failed:direct_verify_incomplete",
+                escalate=True,
+                reason=audit_block,
+                outcome=outcome,
+                fields_total=len(audit_rows),
+            )
 
         # Anti-bot wall: a few employers (e.g. Airbnb) require an emailed
         # verification code before Submit activates. NOTE: do NOT treat a
@@ -1616,7 +2119,11 @@ def apply_via_direct(
         post_body = _body_text_lower(page)
         after = extractor.extract_fields(page)
         shot = _screenshot(page, worker_id, family)
-        _persist_form_filled(job.get("url") or url, _form_record(after.visible_errors))
+        final_record = dict(audit_record)
+        if after.visible_errors:
+            final_record["visible_errors"] = after.visible_errors
+        final_record["submitted"] = True
+        _persist_form_filled(job.get("url") or url, final_record)
 
         # A genuine submission removes the form (Greenhouse shows a "Thank you"
         # page; the form fields + submit button disappear). Decide from:

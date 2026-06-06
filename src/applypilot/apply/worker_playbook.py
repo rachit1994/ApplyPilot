@@ -15,6 +15,38 @@ from applypilot.apply.worker_playbook_tools import build_tool_alias_section
 _TOKEN_RE = re.compile(r"\{\{(\w+)\}\}")
 
 
+def _non_decline_veteran_status(value: str | None) -> str:
+    text = str(value or "").strip()
+    norm = text.lower()
+    if not text or "decline" in norm or "prefer not" in norm or "wish" in norm:
+        return "I am not a protected veteran"
+    return text
+
+
+def _non_decline_gender(value: str | None) -> str:
+    text = str(value or "").strip()
+    norm = text.lower()
+    if not text or "decline" in norm or "prefer not" in norm or "wish" in norm:
+        return "Male"
+    return text
+
+
+def _non_decline_race_ethnicity(value: str | None) -> str:
+    text = str(value or "").strip()
+    norm = text.lower()
+    if not text or "decline" in norm or "prefer not" in norm or "wish" in norm:
+        return "Asian"
+    return text
+
+
+def _non_decline_disability_status(value: str | None) -> str:
+    text = str(value or "").strip()
+    norm = text.lower()
+    if not text or "decline" in norm or "prefer not" in norm or "wish" in norm:
+        return "No, I don't have a disability"
+    return text
+
+
 def default_playbook_path() -> Path:
     """Repo-relative path to the worker apply playbook markdown."""
     return Path(__file__).resolve().parents[3] / "docs" / "worker-apply-playbook.md"
@@ -29,6 +61,17 @@ def load_playbook_markdown(path: Path | None = None) -> str:
 
 def _digits_only(phone: str) -> str:
     return re.sub(r"\D", "", phone or "")
+
+
+def _job_company(job: dict) -> str:
+    for key in ("company", "company_name"):
+        value = str(job.get(key) or "").strip()
+        if value:
+            return value
+    site = str(job.get("site") or "").strip()
+    if ":" in site:
+        return site.split(":", 1)[1].strip()
+    return site
 
 
 def build_playbook_tokens(
@@ -93,9 +136,10 @@ def build_playbook_tokens(
         "salary_currency": str(comp.get("salary_currency") or "USD").strip(),
         "years_experience": str(exp.get("years_of_experience_total") or "").strip(),
         "education_level": str(exp.get("education_level") or "").strip(),
+        "current_company": str(exp.get("current_company") or "").strip(),
         "current_job_title": current_title,
         "job_title": str(job.get("title") or "").strip(),
-        "company": str(job.get("site") or job.get("company") or "").strip(),
+        "company": _job_company(job),
         "earliest_start_date": str(avail.get("earliest_start_date") or "Immediately").strip(),
         # Concrete date (MM/DD/YYYY) for date-picker "when can you start" fields,
         # which reject free text like "Immediately". Two weeks out = realistic notice.
@@ -106,14 +150,12 @@ def build_playbook_tokens(
         "today_date": date.today().isoformat(),
         "job_url": job_url,
         "password": str(personal.get("password") or "").strip(),
-        "gender": str(eeo.get("gender") or "Decline to self-identify").strip(),
-        "race_ethnicity": str(eeo.get("race_ethnicity") or "Decline to self-identify").strip(),
-        "veteran_status": str(
-            eeo.get("veteran_status") or "I am not a protected veteran"
-        ).strip(),
-        "disability_status": str(
-            eeo.get("disability_status") or "I do not wish to answer"
-        ).strip(),
+        "gender": _non_decline_gender(eeo.get("gender")),
+        "race_ethnicity": _non_decline_race_ethnicity(eeo.get("race_ethnicity")),
+        "veteran_status": _non_decline_veteran_status(eeo.get("veteran_status")),
+        "disability_status": _non_decline_disability_status(
+            eeo.get("disability_status")
+        ),
     }
 
 

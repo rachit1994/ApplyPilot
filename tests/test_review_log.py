@@ -108,3 +108,99 @@ def test_cache_hit_rate_empty_window(conn):
     assert stats["replay_count"] == 0
     assert stats["llm_count"] == 0
     assert stats["replay_pct"] == 0.0
+
+
+def test_recent_fail_rate_all_failures(conn):
+    now = datetime.now(timezone.utc)
+    recent_ts = (now - timedelta(hours=1)).isoformat()
+    for _ in range(6):
+        rl.log_event(
+            conn,
+            ats_family="workday",
+            outcome="no_change",
+            ts=recent_ts,
+        )
+
+    attempts, fail_fraction = rl.recent_fail_rate(conn, ats_family="workday")
+    assert attempts == 6
+    assert fail_fraction == pytest.approx(1.0)
+
+
+def test_recent_fail_rate_mixed_outcomes(conn):
+    now = datetime.now(timezone.utc)
+    recent_ts = (now - timedelta(hours=1)).isoformat()
+    rl.log_event(conn, ats_family="greenhouse", outcome="advanced", ts=recent_ts)
+    rl.log_event(conn, ats_family="greenhouse", outcome="no_change", ts=recent_ts)
+    rl.log_event(conn, ats_family="greenhouse", outcome="advanced", ts=recent_ts)
+
+    attempts, fail_fraction = rl.recent_fail_rate(conn, ats_family="greenhouse")
+    assert attempts == 3
+    assert fail_fraction == pytest.approx(1 / 3)
+
+
+def test_recent_fail_rate_replay_clicked_counts_as_success(conn):
+    now = datetime.now(timezone.utc)
+    recent_ts = (now - timedelta(hours=1)).isoformat()
+    for _ in range(6):
+        rl.log_event(
+            conn,
+            ats_family="workable",
+            tier="replay",
+            outcome="clicked",
+            postcondition_met=True,
+            ts=recent_ts,
+        )
+
+    attempts, fail_fraction = rl.recent_fail_rate(conn, ats_family="workable")
+    assert attempts == 6
+    assert fail_fraction == pytest.approx(0.0)
+
+
+def test_recent_fail_rate_excludes_cap_tier_rows(conn):
+    now = datetime.now(timezone.utc)
+    recent_ts = (now - timedelta(hours=1)).isoformat()
+    rl.log_event(
+        conn,
+        ats_family="workable",
+        tier="cap",
+        outcome="escalate_human",
+        ts=recent_ts,
+    )
+    rl.log_event(
+        conn,
+        ats_family="workable",
+        tier="replay",
+        outcome="no_change",
+        postcondition_met=False,
+        ts=recent_ts,
+    )
+
+    attempts, fail_fraction = rl.recent_fail_rate(conn, ats_family="workable")
+    assert attempts == 1
+    assert fail_fraction == pytest.approx(1.0)
+
+
+def test_recent_fail_rate_can_scope_to_apex_host(conn):
+    now = datetime.now(timezone.utc)
+    recent_ts = (now - timedelta(hours=1)).isoformat()
+    for _ in range(6):
+        rl.log_event(
+            conn,
+            ats_family="generic",
+            apex_host="failed.example.com",
+            outcome="no_change",
+            ts=recent_ts,
+        )
+    rl.log_event(
+        conn,
+        ats_family="generic",
+        apex_host="fresh.example.com",
+        outcome="advanced",
+        ts=recent_ts,
+    )
+
+    attempts, fail_fraction = rl.recent_fail_rate(
+        conn, ats_family="generic", apex_host="fresh.example.com"
+    )
+    assert attempts == 1
+    assert fail_fraction == pytest.approx(0.0)

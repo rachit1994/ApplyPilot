@@ -1,5 +1,11 @@
 # Worker Apply Playbook (for 4B worker LLM)
 
+> Scope: this doc is the **form-filling** worker — it fills ONE application. The
+> separate **engine-improvement** worker (which edits code to make the
+> deterministic path need an LLM less often) follows
+> [worker-deterministic-apply-handbook.md](worker-deterministic-apply-handbook.md).
+> Don't confuse the two.
+
 You fill ONE job application form. You do NOT think. You MATCH and ACT.
 Read each rule. If the page matches the LEFT side, do the RIGHT side. Nothing else.
 

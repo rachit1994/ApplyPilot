@@ -201,37 +201,27 @@ def _parse_action(raw: str) -> dict | None:
 
 
 def _click_text(page, text: str) -> bool:
+    from applypilot.apply.direct.selector_heal import heal_locator
+
     text = (text or "").strip()
     if not text:
         return False
-    getters = (
-        lambda: page.get_by_role("button", name=text, exact=False).first,
-        lambda: page.get_by_role("link", name=text, exact=False).first,
-        lambda: page.get_by_text(text, exact=False).first,
-        # Last resort: any element whose normalized text equals the target.
-        lambda: page.locator(
-            f"xpath=//*[normalize-space(.)={_xpath_literal(text)}]"
-        ).last,
-    )
-    for getter in getters:
+    loc = heal_locator(page, {"text": text})
+    if loc is None:
+        return False
+    try:
         try:
-            loc = getter()
-            if loc.count() == 0:
-                continue
-            try:
-                loc.scroll_into_view_if_needed(timeout=2_000)
-            except Exception:  # noqa: BLE001
-                pass
-            try:
-                loc.click(timeout=4_000)
-            except Exception:  # noqa: BLE001
-                # Overlay/animation intercept — force the click past it.
-                loc.click(timeout=3_000, force=True)
-            page.wait_for_timeout(1_500)
-            return True
+            loc.scroll_into_view_if_needed(timeout=2_000)
         except Exception:  # noqa: BLE001
-            continue
-    return False
+            pass
+        try:
+            loc.click(timeout=4_000)
+        except Exception:  # noqa: BLE001
+            loc.click(timeout=3_000, force=True)
+        page.wait_for_timeout(1_500)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _xpath_literal(s: str) -> str:

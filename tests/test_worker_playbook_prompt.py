@@ -46,6 +46,7 @@ def _minimal_profile() -> dict:
             "years_of_experience_total": "10",
             "education_level": "Bachelor's",
             "current_job_title": "Engineer",
+            "current_company": "Happening Today",
         },
         "availability": {"earliest_start_date": "Immediately"},
         "eeo_voluntary": {},
@@ -97,6 +98,19 @@ def test_render_worker_playbook_prompt_substitutes_tokens(tmp_path: Path):
         "HARD RULES",
     ):
         assert heading in rendered or f"## {heading}" in rendered
+
+
+def test_tokens_use_clean_company_and_current_company(tmp_path: Path):
+    job = _job_for(tmp_path)
+    job["site"] = "Lever:SkySlope"
+    tokens = build_playbook_tokens(
+        _minimal_profile(),
+        job,
+        resume_pdf_path="/tmp/Test_User_Resume.pdf",
+    )
+
+    assert tokens["company"] == "SkySlope"
+    assert tokens["current_company"] == "Happening Today"
 
 
 def test_render_includes_tool_aliases_and_form_verify(tmp_path: Path):

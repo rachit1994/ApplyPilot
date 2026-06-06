@@ -99,13 +99,27 @@ questions:
     literal: "Decline to self-identify"
   - label: "Veteran status"
     answer_type: select
-    literal: "I don't wish to answer"
+    token: veteran_status
   - label: "Disability status"
     answer_type: select
-    literal: "I don't wish to answer"
+    token: disability_status
   - label: "How did you hear about this job?"
     answer_type: text
-    literal: "Company website"
+    literal: "LinkedIn"
+
+  # --- Workable / vendor screening (literal bool / level) ---
+  - label: "Do you have an English CV that you can share?"
+    answer_type: bool
+    literal: "Yes"
+  - label: "What is your English level?"
+    answer_type: select
+    literal: "Advanced"
+  - label: "Do you have .NET development experience of at least 5 years?"
+    answer_type: bool
+    literal: "Yes"
+  - label: "Do you have at least two years of commercial cloud development experience?"
+    answer_type: bool
+    literal: "Yes"
 
   # --- Company-specific free text (template; re-rendered every fill) ---
   - label: "Why do you want to work here?"

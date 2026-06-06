@@ -119,10 +119,13 @@ def test_generate_role_resumes_writes_manifest_and_pdfs(tmp_path: Path, monkeypa
     assert (out_dir / "manifest.json").is_file()
     assert all(Path(item["pdf_path"]).is_file() for item in manifest["roles"])
     assert all(Path(item["audit_path"]).is_file() for item in manifest["roles"])
-    assert all(Path(item["pdf_path"]).name == "resume.pdf" for item in manifest["roles"])
+    assert all(
+        Path(item["pdf_path"]).name == f"{Path(item['pdf_path']).parent.name}.pdf"
+        for item in manifest["roles"]
+    )
     assert all(Path(item["txt_path"]).name == "resume.txt" for item in manifest["roles"])
     assert all(Path(item["audit_path"]).name == "audit.json" for item in manifest["roles"])
-    assert (out_dir / "frontend-developer" / "resume.pdf").is_file()
+    assert (out_dir / "frontend-developer" / "frontend-developer.pdf").is_file()
 
 
 def _role_resumes_test_hooks(monkeypatch, tmp_path: Path):
@@ -218,7 +221,7 @@ def test_generate_role_resumes_skips_when_complete(tmp_path: Path, monkeypatch):
 
 def test_generate_role_resumes_fills_partial_manifest(tmp_path: Path, monkeypatch):
     role_resumes, out_dir = _role_resumes_test_hooks(monkeypatch, tmp_path)
-    frontend_pdf = out_dir / "frontend-developer" / "resume.pdf"
+    frontend_pdf = out_dir / "frontend-developer" / "frontend-developer.pdf"
     frontend_pdf.parent.mkdir(parents=True, exist_ok=True)
     frontend_pdf.write_bytes(b"%PDF-1.4\n")
     (out_dir / "manifest.json").write_text(
@@ -750,6 +753,75 @@ def test_generate_retries_after_failed_audit(tmp_path: Path, monkeypatch):
     assert Path(item["pdf_path"]).parent.name == "ai-engineer"
 
 
+def test_resolve_stored_resume_pdf_path_finds_role_named_pdf(tmp_path: Path):
+    from applypilot import role_resumes
+
+    role_dir = tmp_path / "ai-engineer"
+    role_dir.mkdir(parents=True)
+    pdf = role_dir / "ai-engineer.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    stale = role_dir / "resume.pdf"
+    resolved = role_resumes._resolve_stored_resume_pdf_path(
+        stale,
+        output_dir=tmp_path,
+        role_key="ai-engineer",
+    )
+    assert resolved == pdf.resolve()
+
+
+def test_resolve_job_resume_tailored_stale_role_pdf_path(tmp_path: Path):
+    from applypilot import role_resumes
+
+    role_dir = tmp_path / "role_resumes"
+    role_dir.mkdir()
+    family = role_dir / "ai-engineer"
+    family.mkdir()
+    pdf = family / "ai-engineer.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    txt = family / "resume.txt"
+    txt.write_text("LLM RAG LangChain Python production systems", encoding="utf-8")
+    (role_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "roles": [
+                    {
+                        "key": "ai-engineer",
+                        "title": "AI Engineer",
+                        "aliases": ["ai engineer", "ml engineer"],
+                        "keywords": ["llm", "rag", "langchain"],
+                        "pdf_path": str(pdf),
+                        "txt_path": str(txt),
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    job = {
+        "title": "Data entry clerk",
+        "full_description": "Spreadsheets and typing only.",
+        "tailored_resume_path": str(family / "resume.pdf"),
+    }
+    resolution = role_resumes.resolve_job_resume(job, output_dir=role_dir)
+    assert resolution.source == "tailored"
+    assert resolution.path == str(pdf)
+
+
+def test_resolve_role_pdf_path_falls_back_when_manifest_stale(tmp_path: Path):
+    from applypilot import role_resumes
+
+    role_dir = tmp_path / "ai-engineer"
+    role_dir.mkdir(parents=True)
+    pdf = role_dir / "ai-engineer.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    item = {
+        "key": "ai-engineer",
+        "pdf_path": str(role_dir / "resume.pdf"),
+    }
+    resolved = role_resumes._resolve_role_pdf_path(item, output_dir=tmp_path)
+    assert resolved == pdf.resolve()
+
+
 def test_match_role_resume_prefers_frontend_for_react_job(tmp_path: Path):
     from applypilot import role_resumes
 
@@ -934,6 +1006,47 @@ def test_resolve_job_resume_uses_tailored_when_jd_score_low(tmp_path: Path):
     assert resolution.source == "tailored"
     assert resolution.path == str(tailored)
     assert resolution.jd_score is not None and resolution.jd_score < 8
+    assert not role_resumes.job_needs_per_job_tailor(job, output_dir=role_dir)
+
+
+def test_resolve_job_resume_uses_role_when_jd_stub_and_fit_score_high(tmp_path: Path):
+    from applypilot import role_resumes
+
+    role_dir = tmp_path / "role_resumes"
+    role_dir.mkdir()
+    pdf = role_dir / "senior-full-stack-engineer.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    txt = role_dir / "resume.txt"
+    txt.write_text(
+        "Python React Node.js APIs microservices full stack delivery.",
+        encoding="utf-8",
+    )
+    (role_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "roles": [
+                    {
+                        "key": "senior-full-stack-engineer",
+                        "title": "Senior Full Stack Engineer",
+                        "aliases": ["senior software engineer"],
+                        "keywords": ["python", "react", "node"],
+                        "pdf_path": str(pdf),
+                        "txt_path": str(txt),
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    job = {
+        "title": "Senior Software Engineer",
+        "full_description": "Spokane, WA Engineering Full-Time Hybrid or Remote",
+        "fit_score": 8,
+    }
+    resolution = role_resumes.resolve_job_resume(job, output_dir=role_dir)
+    assert resolution.source == "role_resume"
+    assert resolution.path == str(pdf)
+    assert resolution.jd_score is not None and resolution.jd_score < 7
     assert not role_resumes.job_needs_per_job_tailor(job, output_dir=role_dir)
 
 
@@ -1180,8 +1293,8 @@ def test_resolve_job_resume_base_when_allow_base_and_no_tailor(tmp_path: Path, m
         "full_description": "React TypeScript UI frontend components performance.",
     }
     resolution = role_resumes.resolve_job_resume(job, allow_base=True, output_dir=role_dir)
-    assert resolution.source == "base"
-    assert resolution.path == str(base_pdf)
+    assert resolution.source == "role_resume"
+    assert resolution.path == str(pdf)
 
 
 def test_acquire_job_uses_role_resume_for_high_fit_untailored_job(tmp_path: Path, monkeypatch):

@@ -367,6 +367,55 @@ def playbook_review_cmd(
     console.print(table)
 
 
+@playbook_app.command("induce")
+def playbook_induce_cmd(
+    min_support: int = typer.Option(3, "--min-support", help="Minimum successful rows."),
+    promote: bool = typer.Option(
+        False,
+        "--promote",
+        help="Promote each candidate to trusted (owner-gated).",
+    ),
+) -> None:
+    """List review_log clusters ready for nav_playbook promotion."""
+    _bootstrap()
+
+    from applypilot.apply.direct import playbook
+    from applypilot.apply.direct.induction import induce_candidates
+    from applypilot.database import get_connection, init_db
+
+    init_db()
+    conn = get_connection()
+    candidates = induce_candidates(conn, min_support=max(2, min_support))
+    if not candidates:
+        console.print("[dim]No induction candidates at this support threshold.[/dim]")
+        return
+
+    table = Table(title="induction candidates")
+    table.add_column("family")
+    table.add_column("action")
+    table.add_column("support")
+    table.add_column("state_sig")
+    for row in candidates:
+        table.add_row(
+            row.get("ats_family") or "",
+            row.get("action_type") or "",
+            str(row.get("support") or 0),
+            (row.get("state_sig") or "")[:40],
+        )
+    console.print(table)
+
+    if not promote:
+        console.print("[dim]Re-run with --promote to mark candidates trusted.[/dim]")
+        return
+
+    promoted = 0
+    for row in candidates:
+        entry = playbook.promote(row["state_sig"], scope="host", status="trusted")
+        if entry is not None:
+            promoted += 1
+    console.print(f"[bold green]Promoted {promoted} candidate(s).[/bold green]")
+
+
 @app.command("correct-field")
 def correct_field(
     label: Optional[str] = typer.Argument(None, help="Field label to correct, e.g. \"Phone\"."),

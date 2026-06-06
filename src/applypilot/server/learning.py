@@ -6,8 +6,15 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from applypilot.apply.direct import playbook
+from applypilot.apply.direct.induction import induce_candidates
 from applypilot.apply.direct.playbook_seed import playbook_stats
-from applypilot.apply.direct.review_log import cache_hit_rate, dedupe_clusters, list_recent
+from applypilot.apply.direct.review_log import (
+    cache_hit_rate,
+    dedupe_clusters,
+    escalation_summary,
+    list_recent,
+    tier_mix,
+)
 from applypilot.database import get_connection, init_db
 
 router = APIRouter(prefix="/learning", tags=["learning"])
@@ -62,6 +69,34 @@ class PlaybookActionResponse(BaseModel):
     status: str
 
 
+class TierMixResponse(BaseModel):
+    since_hours: int
+    tiers: dict[str, int]
+
+
+class EscalationRow(BaseModel):
+    ats_family: str
+    attempts: int
+    fail_fraction: float
+
+
+class EscalationsResponse(BaseModel):
+    since_hours: int
+    families: list[EscalationRow]
+
+
+class InductionCandidate(BaseModel):
+    ats_family: str | None = None
+    state_sig: str
+    action_type: str | None = None
+    support: int
+
+
+class InductionResponse(BaseModel):
+    min_support: int
+    candidates: list[InductionCandidate]
+
+
 def _field_strategy_total(conn) -> int:
     playbook.ensure_playbook_tables(conn)
     row = conn.execute("SELECT COUNT(*) AS n FROM field_strategy").fetchone()
@@ -93,6 +128,38 @@ def api_learning_clusters(limit: int = 20) -> ClustersResponse:
     conn = get_connection()
     rows = dedupe_clusters(conn, limit=max(1, min(limit, 100)))
     return ClustersResponse(clusters=[ClusterRow.model_validate(r) for r in rows])
+
+
+@router.get("/tier-mix", response_model=TierMixResponse)
+def api_learning_tier_mix(since_hours: int = 24) -> TierMixResponse:
+    init_db()
+    conn = get_connection()
+    window = max(1, min(since_hours, 168))
+    return TierMixResponse(since_hours=window, tiers=tier_mix(conn, since_hours=window))
+
+
+@router.get("/escalations", response_model=EscalationsResponse)
+def api_learning_escalations(since_hours: int = 24) -> EscalationsResponse:
+    init_db()
+    conn = get_connection()
+    window = max(1, min(since_hours, 168))
+    rows = escalation_summary(conn, since_hours=window)
+    return EscalationsResponse(
+        since_hours=window,
+        families=[EscalationRow.model_validate(r) for r in rows],
+    )
+
+
+@router.get("/induction", response_model=InductionResponse)
+def api_learning_induction(min_support: int = 3) -> InductionResponse:
+    init_db()
+    conn = get_connection()
+    support = max(2, min(min_support, 20))
+    rows = induce_candidates(conn, min_support=support)
+    return InductionResponse(
+        min_support=support,
+        candidates=[InductionCandidate.model_validate(r) for r in rows],
+    )
 
 
 @router.post("/promote", response_model=PlaybookActionResponse)

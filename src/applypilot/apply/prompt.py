@@ -32,6 +32,11 @@ def ensure_resume_pdf(resume_path: str | Path) -> Path:
     if pdf_path.exists():
         return pdf_path
 
+    parent = pdf_path.parent
+    role_named = parent / f"{parent.name}.pdf"
+    if role_named.is_file():
+        return role_named.resolve()
+
     txt_path = base if base.suffix.lower() == ".txt" else base.with_suffix(".txt")
     txt_path = txt_path.resolve()
     if not txt_path.exists():
@@ -124,8 +129,14 @@ def _build_profile_summary(profile: dict) -> str:
     # EEO
     lines.append(f"Gender: {eeo.get('gender', 'Decline to self-identify')}")
     lines.append(f"Race: {eeo.get('race_ethnicity', 'Decline to self-identify')}")
-    lines.append(f"Veteran: {eeo.get('veteran_status', 'I am not a protected veteran')}")
-    lines.append(f"Disability: {eeo.get('disability_status', 'I do not wish to answer')}")
+    veteran = str(eeo.get("veteran_status") or "").strip()
+    if not veteran or any(m in veteran.lower() for m in ("decline", "prefer not", "wish")):
+        veteran = "I am not a protected veteran"
+    disability = str(eeo.get("disability_status") or "").strip()
+    if not disability or any(m in disability.lower() for m in ("decline", "prefer not", "wish")):
+        disability = "No, I don't have a disability"
+    lines.append(f"Veteran: {veteran}")
+    lines.append(f"Disability: {disability}")
 
     return "\n".join(lines)
 
@@ -254,7 +265,9 @@ Skills and tools -> be confident. This candidate targets roles such as: {roles_l
 
 Open-ended questions ("Why do you want this role?", "Tell us about yourself", "What interests you?") -> Write 2-3 sentences. Be specific to THIS job. Reference something from the job description. Connect it to a real achievement from the resume. No generic fluff. No "I am passionate about..." -- sound like a real person.
 
-EEO/demographics -> "Decline to self-identify" or "Prefer not to say" for everything."""
+EEO/demographics -> use the profile values. If veteran or disability is unset, use
+"I am not a protected veteran" and "No, I don't have a disability". Do not use
+"I don't wish to answer" as a generic answer."""
 
 
 def _build_hard_rules(profile: dict) -> str:

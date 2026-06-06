@@ -40,16 +40,40 @@ EXTRACT_JS = r"""() => {
     return r.width > 0 || r.height > 0 || el.type === 'hidden';
   };
   const sectionOf = (el) => {
+    const labelled = el.closest('[aria-labelledby]');
+    if (labelled) {
+      const ids = (labelled.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean);
+      for (const id of ids) {
+        if (/checkbox_label/i.test(id)) continue;
+        const t = document.getElementById(id);
+        const txt = norm(t ? t.innerText : '');
+        if (txt.length > 2 && txt.length < 240) return txt.slice(0, 200);
+      }
+    }
+    // Lever cards: question lives in a sibling .application-label above .application-field.
+    const appField = el.closest('.application-field');
+    if (appField) {
+      let prev = appField.previousElementSibling;
+      while (prev) {
+        if (prev.classList && prev.classList.contains('application-label')) {
+          const t = prev.querySelector('.text') || prev;
+          const txt = norm(t.innerText).replace(/[\u2731✱]/g, '').trim();
+          if (txt.length > 5 && txt.length < 400) return txt.slice(0, 200);
+          break;
+        }
+        prev = prev.previousElementSibling;
+      }
+    }
     // Nearest fieldset legend, else preceding heading.
     const fs = el.closest('fieldset');
     if (fs) {
       const lg = fs.querySelector('legend');
-      if (lg) return norm(lg.innerText).slice(0, 80);
+      if (lg) return norm(lg.innerText).slice(0, 200);
     }
     let node = el;
     for (let i = 0; i < 6 && node; i++) {
       node = node.previousElementSibling || node.parentElement;
-      if (node && /^H[1-6]$/.test(node.tagName)) return norm(node.innerText).slice(0, 80);
+      if (node && /^H[1-6]$/.test(node.tagName)) return norm(node.innerText).slice(0, 200);
     }
     return '';
   };
@@ -79,6 +103,19 @@ EXTRACT_JS = r"""() => {
     return '';
   };
   const labelOf = (el) => {
+    if (el.getAttribute('role') === 'radiogroup') {
+      const lg = el.tagName.toLowerCase() === 'fieldset' ? el.querySelector('legend') : null;
+      if (lg) {
+        const leg = norm(lg.innerText);
+        if (leg.length > 2) return leg.slice(0, 200);
+      }
+    }
+    // Lever custom questions: card text inputs inherit the sibling .application-label,
+    // not a distant ancestor label (which can wrongly attach "Resume/CV").
+    if (el.classList && el.classList.contains('card-field-input')) {
+      const sec = sectionOf(el);
+      if (sec.length > 2) return sec.slice(0, 120);
+    }
     const strong = norm(
       (el.labels && el.labels[0] && el.labels[0].innerText) ||
       el.getAttribute('aria-label') ||
@@ -123,6 +160,14 @@ EXTRACT_JS = r"""() => {
     return el.getAttribute('tabindex') === '-1'
       && !!el.closest('.select__container, .select-shell, .select__control, .select');
   };
+  const isWorkableSelectedValueProxy = (el) => {
+    if (el.tagName.toLowerCase() !== 'input') return false;
+    const name = norm(el.getAttribute('name') || el.id || '');
+    if (!/^CA_\d+$/i.test(name)) return false;
+    const label = norm(labelOf(el)).toLowerCase();
+    if (!/^(yes|no|n\/a|not applicable)$/i.test(label)) return false;
+    return !!document.querySelector(`input[name="input_${name}_input"], input[id="input_${name}_input"]`);
+  };
 
   const els = document.querySelectorAll('input, select, textarea, [role="combobox"], [role="listbox"], [role="radiogroup"]');
   els.forEach((el) => {
@@ -130,11 +175,14 @@ EXTRACT_JS = r"""() => {
     const type = (el.getAttribute('type') || el.type || '').toLowerCase();
     if (tag === 'input' && type === 'hidden') return;
     if (isSelectRequiredProxy(el)) return;
+    if (isWorkableSelectedValueProxy(el)) return;
     // Individual radios inside a radiogroup are filled via the group's options.
     if (tag === 'input' && type === 'radio' && el.closest('[role="radiogroup"]')) return;
     if (!visible(el) && type !== 'hidden') {
-      // styled-hidden file/date inputs are kept; truly invisible noise is not.
-      if (!(type === 'file' || tag === 'input')) return;
+      // Styled-hidden file/date/checkbox inputs are kept; invisible text inputs
+      // are usually framework validation proxies and must not become required
+      // fields (Workable renders selected values this way).
+      if (!(type === 'file' || type === 'date' || type === 'datetime-local' || type === 'checkbox' || type === 'radio' || isCombobox(el))) return;
     }
     const label = labelOf(el);
     const section = sectionOf(el);
@@ -142,19 +190,35 @@ EXTRACT_JS = r"""() => {
     const autocomplete = norm(el.getAttribute('autocomplete') || '');
     const required = el.required || el.getAttribute('aria-required') === 'true';
 
+    let value = '';
     let options = [];
     if (tag === 'select') {
       options = [...el.options].map((o) => norm(o.text)).filter(Boolean);
     } else if (el.getAttribute('role') === 'radiogroup') {
-      options = [...el.querySelectorAll('[role="radio"]')].map((o) => norm(o.innerText)).filter(Boolean);
+      options = [
+        ...[...el.querySelectorAll('[role="radio"]')].map((o) => norm(o.innerText)),
+        ...[...el.querySelectorAll('input[type="radio"]')].map((o) =>
+          norm((o.labels && o.labels[0] && o.labels[0].innerText) || o.getAttribute('aria-label') || o.value)
+        ),
+      ].filter(Boolean);
+      const picked = el.querySelector('input[type="radio"]:checked, [role="radio"][aria-checked="true"]');
+      if (picked) {
+        value = norm(
+          (picked.labels && picked.labels[0] && picked.labels[0].innerText) ||
+          picked.getAttribute('aria-label') ||
+          picked.innerText ||
+          picked.value
+        );
+      }
     } else if (el.getAttribute('role') === 'listbox' || el.getAttribute('role') === 'combobox') {
       options = [...el.querySelectorAll('[role="option"]')].map((o) => norm(o.innerText)).filter(Boolean);
     }
 
-    let value = '';
-    if (type === 'checkbox' || type === 'radio') value = el.checked ? 'checked' : '';
-    else if (tag === 'select') value = norm(el.options[el.selectedIndex] ? el.options[el.selectedIndex].text : el.value);
-    else value = (el.value || '').slice(0, 200);
+    if (!value) {
+      if (type === 'checkbox' || type === 'radio') value = el.checked ? 'checked' : '';
+      else if (tag === 'select') value = norm(el.options[el.selectedIndex] ? el.options[el.selectedIndex].text : el.value);
+      else value = (el.value || '').slice(0, 200);
+    }
 
     const keyBase = `${label}|${name}|${section}|${tag}|${type}`;
     let key = sha(keyBase);
@@ -247,11 +311,20 @@ class FormState:
 
 
 def _to_field(raw: dict) -> Field:
+    label = raw.get("label", "")
+    name = raw.get("name", "")
+    if label.strip().lower().lstrip("* ").startswith("first name"):
+        name_labels = {
+            "city": "City",
+            "postcode": "Postal code",
+            "country": "Country",
+        }
+        label = name_labels.get(str(name).strip().lower(), label)
     return Field(
-        label=raw.get("label", ""),
+        label=label,
         type=raw.get("type", ""),
         tag=raw.get("tag", ""),
-        name_attr=raw.get("name", ""),
+        name_attr=name,
         autocomplete=raw.get("autocomplete", ""),
         section_header=raw.get("section_header", ""),
         required=bool(raw.get("required")),

@@ -813,6 +813,65 @@ def role_resume_dir() -> Path:
     return Path(config.ROLE_RESUME_DIR)
 
 
+def role_resume_pdf_path(role_output: Path, role_key: str) -> Path:
+    """Canonical on-disk PDF path for a role family (e.g. ``ai-engineer/ai-engineer.pdf``)."""
+    return role_output / f"{role_key}.pdf"
+
+
+def _resolve_role_pdf_path(
+    item: dict[str, Any],
+    *,
+    output_dir: Path | None = None,
+) -> Path | None:
+    """Resolve a role PDF on disk from a manifest item (handles stale ``resume.pdf`` paths)."""
+    key = str(item.get("key") or "").strip()
+    candidates: list[Path] = []
+    raw = item.get("pdf_path")
+    if raw:
+        candidates.append(Path(str(raw)))
+    if key:
+        role_dir = Path(output_dir or role_resume_dir()) / key
+        candidates.append(role_resume_pdf_path(role_dir, key))
+        candidates.append(role_dir / "resume.pdf")
+    for path in candidates:
+        if path.is_file():
+            return path.resolve()
+    return None
+
+
+def _resolve_stored_resume_pdf_path(
+    path: str | Path,
+    *,
+    output_dir: Path | None = None,
+    role_key: str | None = None,
+) -> Path | None:
+    """Resolve a DB ``tailored_resume_path`` to an on-disk PDF (handles renames and stale paths)."""
+    raw = Path(path)
+    candidates: list[Path] = []
+    if raw.suffix.lower() == ".txt":
+        candidates.append(raw.with_suffix(".pdf"))
+    elif raw.suffix.lower() == ".pdf":
+        candidates.append(raw)
+    else:
+        candidates.append(raw.with_suffix(".pdf"))
+
+    parent = candidates[0].parent
+    key = role_key or parent.name
+    role_root = Path(output_dir or role_resume_dir())
+    if key and parent.name == key and parent.parent == role_root:
+        candidates.append(role_resume_pdf_path(parent, key))
+        candidates.append(parent / "resume.pdf")
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if candidate.is_file():
+            return candidate.resolve()
+    return None
+
+
 def manifest_path(output_dir: Path | None = None) -> Path:
     return Path(output_dir or role_resume_dir()) / MANIFEST_NAME
 
@@ -3089,7 +3148,7 @@ def generate_one_role_resume(
     role_output = output / stem
     role_output.mkdir(parents=True, exist_ok=True)
     txt_path = role_output / "resume.txt"
-    pdf_path = role_output / "resume.pdf"
+    pdf_path = role_resume_pdf_path(role_output, stem)
     audit_path = role_output / "audit.json"
     txt_path.write_text(resume_text, encoding="utf-8")
 
@@ -3130,7 +3189,7 @@ def _usable_manifest_items_by_key(
     by_key: dict[str, dict[str, Any]] = {}
     for item in manifest.get("roles", []):
         key = str(item.get("key") or "")
-        if key and _manifest_item_usable(item):
+        if key and _manifest_item_usable(item, output_dir=output_dir):
             by_key[key] = item
     return by_key
 
@@ -3255,14 +3314,57 @@ def role_resumes_available(output_dir: Path | None = None) -> bool:
     return bool(_usable_manifest_items_by_key(output_dir))
 
 
-def _manifest_item_usable(item: dict[str, Any]) -> bool:
+def _manifest_item_usable(item: dict[str, Any], output_dir: Path | None = None) -> bool:
     # Older manifests did not have audit_pass; keep them usable for compatibility.
-    return Path(item.get("pdf_path", "")).exists() and item.get("audit_pass", True) is not False
+    return (
+        _resolve_role_pdf_path(item, output_dir=output_dir) is not None
+        and item.get("audit_pass", True) is not False
+    )
 
 
 def role_resume_jd_min_score() -> int:
     """Minimum 1–10 JD alignment score to apply with a role resume instead of per-job tailor."""
     return max(1, min(10, int(config.DEFAULTS.get("role_resume_jd_min_score", 8))))
+
+
+_UNENRICHED_JD_MAX_CHARS = 200
+
+
+def _job_description_unenriched(job: dict[str, Any]) -> bool:
+    """True when enrich never filled a real JD (Lever/JobSpy location stub only)."""
+    blob = " ".join(
+        str(job.get(key) or "") for key in ("full_description", "description")
+    ).strip()
+    return len(blob) < _UNENRICHED_JD_MAX_CHARS
+
+
+def _fit_score_allows_role_resume(job: dict[str, Any]) -> bool:
+    try:
+        fit = int(job.get("fit_score") or 0)
+    except (TypeError, ValueError):
+        return False
+    min_fit = int(config.DEFAULTS.get("role_resume_apply_min_score", 7))
+    return fit >= min_fit
+
+
+def _role_resume_cleared_for_apply(
+    job: dict[str, Any],
+    role_item: dict[str, Any],
+    jd_score: int,
+    jd_min: int,
+    *,
+    output_dir: Path | None = None,
+) -> bool:
+    """Role PDF is OK when JD fit is high enough, or score stage already passed a thin stub."""
+    if jd_score >= jd_min:
+        return True
+    if (
+        _job_description_unenriched(job)
+        and _fit_score_allows_role_resume(job)
+        and _resolve_role_pdf_path(role_item, output_dir=output_dir) is not None
+    ):
+        return True
+    return False
 
 
 def _role_resume_text(item: dict[str, Any]) -> str:
@@ -3272,11 +3374,11 @@ def _role_resume_text(item: dict[str, Any]) -> str:
             path = Path(str(raw))
             if path.is_file():
                 return path.read_text(encoding="utf-8")
-    pdf = Path(str(item.get("pdf_path") or ""))
-    if pdf.suffix.lower() == ".pdf":
-        txt = pdf.with_suffix(".txt")
-        if txt.is_file():
-            return txt.read_text(encoding="utf-8")
+    pdf = _resolve_role_pdf_path(item)
+    if pdf:
+        for txt in (pdf.with_suffix(".txt"), pdf.parent / "resume.txt"):
+            if txt.is_file():
+                return txt.read_text(encoding="utf-8")
     return ""
 
 
@@ -3372,22 +3474,38 @@ def resolve_job_resume(
     if matched:
         jd_score = _jd_score_for_role_apply(job, matched)
         role_key = str(matched.get("key") or "")
-        if jd_score >= jd_min:
+        if _role_resume_cleared_for_apply(
+            job, matched, jd_score, jd_min, output_dir=output_dir
+        ):
+            pdf = _resolve_role_pdf_path(matched, output_dir=output_dir)
             return ResumeResolution(
-                path=str(matched["pdf_path"]),
+                path=str(pdf) if pdf else None,
                 source="role_resume",
                 jd_score=jd_score,
                 role_key=role_key,
             )
         tailored = job.get("tailored_resume_path")
         if tailored:
+            pdf = _resolve_stored_resume_pdf_path(
+                tailored,
+                output_dir=output_dir,
+                role_key=role_key,
+            )
             return ResumeResolution(
-                path=str(tailored),
+                path=str(pdf) if pdf else str(tailored),
                 source="tailored",
                 jd_score=jd_score,
                 role_key=role_key,
             )
         if allow_base:
+            pdf = _resolve_role_pdf_path(matched, output_dir=output_dir)
+            if pdf:
+                return ResumeResolution(
+                    path=str(pdf),
+                    source="role_resume",
+                    jd_score=jd_score,
+                    role_key=role_key,
+                )
             return ResumeResolution(
                 path=str(config.RESUME_PDF_PATH),
                 source="base",
@@ -3403,8 +3521,9 @@ def resolve_job_resume(
 
     tailored = job.get("tailored_resume_path")
     if tailored:
+        pdf = _resolve_stored_resume_pdf_path(tailored, output_dir=output_dir)
         return ResumeResolution(
-            path=str(tailored),
+            path=str(pdf) if pdf else str(tailored),
             source="tailored",
         )
     if allow_base:
@@ -3434,6 +3553,8 @@ def _role_manifest_match_score(item: dict[str, Any], text: str) -> int:
 def _match_role_resume_from_manifest(
     manifest: dict[str, Any],
     job: dict[str, Any],
+    *,
+    output_dir: Path | None = None,
 ) -> dict[str, Any] | None:
     if not manifest:
         return None
@@ -3446,7 +3567,7 @@ def _match_role_resume_from_manifest(
     min_score = role_resume_min_match_score()
     best: tuple[int, dict[str, Any]] | None = None
     for item in manifest.get("roles", []):
-        if not _manifest_item_usable(item):
+        if not _manifest_item_usable(item, output_dir=output_dir):
             continue
         score = _role_manifest_match_score(item, text)
         if score >= min_score and (best is None or score > best[0]):
@@ -3461,7 +3582,7 @@ def _match_role_resume_from_manifest(
 def match_role_resume(job: dict[str, Any], output_dir: Path | None = None) -> dict[str, Any] | None:
     """Return the best manifest role for a job title/description."""
     manifest = load_manifest(output_dir)
-    return _match_role_resume_from_manifest(manifest, job)
+    return _match_role_resume_from_manifest(manifest, job, output_dir=output_dir)
 
 
 ROLE_AWARE_RESCORE_MARKER = config.APP_DIR / ".role_aware_scoring_v1.rescored"
@@ -3485,13 +3606,15 @@ def _job_match_text(job: dict[str, Any]) -> str:
 def _match_manifest_scored(
     manifest: dict[str, Any],
     job: dict[str, Any],
+    *,
+    output_dir: Path | None = None,
 ) -> RoleMatch:
     if not manifest:
         return RoleMatch(None, 0)
     text = _job_match_text(job)
     best: tuple[int, dict[str, Any]] | None = None
     for item in manifest.get("roles", []):
-        if not _manifest_item_usable(item):
+        if not _manifest_item_usable(item, output_dir=output_dir):
             continue
         score = _role_manifest_match_score(item, text)
         if score > 0 and (best is None or score > best[0]):
@@ -3509,7 +3632,7 @@ def match_role_resume_scored(
     manifest = load_manifest(output_dir)
     if not manifest:
         return RoleMatch(None, 0)
-    return _match_manifest_scored(manifest, job)
+    return _match_manifest_scored(manifest, job, output_dir=output_dir)
 
 
 def role_aware_scoring_enabled(output_dir: Path | None = None) -> bool:
@@ -3539,7 +3662,7 @@ def resolve_job_resume_for_scoring(
     if matched.match_score > 0 and matched.item:
         role_key = str(matched.item.get("key") or "")
         jd_score = score_role_resume_jd_fit(matched.item, job)
-        pdf = matched.item.get("pdf_path")
+        pdf = _resolve_role_pdf_path(matched.item, output_dir=output_dir)
         return ResumeResolution(
             path=str(pdf) if pdf else None,
             source="role_resume",
@@ -3741,12 +3864,8 @@ def bind_role_resume_paths(
             if not matched:
                 skipped += 1
                 continue
-            pdf_raw = matched.get("pdf_path")
-            if not pdf_raw:
-                skipped += 1
-                continue
-            pdf = Path(str(pdf_raw))
-            if not pdf.is_file():
+            pdf = _resolve_role_pdf_path(matched)
+            if not pdf:
                 skipped += 1
                 continue
             cur = conn.execute(
@@ -3847,16 +3966,19 @@ def _job_needs_tailor_with_manifest(
     manifest: dict[str, Any],
     *,
     min_score: int | None = None,
+    output_dir: Path | None = None,
 ) -> bool:
     if job.get("tailored_resume_path"):
         return False
     if int(job.get("tailor_attempts") or 0) >= _max_tailor_attempts():
         return False
     jd_min = role_resume_jd_min_score() if min_score is None else max(1, min(10, min_score))
-    matched = _match_role_resume_from_manifest(manifest, job)
+    matched = _match_role_resume_from_manifest(manifest, job, output_dir=output_dir)
     if matched:
         jd_score = score_role_resume_jd_fit(matched, job)
-        if jd_score >= jd_min:
+        if _role_resume_cleared_for_apply(
+            job, matched, jd_score, jd_min, output_dir=output_dir
+        ):
             return False
         return True
     return True

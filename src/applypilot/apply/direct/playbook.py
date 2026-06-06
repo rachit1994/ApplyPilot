@@ -20,7 +20,26 @@ from applypilot.database import get_connection
 
 PROMOTE_K = 2
 RETIRE_FAIL_RATE = 0.5
-SIG_VERSION = 1
+SIG_VERSION = 2
+
+_NAV_VOCAB = (
+    "apply",
+    "next",
+    "continue",
+    "submit",
+    "save",
+    "sign in",
+    "log in",
+    "login",
+    "accept",
+    "agree",
+    "review",
+    "back",
+    "upload",
+    "create account",
+    "register",
+    "google",
+)
 
 SIDE_EFFECTING_ACTIONS: frozenset[str] = frozenset(
     {
@@ -83,6 +102,28 @@ def _normalize_clickables(clickables: list[str] | None) -> list[str]:
     return sorted(set(normalized))
 
 
+def _canonical_nav_token(normalized_label: str) -> str | None:
+    """Return the longest matching nav-vocab token for a normalized label."""
+    for token in sorted(_NAV_VOCAB, key=len, reverse=True):
+        if token in normalized_label:
+            return token
+    return None
+
+
+def _salient_clickables(clickables: list[str] | None) -> list[str]:
+    """Keep only nav-vocab labels, canonicalized, deduped, sorted."""
+    if not clickables:
+        return []
+    found: set[str] = set()
+    for raw in clickables:
+        if not raw or not str(raw).strip():
+            continue
+        token = _canonical_nav_token(normalize_text(raw))
+        if token:
+            found.add(token)
+    return sorted(found)
+
+
 def state_signature(
     page_snapshot: dict[str, Any],
     *,
@@ -91,7 +132,7 @@ def state_signature(
     step_name: str | None = None,
 ) -> str:
     """Hash navigation state for playbook lookup (narrow default scope)."""
-    clickables = _normalize_clickables(page_snapshot.get("clickables"))
+    clickables = _salient_clickables(page_snapshot.get("clickables"))
     parts = "|".join(
         (
             str(SIG_VERSION),

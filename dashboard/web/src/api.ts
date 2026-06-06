@@ -891,6 +891,34 @@ export type LearningCluster = {
   outcome?: string | null;
 };
 
+export type LearningTierMix = {
+  since_hours: number;
+  tiers: Record<string, number>;
+};
+
+export type LearningEscalation = {
+  ats_family: string;
+  attempts: number;
+  fail_fraction: number;
+};
+
+export type LearningEscalations = {
+  since_hours: number;
+  families: LearningEscalation[];
+};
+
+export type LearningInductionCandidate = {
+  ats_family?: string | null;
+  state_sig: string;
+  action_type?: string | null;
+  support: number;
+};
+
+export type LearningInduction = {
+  min_support: number;
+  candidates: LearningInductionCandidate[];
+};
+
 export async function fetchLearningStats(sinceHours = 24): Promise<LearningStats> {
   const res = await fetch(`${API}/learning/stats?since_hours=${sinceHours}`);
   if (!res.ok) throw new Error("Failed to load learning stats");
@@ -906,6 +934,24 @@ export async function fetchLearningReview(limit = 50): Promise<{ events: Learnin
 export async function fetchLearningClusters(limit = 20): Promise<{ clusters: LearningCluster[] }> {
   const res = await fetch(`${API}/learning/clusters?limit=${limit}`);
   if (!res.ok) throw new Error("Failed to load learning clusters");
+  return res.json();
+}
+
+export async function fetchLearningTierMix(sinceHours = 24): Promise<LearningTierMix> {
+  const res = await fetch(`${API}/learning/tier-mix?since_hours=${sinceHours}`);
+  if (!res.ok) throw new Error("Failed to load learning tier mix");
+  return res.json();
+}
+
+export async function fetchLearningEscalations(sinceHours = 24): Promise<LearningEscalations> {
+  const res = await fetch(`${API}/learning/escalations?since_hours=${sinceHours}`);
+  if (!res.ok) throw new Error("Failed to load learning escalations");
+  return res.json();
+}
+
+export async function fetchLearningInduction(minSupport = 3): Promise<LearningInduction> {
+  const res = await fetch(`${API}/learning/induction?min_support=${minSupport}`);
+  if (!res.ok) throw new Error("Failed to load induction candidates");
   return res.json();
 }
 

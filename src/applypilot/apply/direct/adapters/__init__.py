@@ -7,6 +7,7 @@ zero LLM tokens. Dispatch is by fingerprint.ats_family:
     lever.py       -- jobs.lever.co                   (Phase B)
     ashby.py       -- jobs.ashbyhq.com                (Phase B)
     workday.py     -- *.myworkdayjobs.com             (Phase C)
+    workable.py    -- apply.workable.com              (generic form chrome)
 
 Jobs on a family without an adapter fall through to Claude rescue or are
 marked manual. See docs/maxed-apply-pipeline-jun-2026.md §4.
@@ -16,7 +17,14 @@ from __future__ import annotations
 
 from applypilot.apply import apply_settings
 from applypilot.apply.direct.adapters.base import Adapter
-from applypilot.apply.direct.adapters import ashby, greenhouse, lever, workatastartup
+from applypilot.apply.direct.adapters import (
+    ashby,
+    greenhouse,
+    lever,
+    workable,
+    workatastartup,
+    workday,
+)
 
 # family -> descriptor. Only families whose deterministic form-fill is verified
 # end-to-end are dispatched to the Driver; everything else escalates to the
@@ -28,7 +36,9 @@ _REGISTRY: dict[str, Adapter] = {
     greenhouse.ADAPTER.family: greenhouse.ADAPTER,
     lever.ADAPTER.family: lever.ADAPTER,
     ashby.ADAPTER.family: ashby.ADAPTER,
+    workable.ADAPTER.family: workable.ADAPTER,
     workatastartup.ADAPTER.family: workatastartup.ADAPTER,
+    workday.ADAPTER.family: workday.ADAPTER,
 }
 
 # Reserved for families not yet verified end-to-end.

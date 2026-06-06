@@ -23,6 +23,7 @@ TOKENS = {
     "linkedin_url": "https://linkedin.com/in/rachit",
     "github_url": "https://github.com/rachit",
     "portfolio_url": "https://rachit.dev",
+    "current_company": "Happening Today",
     "current_job_title": "Senior Software Engineer",
     "years_experience": "8",
     "education_level": "Bachelors",
@@ -30,10 +31,10 @@ TOKENS = {
     "earliest_start_date": "Immediately",
     "require_sponsorship": "No",
     "address": "1 King St",
-    "gender": "Decline to self-identify",
-    "race_ethnicity": "Decline to self-identify",
+    "gender": "Male",
+    "race_ethnicity": "Asian",
     "veteran_status": "I am not a protected veteran",
-    "disability_status": "I do not wish to answer",
+    "disability_status": "No, I don't have a disability",
 }
 
 
@@ -52,6 +53,55 @@ def test_contact_fields():
     assert resolve_field(Field(label="Mobile phone"), TOKENS).answer == "5551234567"
     assert resolve_field(Field(label="LinkedIn Profile"), TOKENS).answer.endswith("/rachit")
     assert resolve_field(Field(label="Location"), TOKENS).answer == "Toronto, ON, Canada"
+
+
+def test_telephone_country_code_uses_country_not_phone():
+    tokens = dict(TOKENS, country="India", phone_e164="+918168433423")
+    res = resolve_field(Field(label="Telephone country code", type="select"), tokens)
+    assert res is not None
+    assert res.answer == "India"
+    assert (
+        resolve_field(Field(label="* Phone +91", type="tel"), tokens).answer
+        == "+918168433423"
+    )
+    picked = choose_select_option("India", ("United States +1", "India\n+91", "Canada +1"))
+    assert picked == "India\n+91"
+
+
+def test_workable_screening_questions_resolve_tier0():
+    assert (
+        resolve_field(Field(label="Do you have an English CV that you can share?"), TOKENS).answer
+        == "Yes"
+    )
+    assert resolve_field(Field(label="What is your English level?"), TOKENS).answer == "Advanced"
+    assert (
+        resolve_field(
+            Field(label="Do you have .NET development experience of at least 5 years?"),
+            TOKENS,
+        ).answer
+        == "Yes"
+    )
+    assert (
+        resolve_field(
+            Field(
+                label=(
+                    "Do you have at least two years of commercial cloud "
+                    "development experience?"
+                )
+            ),
+            TOKENS,
+        ).answer
+        == "Yes"
+    )
+
+
+def test_postal_code_attr_uses_profile_or_city_fallback():
+    assert resolve_field(Field(label="Postal code", name_attr="postcode"), TOKENS).answer == "M5V"
+    tokens = dict(TOKENS, city="Bengaluru", country="India", postal_code="")
+    assert (
+        resolve_field(Field(label="Postal code", name_attr="postcode"), tokens).answer
+        == "560001"
+    )
 
 
 def test_attr_beats_label_ambiguity():
@@ -81,23 +131,23 @@ def test_work_authorization_questions():
     )
 
 
-def test_eeo_defaults_to_decline():
-    assert resolve_field(Field(label="Gender"), TOKENS).answer == "Decline to self-identify"
-    assert resolve_field(Field(label="Race / Ethnicity"), TOKENS).answer == "Decline to self-identify"
+def test_eeo_uses_profile_values():
+    assert resolve_field(Field(label="Gender"), TOKENS).answer == "Male"
+    assert resolve_field(Field(label="Race / Ethnicity"), TOKENS).answer == "Asian"
     assert "veteran" in resolve_field(Field(label="Veteran status"), TOKENS).answer.lower()
     assert (
         resolve_field(Field(label="Disability status"), TOKENS).answer
-        == "I do not wish to answer"
+        == "No, I don't have a disability"
     )
 
 
 def test_eeo_matches_section_header_when_label_is_option_text():
     f = Field(
-        label="I don't wish to answer",
+        label="No, I don't have a disability",
         type="radio",
         section_header="Please indicate your disability status",
     )
-    assert resolve_field(f, TOKENS).answer == "I do not wish to answer"
+    assert resolve_field(f, TOKENS).answer == "No, I don't have a disability"
 
 
 def test_disability_answer_snaps_to_apostrophe_option():
@@ -106,12 +156,30 @@ def test_disability_answer_snaps_to_apostrophe_option():
         "No, I don't have a disability",
         "I don't wish to answer",
     )
-    assert choose_select_option("I do not wish to answer", opts) == "I don't wish to answer"
+    assert choose_select_option("No, I don't have a disability", opts) == "No, I don't have a disability"
 
 
 def test_salary_and_experience():
     assert resolve_field(Field(label="Desired salary"), TOKENS).answer == "180000"
     assert resolve_field(Field(label="Years of experience"), TOKENS).answer == "8"
+    assert resolve_field(Field(label="Current company"), TOKENS).answer == "Happening Today"
+    assert (
+        resolve_field(
+            Field(label="Does this range meet your compensation requirements?"),
+            TOKENS,
+        ).answer
+        == "Yes"
+    )
+
+
+def test_monthly_usd_salary_converts_from_inr_annual():
+    tokens = dict(TOKENS, salary_number="5000000", salary_currency="INR")
+    resolved = resolve_field(
+        Field(label="What is your desired monthly base salary in USD"),
+        tokens,
+    )
+    assert resolved is not None
+    assert resolved.answer == "5000"
 
 
 def test_free_text_not_answered_by_tier0():
@@ -225,3 +293,36 @@ def test_date_picker_start_question_uses_concrete_date():
     assert resolve_field(Field(label="Earliest start date"), tokens).answer == "06/18/2026"
     # A generic "notice period" still uses the free-text availability.
     assert resolve_field(Field(label="Notice period"), tokens).answer == "Immediately"
+
+
+def test_workable_skill_requirement_radiogroup_resolves_yes():
+    field = Field(
+        label="Experience: Minimum of 3 years building production systems",
+        tag="fieldset",
+        options=("Yes", "No"),
+    )
+    res = resolve_field(field, TOKENS)
+    assert res is not None
+    assert res.answer == "Yes"
+    assert res.via == "label"
+
+
+def test_workable_europe_location_trap_does_not_auto_yes():
+    field = Field(
+        label="Location: Must be physically located and working within Europe",
+        section_header="Requirements",
+        tag="fieldset",
+        options=("Yes", "No"),
+    )
+    assert resolve_field(field, TOKENS) is None
+
+
+def test_remaining_gaps_are_location_traps_only():
+    from applypilot.apply.direct.profile_binding import remaining_gaps_are_location_traps
+
+    traps = [
+        Field(label="Location: Must be physically located within Europe", options=("Yes", "No")),
+    ]
+    mixed = traps + [Field(label="Experience: 5 years Python", options=("Yes", "No"))]
+    assert remaining_gaps_are_location_traps(traps)
+    assert not remaining_gaps_are_location_traps(mixed)

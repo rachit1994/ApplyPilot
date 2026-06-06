@@ -16,6 +16,11 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_CODE_RE = re.compile(r"\b[A-Z0-9]{6,8}\b")
 _CODE_LABEL_RE = re.compile(r"(\d+)\s*[- ]?character", re.I)
+_CODE_CONTEXT_RE = re.compile(
+    r"(?:verification\s+code|security\s+code|one[- ]time\s+pass\s+code|pass\s+code|code)"
+    r"[^A-Z0-9]{0,40}([A-Z0-9]{4,12})",
+    re.I,
+)
 
 
 def infer_code_length(*, label: str = "", maxlength: str | int | None = None) -> int:
@@ -49,12 +54,22 @@ def extract_code_from_text(text: str, *, code_length: int = 8) -> str | None:
     if not text:
         return None
     upper = text.upper()
+    context_matches = [m.group(1).upper() for m in _CODE_CONTEXT_RE.finditer(upper)]
+    if context_matches:
+        exact_context = [m for m in context_matches if len(m) == code_length]
+        if exact_context:
+            return exact_context[0]
+        return max(context_matches, key=len)
     pat = _code_pattern(code_length)
     matches = pat.findall(upper)
     if not matches:
         matches = _DEFAULT_CODE_RE.findall(upper)
     if not matches:
         return None
+    if code_length <= 6:
+        numeric_exact = [m for m in matches if len(m) == code_length and m.isdigit()]
+        if numeric_exact:
+            return numeric_exact[0]
     # Prefer exact length, else longest (codes are usually fixed-width).
     exact = [m for m in matches if len(m) == code_length]
     pool = exact or matches
@@ -134,7 +149,7 @@ def _matches_company_hint(text: str, company_hint: str) -> bool:
 def _build_search_query(company_hint: str) -> str:
     parts = [
         "newer_than:1h",
-        "(subject:(verification OR code OR confirm) OR from:greenhouse OR from:ashbyhq)",
+        "(subject:(verification OR code OR confirm OR identity) OR from:greenhouse OR from:ashbyhq)",
     ]
     hint = (company_hint or "").strip()
     if hint and len(hint) >= 2:

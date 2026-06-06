@@ -29,7 +29,7 @@
         "eval"
       ],
       "txt_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/ai-engineer/resume.txt",
-      "pdf_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/ai-engineer/resume.pdf",
+      "pdf_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/ai-engineer/ai-engineer.pdf",
       "audit_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/ai-engineer/audit.json",
       "benchmark": {
         "source": "remotive_research_only",
@@ -67,7 +67,7 @@
         "performance"
       ],
       "txt_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/frontend-developer/resume.txt",
-      "pdf_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/frontend-developer/resume.pdf",
+      "pdf_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/frontend-developer/frontend-developer.pdf",
       "audit_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/frontend-developer/audit.json",
       "benchmark": {
         "source": "fallback",
@@ -105,7 +105,7 @@
         "figma"
       ],
       "txt_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/ui-architect/resume.txt",
-      "pdf_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/ui-architect/resume.pdf",
+      "pdf_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/ui-architect/ui-architect.pdf",
       "audit_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/ui-architect/audit.json",
       "benchmark": {
         "source": "fallback",
@@ -142,7 +142,7 @@
         "frontend"
       ],
       "txt_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/senior-full-stack-engineer/resume.txt",
-      "pdf_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/senior-full-stack-engineer/resume.pdf",
+      "pdf_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/senior-full-stack-engineer/senior-full-stack-engineer.pdf",
       "audit_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/senior-full-stack-engineer/audit.json",
       "benchmark": {
         "source": "db",
@@ -180,7 +180,7 @@
         "rest"
       ],
       "txt_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/backend-engineer/resume.txt",
-      "pdf_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/backend-engineer/resume.pdf",
+      "pdf_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/backend-engineer/backend-engineer.pdf",
       "audit_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/backend-engineer/audit.json",
       "benchmark": {
         "source": "db",
@@ -218,7 +218,7 @@
         "infrastructure"
       ],
       "txt_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/platform-engineer/resume.txt",
-      "pdf_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/platform-engineer/resume.pdf",
+      "pdf_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/platform-engineer/platform-engineer.pdf",
       "audit_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/platform-engineer/audit.json",
       "benchmark": {
         "source": "jobicy_research_only",
@@ -254,7 +254,7 @@
         "experimentation"
       ],
       "txt_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/product-engineer/resume.txt",
-      "pdf_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/product-engineer/resume.pdf",
+      "pdf_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/product-engineer/product-engineer.pdf",
       "audit_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/product-engineer/audit.json",
       "benchmark": {
         "source": "fallback",
@@ -291,7 +291,7 @@
         "technical discovery"
       ],
       "txt_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/solutions-architect/resume.txt",
-      "pdf_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/solutions-architect/resume.pdf",
+      "pdf_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/solutions-architect/solutions-architect.pdf",
       "audit_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/solutions-architect/audit.json",
       "benchmark": {
         "source": "jobicy_research_only",
@@ -327,7 +327,7 @@
         "reliability"
       ],
       "txt_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/software-architect/resume.txt",
-      "pdf_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/software-architect/resume.pdf",
+      "pdf_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/software-architect/software-architect.pdf",
       "audit_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/software-architect/audit.json",
       "benchmark": {
         "source": "jobicy_research_only",
@@ -368,7 +368,7 @@
         "migration"
       ],
       "txt_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/cloud-architect/resume.txt",
-      "pdf_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/cloud-architect/resume.pdf",
+      "pdf_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/cloud-architect/cloud-architect.pdf",
       "audit_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/cloud-architect/audit.json",
       "benchmark": {
         "source": "fallback",
@@ -405,7 +405,7 @@
         "automation"
       ],
       "txt_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/forward-deployed-engineer/resume.txt",
-      "pdf_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/forward-deployed-engineer/resume.pdf",
+      "pdf_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/forward-deployed-engineer/forward-deployed-engineer.pdf",
       "audit_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/forward-deployed-engineer/audit.json",
       "benchmark": {
         "source": "fallback",
@@ -441,7 +441,7 @@
         "shipping"
       ],
       "txt_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/founding-engineer/resume.txt",
-      "pdf_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/founding-engineer/resume.pdf",
+      "pdf_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/founding-engineer/founding-engineer.pdf",
       "audit_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/founding-engineer/audit.json",
       "benchmark": {
         "source": "fallback",
@@ -475,7 +475,7 @@
         "platform"
       ],
       "txt_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/staff-engineer/resume.txt",
-      "pdf_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/staff-engineer/resume.pdf",
+      "pdf_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/staff-engineer/staff-engineer.pdf",
       "audit_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/staff-engineer/audit.json",
       "benchmark": {
         "source": "fallback",
@@ -511,7 +511,7 @@
         "platform"
       ],
       "txt_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/principal-engineer/resume.txt",
-      "pdf_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/principal-engineer/resume.pdf",
+      "pdf_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/principal-engineer/principal-engineer.pdf",
       "audit_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/principal-engineer/audit.json",
       "benchmark": {
         "source": "fallback",
@@ -548,7 +548,7 @@
         "roadmap"
       ],
       "txt_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/tech-lead/resume.txt",
-      "pdf_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/tech-lead/resume.pdf",
+      "pdf_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/tech-lead/tech-lead.pdf",
       "audit_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/tech-lead/audit.json",
       "benchmark": {
         "source": "jobicy_research_only",
@@ -586,7 +586,7 @@
         "technical debt"
       ],
       "txt_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/engineering-manager/resume.txt",
-      "pdf_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/engineering-manager/resume.pdf",
+      "pdf_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/engineering-manager/engineering-manager.pdf",
       "audit_path": "/Users/rachitsrivastava/viralEquation/ideas/ApplyPilot/role_resumes/engineering-manager/audit.json",
       "benchmark": {
         "source": "jobicy_research_only",

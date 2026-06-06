@@ -110,3 +110,63 @@ def test_learning_promote_missing_returns_404(temp_db):
         json={"state_sig": "missing-sig", "scope": "host"},
     )
     assert res.status_code == 404
+
+
+def test_learning_tier_mix_escalations_and_induction(temp_db):
+    from applypilot.apply.direct import playbook
+    from applypilot.apply.direct.review_log import log_event
+    from applypilot.database import get_connection, init_db
+    from applypilot.server.app import create_app
+
+    init_db(temp_db)
+    conn = get_connection(temp_db)
+    playbook.ensure_playbook_tables(conn)
+
+    sig = "induction-test-sig"
+    for _ in range(3):
+        log_event(
+            conn,
+            ats_family="workday",
+            state_sig=sig,
+            tier="replay",
+            action_type="click",
+            outcome="advanced",
+            postcondition_met=1,
+        )
+    log_event(
+        conn,
+        ats_family="workday",
+        state_sig=sig,
+        tier="gemini",
+        action_type="click",
+        outcome="no_change",
+        postcondition_met=0,
+    )
+    log_event(
+        conn,
+        ats_family="greenhouse",
+        state_sig="other",
+        tier="replay",
+        action_type="accept_cookies",
+        outcome="advanced",
+        postcondition_met=1,
+    )
+
+    client = TestClient(create_app())
+
+    tier_mix = client.get("/api/learning/tier-mix?since_hours=24")
+    assert tier_mix.status_code == 200
+    tiers = tier_mix.json()["tiers"]
+    assert tiers.get("replay", 0) >= 2
+    assert tiers.get("gemini", 0) >= 1
+
+    escalations = client.get("/api/learning/escalations?since_hours=24")
+    assert escalations.status_code == 200
+    body = escalations.json()
+    assert body["since_hours"] == 24
+    assert isinstance(body["families"], list)
+
+    induction = client.get("/api/learning/induction?min_support=3")
+    assert induction.status_code == 200
+    candidates = induction.json()["candidates"]
+    assert any(c["state_sig"] == sig and c["support"] >= 3 for c in candidates)
