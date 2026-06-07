@@ -78,15 +78,14 @@ def test_run_unblock_capped_when_fail_rate_high(fake_snapshot, monkeypatch):
     monkeypatch.setattr(unblock_learning, "_playbook", None)
 
     with patch.object(unblock_learning, "_gemini_decide") as gemini:
-        ok = unblock_learning.run_unblock_with_learning(
-            _FakePage(),
-            {"url": "https://example.com/job"},
-            family="workday",
-            max_steps=3,
-        )
+        with pytest.raises(unblock_learning.EscalationCapHit):
+            unblock_learning.run_unblock_with_learning(
+                _FakePage(),
+                {"url": "https://example.com/job"},
+                family="workday",
+                max_steps=3,
+            )
         gemini.assert_not_called()
-
-    assert ok is False
 
 
 def test_run_unblock_runs_when_below_cap(fake_snapshot, monkeypatch):

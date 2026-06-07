@@ -40,6 +40,10 @@ ADAPTER = Adapter(
         "thanks for applying",
         "thank you for your application",
         "thank you for your interest",
+        # Micro1 / similar career pages show a modal when the candidate already applied.
+        "you have already applied",
+        "already applied for this job",
+        "already applied for this position",
     ),
     expired_markers=(
         "no longer accepting",

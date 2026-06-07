@@ -85,6 +85,22 @@ def test_login_wall_fixture():
     assert wd.workday_next_action(wd.detect_workday_state(html)) == "awaiting_login"
 
 
+def test_unauthenticated_apply_gate_accenture_style():
+    html = (
+        "<html><body>"
+        "<button>Sign In</button>"
+        "<button>Apply manually</button>"
+        "<span>Autofill with Resume</span>"
+        "</body></html>"
+    )
+    url = (
+        "https://accenture.wd103.myworkdayjobs.com/AccentureCareers/job/"
+        "Bengaluru/Solution-Architect_ATCI-5479571-S1999861-1/apply"
+    )
+    assert not wd.is_login_wall(html)
+    assert wd.is_unauthenticated_apply_gate(html, page_url=url)
+
+
 def test_success_page_returns_no_fsm_state():
     html = "<html><body>Thank you for applying. Your application has been submitted.</body></html>"
     assert wd.detect_workday_state(html) is None

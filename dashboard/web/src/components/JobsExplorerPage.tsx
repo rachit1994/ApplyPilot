@@ -17,6 +17,7 @@ import {
   type JobSortField,
 } from "../utils/jobSort";
 import { isPriorityBoardName, sortByPriorityName } from "../utils/sitePriority";
+import { companyInitials, companyLabelFromSite, formatPreFilterReason, formatSiteFilterLabel } from "../utils/jobFacts";
 import { formatJobAge, statusbarClass } from "../utils/statusbar";
 import { useDebouncedValue } from "../utils/useDebouncedValue";
 import { VirtualScroll } from "./VirtualScroll";
@@ -24,7 +25,7 @@ import { JobDetailPane } from "./JobDetailPane";
 import { PageCanvas } from "./layout/PageCanvas";
 
 const PAGE_SIZES = [25, 50, 100] as const;
-const JOB_ROW_PX = 48;
+const JOB_ROW_PX = 46;
 
 type Props = {
   searchParams: URLSearchParams;
@@ -211,6 +212,16 @@ export function JobsExplorerPage({ searchParams, onSearchParamsChange, onJobSele
     [onJobSelect],
   );
 
+  const selectNextJob = useCallback(() => {
+    if (!selectedJob || jobs.length === 0) return;
+    const idx = jobs.findIndex((j) => j.url === selectedJob.url);
+    const next = jobs[idx + 1] ?? jobs[idx - 1] ?? null;
+    if (next) selectJob(next);
+  }, [selectedJob, jobs, selectJob]);
+
+  const newPicks = stats?.triage_counts?.new ?? 0;
+  const readyCount = stats?.ready_to_apply ?? stats?.pipeline?.pending_apply ?? 0;
+
   useEffect(() => {
     if (jobs.length === 0) {
       setSelectedJob(null);
@@ -238,6 +249,21 @@ export function JobsExplorerPage({ searchParams, onSearchParamsChange, onJobSele
 
   return (
     <PageCanvas wide>
+      <div className="jobs__hd">
+        <div className="jobs__hd-copy">
+          <div className="jobs__hd-kicker">Triage</div>
+          <div className="jobs__hd-line">
+            {newPicks} new picks · {readyCount} ready to apply
+            {pageAligned && total > 0 ? (
+              <>
+                {" "}
+                · {total} matching
+              </>
+            ) : null}
+          </div>
+        </div>
+      </div>
+
       <div className="jobs">
         <div className="jobs__list">
           <div className="jobs__filterbar">
@@ -255,10 +281,6 @@ export function JobsExplorerPage({ searchParams, onSearchParamsChange, onJobSele
                   onClick={() =>
                     patchParams({
                       stage: c.slug || null,
-                      min_score: null,
-                      site: null,
-                      search: null,
-                      apply_status: null,
                       page: 1,
                     })
                   }
@@ -289,7 +311,7 @@ export function JobsExplorerPage({ searchParams, onSearchParamsChange, onJobSele
                       })
                     }
                   >
-                    {row.reason}
+                    {formatPreFilterReason(row.reason)}
                     <span className="chip__count">{row.count}</span>
                   </button>
                 );
@@ -318,7 +340,7 @@ export function JobsExplorerPage({ searchParams, onSearchParamsChange, onJobSele
                 <option value="">All sites</option>
                 {siteOptions.map((s) => (
                   <option key={s} value={s}>
-                    {isPriorityBoardName(s) ? `${s} ★` : s}
+                    {isPriorityBoardName(s) ? `${formatSiteFilterLabel(s)} ★` : formatSiteFilterLabel(s)}
                   </option>
                 ))}
               </select>
@@ -509,7 +531,7 @@ export function JobsExplorerPage({ searchParams, onSearchParamsChange, onJobSele
           )}
         </div>
 
-        <JobDetailPane job={selectedJob} />
+        <JobDetailPane job={selectedJob} onSkip={selectNextJob} />
       </div>
     </PageCanvas>
   );
@@ -527,8 +549,10 @@ function JobListRow({
   const stage = jobTriageLabel(job);
   const score = job.fit_score;
   const scoreClass =
-    score != null && score >= 8.5 ? "job__score job__score--strong" : "job__score";
+    score != null && score >= 8 ? "job__score job__score--strong" : "job__score";
   const rawDate = job.activity_at ?? job.discovered_at ?? job.scored_at ?? null;
+  const company = companyLabelFromSite(job.site);
+  const initials = companyInitials(company === "—" ? (job.title ?? "?") : company);
 
   return (
     <button
@@ -539,9 +563,12 @@ function JobListRow({
       <span className={statusbarClass(stage)}>{stage}</span>
       <div className="job__main">
         <div className="job__title-line">
+          <span className="job__logo" aria-hidden>
+            {initials}
+          </span>
           <span className="job__title">{job.title ?? "Untitled"}</span>
         </div>
-        <div className="job__company">{job.site ?? "—"}</div>
+        <div className="job__company">{company}</div>
       </div>
       <div className={scoreClass}>{score ?? "—"}</div>
       <div className="job__loc" title={job.location ?? undefined}>

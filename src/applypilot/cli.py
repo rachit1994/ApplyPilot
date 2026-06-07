@@ -509,6 +509,27 @@ def apply(
         False, "--reset-pre-filter",
         help="Re-queue tailored jobs skipped before Chrome (salary/experience pre-filter, attempts=99).",
     ),
+    requeue_manual: bool = typer.Option(
+        False, "--requeue-manual",
+        help="Re-open manual-review jobs for retry (excluded from queue until reset).",
+    ),
+    manual_reason: Optional[str] = typer.Option(
+        None, "--manual-reason",
+        help="With --requeue-manual: only jobs whose apply_error contains this text "
+        "(e.g. captcha_unsolved).",
+    ),
+    requeue_needs_adapter: bool = typer.Option(
+        False, "--requeue-needs-adapter",
+        help="Re-open needs_adapter jobs for retry (e.g. after transient submit fix).",
+    ),
+    adapter_reason: Optional[str] = typer.Option(
+        None, "--adapter-reason",
+        help="With --requeue-needs-adapter: only jobs whose apply_error contains this text.",
+    ),
+    reconcile_receipts: bool = typer.Option(
+        False, "--reconcile-receipts",
+        help="Promote submitted_unverified jobs via Gmail receipt or on-page Direct (Kula/Micro1).",
+    ),
     plain: bool = typer.Option(
         False, "--plain",
         help="Plain logging (no live dashboard). Use for nohup/background runs.",
@@ -595,6 +616,49 @@ def apply(
         console.print(
             f"[green]Re-queued {count} tailored job(s) previously skipped before apply (attempts=99).[/green]"
         )
+        return
+
+    if reconcile_receipts:
+        from applypilot.apply.launcher import (
+            reconcile_gmail_receipts,
+            reconcile_on_page_submissions,
+        )
+
+        gmail_count = reconcile_gmail_receipts(url=url)
+        on_page_count = reconcile_on_page_submissions(url=url)
+        console.print(
+            f"[green]Promoted {gmail_count} job(s) via Gmail receipt; "
+            f"{on_page_count} via on-page Direct (no-Gmail hosts).[/green]"
+        )
+        return
+
+    if requeue_manual:
+        from applypilot.apply.launcher import requeue_manual as do_requeue_manual
+
+        count = do_requeue_manual(reason_contains=manual_reason, url=url)
+        if manual_reason:
+            console.print(
+                f"[green]Re-queued {count} manual job(s) matching apply_error ~ {manual_reason!r}.[/green]"
+            )
+        elif url:
+            console.print(f"[green]Re-queued {count} manual job(s) for {url}.[/green]")
+        else:
+            console.print(f"[green]Re-queued {count} manual job(s) for retry.[/green]")
+        return
+
+    if requeue_needs_adapter:
+        from applypilot.apply.launcher import requeue_needs_adapter as do_requeue_adapter
+
+        count = do_requeue_adapter(reason_contains=adapter_reason, url=url)
+        if adapter_reason:
+            console.print(
+                f"[green]Re-queued {count} needs_adapter job(s) matching "
+                f"apply_error ~ {adapter_reason!r}.[/green]"
+            )
+        elif url:
+            console.print(f"[green]Re-queued {count} needs_adapter job(s) for {url}.[/green]")
+        else:
+            console.print(f"[green]Re-queued {count} needs_adapter job(s) for retry.[/green]")
         return
 
     if check_yc_login:

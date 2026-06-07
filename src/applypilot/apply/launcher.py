@@ -285,19 +285,92 @@ def acquire_job_order_sql() -> str:
           AND ao.created_at LIKE {day_like}
           AND (ao.result LIKE 'applied%' OR ao.result LIKE 'submitted_unverified%')
     )"""
+    site_failures = f"""(
+        SELECT COUNT(*) FROM apply_outcomes ao
+        INNER JOIN jobs jx ON jx.url = ao.url
+        WHERE jx.site = jobs.site
+          AND ao.created_at LIKE {day_like}
+          AND ao.result LIKE 'failed:%'
+    )"""
     return (
         f"{direct_tier} ASC, "
         f"{parked_tail} ASC, "
         f"{claude_rescue_tail} ASC, "
+        f"{site_failures} ASC, "
         f"{site_load} ASC, "
-        f"CASE WHEN last_attempted_at IS NOT NULL "
-        f"AND datetime(last_attempted_at) > datetime('now', '-60 minutes') "
-        f"THEN 1 ELSE 0 END, {priority}, fit_score DESC, url"
+        f"CASE WHEN last_attempted_at IS NULL THEN 0 ELSE 1 END, "
+        f"last_attempted_at ASC, "
+        f"COALESCE(apply_attempts, 0) ASC, "
+        f"{priority}, fit_score DESC NULLS LAST, url"
     )
 
 
 def _job_apply_url(job: dict) -> str:
     return _resolve_job_apply_url(job)
+
+
+def _target_url_acquire_candidates(target_url: str) -> tuple[str, str]:
+    """Return (exact-match tuple, LIKE prefix) for ``acquire_job(target_url=…)``.
+
+    Lever and similar ATS rows store the job posting URL without ``/apply`` while
+    users often paste the application form URL. Match both shapes.
+    """
+    full = target_url.strip()
+    raw = full.split("?")[0].rstrip("/")
+    base = raw[: -len("/apply")] if raw.endswith("/apply") else raw
+    seen: set[str] = set()
+    exact: list[str] = []
+    for candidate in (full, raw, base, f"{base}/apply"):
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            exact.append(candidate)
+    like = full if "?" in full else f"{base}%"
+    return tuple(exact), like
+
+
+def explain_target_url_miss(
+    target_url: str,
+    *,
+    include_untailored: bool = False,
+) -> str | None:
+    """When ``acquire_job(target_url=…)`` returns None, explain why if the row exists."""
+    exact_urls, like = _target_url_acquire_candidates(target_url)
+    placeholders = ",".join("?" * len(exact_urls))
+    conn = get_connection()
+    row = conn.execute(
+        f"""
+        SELECT url, apply_status, apply_error, applied_at, tailored_resume_path
+        FROM jobs
+        WHERE url IN ({placeholders})
+           OR application_url IN ({placeholders})
+           OR application_url LIKE ?
+           OR url LIKE ?
+        LIMIT 1
+        """,
+        (*exact_urls, *exact_urls, like, like),
+    ).fetchone()
+    if row is None:
+        return "no matching job row in database for this URL"
+    data = dict(row)
+    status = data.get("apply_status")
+    if status in {"in_progress", "applied", "submitted_unverified"}:
+        return f"job status is {status!r} (not re-acquirable)"
+    if data.get("applied_at") and status not in {None, "failed", "manual", "needs_adapter"}:
+        return (
+            f"applied_at is set ({str(data['applied_at'])[:19]}) with status {status!r}; "
+            "clear applied_at or requeue before retrying"
+        )
+    if data.get("applied_at") and status is None:
+        return (
+            f"applied_at is set ({str(data['applied_at'])[:19]}) but apply_status is NULL; "
+            "clear applied_at before retrying this URL"
+        )
+    if not include_untailored and not role_resumes_available() and not data.get("tailored_resume_path"):
+        return "no tailored resume — pass --include-untailored or tailor first"
+    err = str(data.get("apply_error") or "").strip()
+    if err:
+        return f"apply_error blocks acquire: {err[:120]}"
+    return None
 
 
 def _resolve_job_apply_url(job: dict, *, persist: bool = False) -> str:
@@ -311,12 +384,34 @@ def _resolve_job_apply_url(job: dict, *, persist: bool = False) -> str:
     from applypilot.apply.apply_url_extract import (
         coerce_application_url,
         extract_best_apply_url_from_text,
+        resolve_accenture_workday_apply_url,
     )
     from applypilot.apply.direct import fingerprint
 
     current = coerce_application_url(job.get("application_url"))
     if current and fingerprint.has_adapter(fingerprint.ats_family(current)):
         return current
+
+    accenture_wd = resolve_accenture_workday_apply_url(job.get("url"))
+    if accenture_wd:
+        job["application_url"] = accenture_wd
+        if persist:
+            row_url = (job.get("url") or "").strip()
+            if row_url:
+                try:
+                    conn = get_connection()
+                    conn.execute(
+                        "UPDATE jobs SET application_url = ? WHERE url = ?",
+                        (accenture_wd, row_url),
+                    )
+                    conn.commit()
+                except Exception:  # noqa: BLE001
+                    logger.debug(
+                        "failed to persist Accenture Workday URL for %s",
+                        row_url[:80],
+                        exc_info=True,
+                    )
+        return accenture_wd
 
     extracted = extract_best_apply_url_from_text(
         "\n".join(
@@ -395,8 +490,53 @@ def _persist_needs_adapter(conn, row: dict, detail: str) -> None:
     apply_budget.governor().note_parked_needs_adapter()
 
 
+def _persist_manual_host(conn, row: dict, detail: str) -> None:
+    """Park enterprise HCM / SSO hosts during acquire (deterministic-only)."""
+    url = row["url"]
+    conn.execute(
+        """
+        UPDATE jobs
+        SET apply_status = 'manual',
+            apply_error = ?,
+            apply_not_before = NULL,
+            agent_id = NULL
+        WHERE url = ?
+        """,
+        (detail.strip()[:200], url),
+    )
+    conn.commit()
+
+
 def _job_pending_claude_rescue(job: dict) -> bool:
     return str(job.get("apply_error") or "").startswith("pending_claude_rescue")
+
+
+# needs_adapter errors that must not retry in deterministic-only (JPM/oracle loops).
+_NEEDS_ADAPTER_NO_RETRY_FRAGMENTS: tuple[str, ...] = (
+    "no_confirmation",
+    "no_form",
+    "no_submit_button",
+    "no_application_form",
+    "oracle_hcm",
+    "captcha",
+    "email_verification",
+    "verification code",
+    "deterministic_only",
+    "excluded_ats",
+    "no_adapter:",
+    "bot_protection",
+    "sso_login",
+    "escalation_cap",
+    "captcha_unsolved",
+)
+
+
+def _skip_needs_adapter_in_deterministic_only(row: dict) -> bool:
+    """Skip needs_adapter re-acquire when retry would loop (oracle/captcha/no_confirm)."""
+    if apply_settings.job_requires_manual_host(row):
+        return True
+    err = str(row.get("apply_error") or "").lower()
+    return any(frag in err for frag in _NEEDS_ADAPTER_NO_RETRY_FRAGMENTS)
 
 
 def _should_defer_claude_rescue(
@@ -592,26 +732,33 @@ def acquire_job(
 
         while True:
             if target_url:
-                like = f"%{target_url.split('?')[0].rstrip('/')}%"
+                exact_urls, like = _target_url_acquire_candidates(target_url)
+                placeholders = ",".join("?" * len(exact_urls))
                 if include_untailored or role_resumes_available():
                     tailored_clause = ""
                 else:
                     tailored_clause = "AND tailored_resume_path IS NOT NULL"
-                row = conn.execute("""
+                row = conn.execute(f"""
                     SELECT url, title, site, application_url, tailored_resume_path,
                            fit_score, location, full_description, cover_letter_path, salary,
                            strategy, score_role_key, score_jd_fit,
                            apply_status, apply_error, apply_attempts
                     FROM jobs
-                    WHERE (url = ? OR application_url = ? OR application_url LIKE ? OR url LIKE ?)
-                      {tailored_clause}
+                    WHERE (
+                        url IN ({placeholders})
+                        OR application_url IN ({placeholders})
+                        OR application_url LIKE ?
+                        OR url LIKE ?
+                      )
+                      {{tailored_clause}}
                       AND applied_at IS NULL
                       AND (
                         apply_status IS NULL
                         OR apply_status NOT IN ('in_progress', 'applied', 'submitted_unverified')
                       )
                     LIMIT 1
-                """.format(tailored_clause=tailored_clause), (target_url, target_url, like, like)).fetchone()
+                """.format(tailored_clause=tailored_clause),
+                    (*exact_urls, *exact_urls, like, like)).fetchone()
             else:
                 where, params = _acquirable_jobs_where(
                     min_score=min_score,
@@ -660,18 +807,35 @@ def acquire_job(
                         if eligibility.decision != ApplyDecision.ELIGIBLE:
                             _persist_ineligible_job(conn, candidate_row, eligibility)
                             continue
+                        from applypilot.apply import visit_ledger
+
+                        apply_probe = _resolve_job_apply_url(
+                            candidate_row, persist=False
+                        )
+                        skip_visit, visit_reason, _last_visit = (
+                            visit_ledger.visit_should_skip(
+                                apply_probe,
+                                force=bool(target_url),
+                                conn=conn,
+                            )
+                        )
+                        if skip_visit:
+                            visit_ledger.persist_visit_skip(
+                                candidate_row["url"],
+                                visit_reason or "blocked",
+                                conn=conn,
+                            )
+                            logger.info(
+                                "Apply visit skip (acquire) %s: %s",
+                                (apply_probe or "")[:80],
+                                visit_reason,
+                            )
+                            continue
                         resolution = resolve_job_resume(
                             candidate_row,
                             allow_base=include_untailored,
                         )
                         resume_path = resolution.path
-                        logger.info(
-                            "Resume pick %s: source=%s role=%s path=%s",
-                            (candidate_row.get("title") or "")[:60],
-                            resolution.source,
-                            resolution.role_key or "-",
-                            resume_path or "-",
-                        )
                         if not resume_path:
                             detail = (
                                 "needs_tailor"
@@ -694,14 +858,45 @@ def acquire_job(
                             continue
                         if resume_path:
                             candidate_row["tailored_resume_path"] = resume_path
+                        logger.info(
+                            "Resume pick %s: source=%s role=%s path=%s",
+                            (candidate_row.get("title") or "")[:60],
+                            resolution.source,
+                            resolution.role_key or "-",
+                            resume_path or "-",
+                        )
                         if apply_settings.deterministic_only_enabled() and use_direct:
                             status = str(candidate_row.get("apply_status") or "")
-                            if status == "needs_adapter":
-                                if not job_runnable_in_deterministic_only(
-                                    candidate_row
-                                ):
-                                    continue
-                            elif not job_runnable_in_deterministic_only(
+                            if status == "needs_adapter" and _skip_needs_adapter_in_deterministic_only(
+                                candidate_row
+                            ):
+                                continue
+                            if apply_settings.job_requires_manual_host(candidate_row):
+                                if status != "manual":
+                                    _persist_manual_host(
+                                        conn,
+                                        candidate_row,
+                                        "oracle_hcm_unsupported",
+                                    )
+                                continue
+                            from applypilot.apply import login_gate
+                            from applypilot.apply.direct import login_detect
+
+                            apply_probe_url = (
+                                candidate_row.get("application_url")
+                                or candidate_row.get("url")
+                                or ""
+                            )
+                            login_dom = login_detect.login_domain(apply_probe_url)
+                            if login_dom and login_gate.is_domain_pending(login_dom):
+                                if status != "awaiting_login":
+                                    _park_job_awaiting_login(
+                                        candidate_row["url"],
+                                        login_dom,
+                                        reason="login_gate_pending",
+                                    )
+                                continue
+                            if not job_runnable_in_deterministic_only(
                                 candidate_row
                             ):
                                 _persist_needs_adapter(
@@ -786,7 +981,8 @@ def acquire_job(
 def mark_result(url: str, status: str, error: str | None = None,
                 permanent: bool = False, duration_ms: int | None = None,
                 task_id: str | None = None,
-                log_path: str | Path | None = None) -> None:
+                log_path: str | Path | None = None,
+                verification_confidence: str | None = None) -> None:
     """Update a job's apply status in the database."""
     import json
 
@@ -826,16 +1022,17 @@ def mark_result(url: str, status: str, error: str | None = None,
         )
 
     if status == "applied":
+        confidence = verification_confidence or "gmail_confirmed"
         conn.execute("""
             UPDATE jobs SET apply_status = 'applied', applied_at = ?,
                            apply_error = NULL, agent_id = NULL,
                            apply_duration_ms = ?, apply_task_id = ?,
                            apply_log_path = COALESCE(?, apply_log_path),
                            apply_form_filled = COALESCE(?, apply_form_filled),
-                           verification_confidence = COALESCE(verification_confidence, 'gmail_confirmed'),
+                           verification_confidence = COALESCE(?, verification_confidence),
                            apply_not_before = NULL
             WHERE url = ?
-        """, (now, duration_ms, task_id, log_value, form_json, url))
+        """, (now, duration_ms, task_id, log_value, form_json, confidence, url))
     elif status == "submitted_unverified":
         conn.execute("""
             UPDATE jobs SET apply_status = 'submitted_unverified', applied_at = ?,
@@ -904,15 +1101,21 @@ def release_stale_locks(max_age_minutes: int = 45) -> int:
 
 def release_orphan_in_progress_locks() -> int:
     """Mark interrupted in_progress jobs failed so they are not re-acquired at attempts=0."""
+    repeat_min = apply_settings.apply_visit_repeat_minutes()
+    not_before = (
+        datetime.now(timezone.utc) + timedelta(minutes=repeat_min)
+    ).isoformat()
     conn = get_connection()
     cur = conn.execute(
         """
         UPDATE jobs SET apply_status = 'failed',
                        apply_error = COALESCE(apply_error, 'worker_interrupted'),
                        apply_attempts = COALESCE(apply_attempts, 0) + 1,
+                       apply_not_before = ?,
                        agent_id = NULL
         WHERE apply_status = 'in_progress'
-        """
+        """,
+        (not_before,),
     )
     conn.commit()
     return cur.rowcount
@@ -1020,6 +1223,207 @@ def reset_pre_filter_skips() -> int:
           AND COALESCE(apply_attempts, 0) >= 99
         """,
     )
+    conn.commit()
+    return cursor.rowcount
+
+
+def requeue_manual(
+    *,
+    reason_contains: str | None = None,
+    url: str | None = None,
+) -> int:
+    """Re-open manual-review jobs for another apply attempt.
+
+    Manual jobs are excluded from acquire_job until reset. Use after fixing
+    the underlying issue (e.g. adding CAPSOLVER_API_KEY for captcha_unsolved).
+    """
+    conn = get_connection()
+    if url:
+        cursor = conn.execute(
+            """
+            UPDATE jobs SET apply_status = NULL, apply_error = NULL,
+                           apply_attempts = 0, agent_id = NULL
+            WHERE apply_status = 'manual' AND url = ?
+            """,
+            (url.strip(),),
+        )
+    elif reason_contains:
+        needle = reason_contains.strip()
+        cursor = conn.execute(
+            """
+            UPDATE jobs SET apply_status = NULL, apply_error = NULL,
+                           apply_attempts = 0, agent_id = NULL
+            WHERE apply_status = 'manual' AND apply_error LIKE ?
+            """,
+            (f"%{needle}%",),
+        )
+    else:
+        cursor = conn.execute(
+            """
+            UPDATE jobs SET apply_status = NULL, apply_error = NULL,
+                           apply_attempts = 0, agent_id = NULL
+            WHERE apply_status = 'manual'
+            """,
+        )
+    conn.commit()
+    return cursor.rowcount
+
+
+def reconcile_gmail_receipts(*, url: str | None = None, limit: int = 50) -> int:
+    """Promote ``submitted_unverified`` rows to ``applied`` when Gmail receipt matches."""
+    from applypilot.apply.gmail_auth import search_application_receipt
+
+    conn = get_connection()
+    if url:
+        rows = conn.execute(
+            """
+            SELECT url, title, site, application_url
+            FROM jobs
+            WHERE apply_status = 'submitted_unverified' AND url = ?
+            """,
+            (url.strip(),),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT url, title, site, application_url
+            FROM jobs
+            WHERE apply_status = 'submitted_unverified'
+            ORDER BY applied_at DESC NULLS LAST, discovered_at DESC
+            LIMIT ?
+            """,
+            (max(1, limit),),
+        ).fetchall()
+
+    promoted = 0
+    for row in rows:
+        job = {
+            "url": row["url"],
+            "title": row["title"],
+            "site": row["site"],
+            "application_url": row["application_url"] or row["url"],
+        }
+        receipt = search_application_receipt(job)
+        if not receipt.confirmed:
+            continue
+        conn.execute(
+            """
+            UPDATE jobs
+            SET apply_status = 'applied',
+                apply_error = NULL,
+                verification_confidence = 'gmail_receipt'
+            WHERE url = ? AND apply_status = 'submitted_unverified'
+            """,
+            (row["url"],),
+        )
+        promoted += 1
+        logger.info(
+            "Gmail receipt reconciled %s → applied (%s)",
+            (row["title"] or row["url"])[:50],
+            receipt.reason,
+        )
+    conn.commit()
+    return promoted
+
+
+def reconcile_on_page_submissions(*, url: str | None = None, limit: int = 50) -> int:
+    """Promote ``submitted_unverified`` rows when Direct persisted ``submitted`` on no-Gmail hosts."""
+    conn = get_connection()
+    if url:
+        rows = conn.execute(
+            """
+            SELECT url, title, application_url, apply_form_filled
+            FROM jobs
+            WHERE apply_status = 'submitted_unverified' AND url = ?
+            """,
+            (url.strip(),),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT url, title, application_url, apply_form_filled
+            FROM jobs
+            WHERE apply_status = 'submitted_unverified'
+            ORDER BY applied_at DESC NULLS LAST, discovered_at DESC
+            LIMIT ?
+            """,
+            (max(1, limit),),
+        ).fetchall()
+
+    promoted = 0
+    for row in rows:
+        job = {
+            "url": row["url"],
+            "title": row["title"],
+            "application_url": row["application_url"] or row["url"],
+        }
+        if not apply_settings.job_on_gmail_optional_host(job):
+            continue
+        raw = row["apply_form_filled"]
+        if not raw:
+            continue
+        try:
+            record = json.loads(raw) if isinstance(raw, str) else raw
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not record.get("submitted"):
+            continue
+        conn.execute(
+            """
+            UPDATE jobs
+            SET apply_status = 'applied',
+                apply_error = NULL,
+                verification_confidence = 'on_page_direct'
+            WHERE url = ? AND apply_status = 'submitted_unverified'
+            """,
+            (row["url"],),
+        )
+        promoted += 1
+        logger.info(
+            "On-page Direct reconciled %s → applied (Gmail optional host)",
+            (row["title"] or row["url"])[:50],
+        )
+    conn.commit()
+    return promoted
+
+
+def requeue_needs_adapter(
+    *,
+    reason_contains: str | None = None,
+    url: str | None = None,
+) -> int:
+    """Re-open needs_adapter jobs (e.g. transient Workable server errors)."""
+    conn = get_connection()
+    if url:
+        cursor = conn.execute(
+            """
+            UPDATE jobs SET apply_status = NULL, apply_error = NULL,
+                           apply_attempts = 0, agent_id = NULL,
+                           apply_not_before = NULL
+            WHERE apply_status = 'needs_adapter' AND url = ?
+            """,
+            (url.strip(),),
+        )
+    elif reason_contains:
+        needle = reason_contains.strip()
+        cursor = conn.execute(
+            """
+            UPDATE jobs SET apply_status = NULL, apply_error = NULL,
+                           apply_attempts = 0, agent_id = NULL,
+                           apply_not_before = NULL
+            WHERE apply_status = 'needs_adapter' AND apply_error LIKE ?
+            """,
+            (f"%{needle}%",),
+        )
+    else:
+        cursor = conn.execute(
+            """
+            UPDATE jobs SET apply_status = NULL, apply_error = NULL,
+                           apply_attempts = 0, agent_id = NULL,
+                           apply_not_before = NULL
+            WHERE apply_status = 'needs_adapter'
+            """,
+        )
     conn.commit()
     return cursor.rowcount
 
@@ -1153,7 +1557,7 @@ def _resolve_apply_result(
 
         if record.status == "applied":
             if verdict.decision == "verified":
-                if apply_settings.require_gmail_confirmation():
+                if apply_settings.job_requires_gmail_receipt(job):
                     from applypilot.apply.gmail_auth import wait_for_application_receipt
 
                     receipt = wait_for_application_receipt(job)
@@ -1636,6 +2040,92 @@ QUOTA_SESSION_FAILURES: frozenset[str] = frozenset({"claude_quota_exhausted"})
 
 PERMANENT_PREFIXES: tuple[str, ...] = ("site_blocked", "cloudflare", "blocked_by")
 
+# Outcomes that need a human (§9 handbook) — park as apply_status='manual', never re-acquire.
+MANUAL_REVIEW_RESULTS: frozenset[str] = frozenset({
+    "captcha",
+    "site_blocked",
+    "cloudflare_blocked",
+    "blocked_by_cloudflare",
+    "account_required",
+    "not_a_job_application",
+    "unsafe_verification",
+    "pause_for_human",
+    "sso_login_needed",
+    "direct_escalation_cap",
+})
+
+MANUAL_REVIEW_REASON_FRAGMENTS: tuple[str, ...] = (
+    "no_application_form",
+    "no_confirmation",
+    "captcha_unsolved",
+    "captcha",
+    "cloudflare",
+    "site_blocked",
+    "blocked_by",
+    "bot protection",
+    "bot_protection",
+    "hcaptcha",
+    "funcaptcha",
+    "recaptchav3",
+    "single sign-on",
+    "single sign on",
+    "sso_login",
+    "account creation",
+    "account_creation",
+    "create an account",
+    "video verification",
+    "selfie",
+    "webcam",
+    "escalation_cap",
+    "escalate_human",
+    "fail_rate=",
+    "unsafe_verification",
+    "social security",
+    "direct_escalation_cap",
+)
+
+# Direct Apply outcomes that must not loop as needs_adapter in deterministic-only runs.
+_DETERMINISTIC_MANUAL_ESCALATE_FRAGMENTS: tuple[str, ...] = (
+    "no_confirmation",
+    "no_form",
+    "no_submit_button",
+    "no_application_form",
+    "email_verification_code",
+    "verification code digit",
+    "captcha_unsolved",
+    "oracle_hcm",
+)
+
+
+def _deterministic_manual_park_reason(
+    result: str,
+    escalate_reason: str | None,
+    *,
+    apply_url: str = "",
+) -> str | None:
+    """Park manual (not needs_adapter) for human-only walls in deterministic-only mode."""
+    manual = _manual_review_reason(result, escalate_reason)
+    if manual:
+        return manual
+    if not apply_settings.deterministic_only_enabled():
+        return None
+    if apply_url and apply_settings.job_requires_manual_host({"url": apply_url}):
+        parsed, detail = (
+            _parse_worker_result(result)
+            if result.startswith("failed:")
+            else (result, escalate_reason)
+        )
+        if result.startswith("failed:direct_") or parsed.startswith("direct_"):
+            return (escalate_reason or detail or parsed or "oracle_hcm_unsupported")[:200]
+    reason_blob = " ".join(
+        part.lower()
+        for part in (escalate_reason or "", result)
+        if part
+    )
+    if any(frag in reason_blob for frag in _DETERMINISTIC_MANUAL_ESCALATE_FRAGMENTS):
+        return (escalate_reason or result.split(":", 1)[-1])[:200]
+    return None
+
 
 _QUOTA_RESET_TIME_RE = re.compile(
     r"resets\s+(?P<h>\d{1,2})(?::(?P<m>\d{2}))?\s*(?P<ampm>am|pm)",
@@ -1708,11 +2198,59 @@ def _park_job_for_retry(url: str, *, not_before: str, error: str) -> None:
 def _park_job_needs_adapter(url: str, reason: str) -> None:
     """Park a job until a deterministic adapter exists (reversible, not attempts=99)."""
     detail = (reason or "no_adapter").strip()[:200]
+    cooldown_h = apply_settings.apply_retry_cooldown_hours()
+    not_before = (
+        datetime.now(timezone.utc) + timedelta(hours=cooldown_h)
+    ).isoformat()
     conn = get_connection()
     conn.execute(
         """
         UPDATE jobs
         SET apply_status = 'needs_adapter',
+            apply_error = ?,
+            apply_not_before = ?,
+            agent_id = NULL
+        WHERE url = ?
+        """,
+        (detail, not_before, url),
+    )
+    conn.commit()
+    apply_budget.governor().note_parked_needs_adapter()
+
+
+def _manual_review_reason(
+    result: str,
+    escalate_reason: str | None = None,
+) -> str | None:
+    """Return a manual-review detail when the job cannot proceed without a human."""
+    parsed, detail = (
+        _parse_worker_result(result)
+        if result.startswith("failed:")
+        else (result, escalate_reason)
+    )
+    haystack = " ".join(
+        part.lower()
+        for part in (result, parsed or "", detail or "", escalate_reason or "")
+        if part
+    )
+    if parsed in MANUAL_REVIEW_RESULTS:
+        return (detail or parsed)[:200]
+    if any(parsed.startswith(prefix) for prefix in PERMANENT_PREFIXES):
+        return (detail or parsed)[:200]
+    for frag in MANUAL_REVIEW_REASON_FRAGMENTS:
+        if frag in haystack:
+            return (escalate_reason or detail or parsed or frag)[:200]
+    return None
+
+
+def _park_job_manual_review(url: str, reason: str) -> None:
+    """Park a job for human review (bot protection, SSO, captcha, escalation cap)."""
+    detail = (reason or "manual_review").strip()[:200]
+    conn = get_connection()
+    conn.execute(
+        """
+        UPDATE jobs
+        SET apply_status = 'manual',
             apply_error = ?,
             apply_not_before = NULL,
             agent_id = NULL
@@ -1721,7 +2259,7 @@ def _park_job_needs_adapter(url: str, reason: str) -> None:
         (detail, url),
     )
     conn.commit()
-    apply_budget.governor().note_parked_needs_adapter()
+    logger.info("Manual review (%s): %s", detail, url[:80])
 
 
 def _park_job_awaiting_login(
@@ -1873,6 +2411,17 @@ def _try_direct_apply(
 
     row_url = _job_row_url(job)
     apply_url = _resolve_job_apply_url(job, persist=True)
+    from applypilot.apply import visit_ledger
+
+    skip_visit, visit_reason, _last_visit = visit_ledger.visit_should_skip(apply_url)
+    if skip_visit:
+        visit_ledger.persist_visit_skip(row_url, visit_reason or "blocked")
+        logger.info(
+            "Apply visit skip (direct) %s: %s",
+            apply_url[:80],
+            visit_reason,
+        )
+        return f"skipped:apply_visit:{visit_reason}", 0, None
     family = fingerprint.ats_family(apply_url)
     # 'unknown' may still be a content-detectable ATS (e.g. Greenhouse embedded on
     # a custom career domain like dropbox.jobs / stripe.com/jobs): let the Driver
@@ -1946,10 +2495,22 @@ def _try_direct_apply(
     else:
         dr = _holder["dr"]
 
-    if dr.result == "applied" and apply_settings.require_gmail_confirmation():
+    if dr.result == "applied" and apply_settings.trust_direct_page_confirmation():
+        logger.info(
+            "Direct on-page confirmation trusted for %s (APPLYPILOT_APPLY_TRUST_DIRECT_CONFIRMATION)",
+            job.get("title", "")[:40],
+        )
+    elif dr.result == "applied" and apply_settings.job_on_gmail_optional_host(job):
+        logger.info(
+            "Direct on-page confirmation for %s (Gmail optional host, no receipt expected)",
+            job.get("title", "")[:40],
+        )
+    elif dr.result == "applied" and apply_settings.job_requires_gmail_receipt(job):
         from applypilot.apply.gmail_auth import wait_for_application_receipt
 
-        receipt = wait_for_application_receipt(job)
+        receipt = wait_for_application_receipt(
+            job, timeout_seconds=apply_settings.gmail_receipt_wait_seconds()
+        )
         if receipt.confirmed:
             if receipt.message:
                 logger.info(
@@ -1983,6 +2544,14 @@ def _try_direct_apply(
 
     if dr.result.startswith("skipped"):
         return "skipped", dr.elapsed_ms, None
+    manual_reason = _deterministic_manual_park_reason(
+        dr.result,
+        dr.escalate_reason,
+        apply_url=apply_url,
+    )
+    if manual_reason:
+        _park_job_manual_review(row_url, manual_reason)
+        return f"parked:manual:{manual_reason}", dr.elapsed_ms, None
     if would_claude_rescue and (
         apply_settings.deterministic_only_enabled()
         or not apply_budget.governor().claude_allowed()
@@ -2176,6 +2745,21 @@ def worker_loop(
             include_untailored=include_untailored,
         )
         if not job:
+            if target_url and empty_polls == 0:
+                miss = explain_target_url_miss(
+                    target_url, include_untailored=include_untailored
+                )
+                if miss:
+                    add_event(f"[W{worker_id}] Target URL not acquirable: {miss}")
+                    logger.warning(
+                        "Target URL %s not acquirable: %s", target_url[:80], miss
+                    )
+                    update_state(
+                        worker_id,
+                        status="done",
+                        last_action=f"target not acquirable: {miss[:60]}",
+                    )
+                    break
             if quota_retry_until and not continuous:
                 try:
                     target = datetime.fromisoformat(quota_retry_until.replace("Z", "+00:00"))
@@ -2277,6 +2861,14 @@ def worker_loop(
                         _pause_worker_for_quota(worker_id, not_before=not_before)
                         continue
 
+            if result.startswith("skipped:apply_visit"):
+                release_lock(job["url"])
+                detail = result.split(":", 1)[-1] if ":" in result else result
+                add_event(
+                    f"[W{worker_id}] Visit skip: {detail[:50]}"
+                )
+                jobs_done += 1
+                continue
             if result == "skipped":
                 release_lock(job["url"])
                 add_event(f"[W{worker_id}] Skipped: {job['title'][:30]}")
@@ -2285,6 +2877,13 @@ def worker_loop(
             elif result.startswith("parked:needs_adapter"):
                 add_event(
                     f"[W{worker_id}] Parked (needs adapter): "
+                    f"{result.split(':', 1)[-1][:40]}"
+                )
+                jobs_done += 1
+                continue
+            elif result.startswith("parked:manual"):
+                add_event(
+                    f"[W{worker_id}] Manual review: "
                     f"{result.split(':', 1)[-1][:40]}"
                 )
                 jobs_done += 1
@@ -2315,8 +2914,9 @@ def worker_loop(
                     worker_id, status="awaiting_login",
                     last_action=f"login: {domain[:24]}",
                 )
-                # Pause this worker until you log in and Resume (or timeout).
-                login_gate.wait_for_resume(domain, timeout_s=1800.0)
+                wait_s = apply_settings.login_wait_seconds()
+                if wait_s > 0:
+                    login_gate.wait_for_resume(domain, timeout_s=wait_s)
                 release_lock(job["url"])
                 continue
             elif result.startswith("deferred:"):
@@ -2334,11 +2934,17 @@ def worker_loop(
                 jobs_done += 1
                 continue
             elif result == "applied":
+                verify_confidence: str | None = None
+                if apply_settings.job_on_gmail_optional_host(job):
+                    verify_confidence = "on_page_direct"
+                elif apply_settings.trust_direct_page_confirmation():
+                    verify_confidence = "on_page_direct"
                 mark_result(
                     job["url"],
                     "applied",
                     duration_ms=duration_ms,
                     log_path=session_log,
+                    verification_confidence=verify_confidence,
                 )
                 applied += 1
                 update_state(worker_id, jobs_applied=applied,
@@ -2356,6 +2962,14 @@ def worker_loop(
                 update_state(worker_id, jobs_failed=failed,
                              jobs_done=applied + failed)
             else:
+                manual_reason = _manual_review_reason(result)
+                if manual_reason:
+                    _park_job_manual_review(job["url"], manual_reason)
+                    add_event(
+                        f"[W{worker_id}] Manual review: {manual_reason[:40]}"
+                    )
+                    jobs_done += 1
+                    continue
                 reason = result.split(":", 1)[-1] if ":" in result else result
                 mark_result(
                     job["url"],

@@ -9,7 +9,7 @@ type Props = {
 export function ClaudeUsagePanel({ compact = false, className = "" }: Props) {
   const { data, isLoading, isError } = useQuery({
     queryKey: ["llm-usage"],
-    queryFn: fetchLlmUsage,
+    queryFn: () => fetchLlmUsage(),
     refetchInterval: 15_000,
   });
 

@@ -18,6 +18,13 @@ ADAPTER = Adapter(
     + (
         "your application was sent",
         "application sent",
+        "application has been sent",
+        "you're all set",
+        "you are all set",
+        "we'll be in touch",
+        "we will be in touch",
+        "your application is complete",
+        "thanks for your application",
     ),
     expired_markers=GENERIC_ADAPTER.expired_markers,
 )

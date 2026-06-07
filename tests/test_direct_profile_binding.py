@@ -56,10 +56,12 @@ def test_contact_fields():
 
 
 def test_telephone_country_code_uses_country_not_phone():
-    tokens = dict(TOKENS, country="India", phone_e164="+918168433423")
+    tokens = dict(TOKENS, country="India", phone_e164="+918168433423", phone_national="8168433423")
     res = resolve_field(Field(label="Telephone country code", type="select"), tokens)
     assert res is not None
     assert res.answer == "India"
+    assert resolve_field(Field(label="Country Phone Code*", type="text"), tokens).answer == "India"
+    assert resolve_field(Field(label="Phone Number*", type="tel"), tokens).answer == "8168433423"
     assert (
         resolve_field(Field(label="* Phone +91", type="tel"), tokens).answer
         == "+918168433423"
@@ -141,6 +143,33 @@ def test_eeo_uses_profile_values():
     )
 
 
+def test_veteran_select_snaps_to_lever_options():
+    opts = (
+        "Select ...",
+        "I am a veteran",
+        "I am not a veteran",
+        "Decline to self-identify",
+    )
+    assert choose_select_option("I am not a protected veteran", opts) == "I am not a veteran"
+    assert choose_select_option("Decline to self-identify", opts) == "Decline to self-identify"
+
+
+def test_kula_management_questions_resolve_tier0():
+    direct = Field(
+        label=(
+            "Do you have any direct reports or team members you're responsible for? "
+            "if so what is the team size*"
+        ),
+        tag="textarea",
+    )
+    mentoring = Field(
+        label="Are you involved in hiring, performance reviews, or mentoring within your team?*",
+        tag="textarea",
+    )
+    assert "prior experience leading" in resolve_field(direct, TOKENS).answer.lower()
+    assert resolve_field(mentoring, TOKENS).answer.startswith("Yes")
+
+
 def test_eeo_matches_section_header_when_label_is_option_text():
     f = Field(
         label="No, I don't have a disability",
@@ -170,6 +199,77 @@ def test_salary_and_experience():
         ).answer
         == "Yes"
     )
+
+
+def test_lever_screening_profile_gaps():
+    assert (
+        resolve_field(
+            Field(label="How many years of overall engineering experience do you have?"),
+            TOKENS,
+        ).answer
+        == "8"
+    )
+    assert (
+        resolve_field(Field(label="Whats is your expected CTC?"), TOKENS).answer
+        == "180000"
+    )
+    assert (
+        resolve_field(Field(label="Are you currently based in India?"), TOKENS).answer
+        == "Yes"
+    )
+
+
+def test_technology_checkbox_picks():
+    from applypilot.apply.direct.profile_binding import (
+        is_phantom_technology_select,
+        is_technology_multi_checkbox_question,
+        is_yes_no_select_options,
+        technology_checkbox_picks,
+    )
+
+    assert is_technology_multi_checkbox_question(
+        "Kindly select all the technologies you are hands on with"
+    )
+    assert is_technology_multi_checkbox_question(
+        "Which front-end frameworks have you worked with extensively?"
+    )
+    picks = technology_checkbox_picks(
+        ("Python", "Java", "Salesforce Admin", "Other")
+    )
+    assert "Python" in picks
+    assert "Java" in picks
+    assert "Salesforce Admin" not in picks
+    assert is_yes_no_select_options(("Select...", "Yes", "No"))
+    phantom = Field(
+        label="Kindly select all the technologies you are hands on with? ✱",
+        tag="select",
+        type="select-one",
+        options=("Select...", "Yes", "No"),
+        section_header="This is a Remote role via Deel",
+    )
+    assert is_phantom_technology_select(phantom)
+
+
+def test_remote_deel_contract_select_resolves_yes():
+    resolved = resolve_field(
+        Field(
+            label="This is a Remote role, and on auto renewing direct contract via Deel",
+            tag="select",
+            type="select-one",
+            options=("Select...", "Yes", "No"),
+            section_header="This is a Remote role, and on auto renewing direct contract via Deel",
+        ),
+        TOKENS,
+    )
+    assert resolved is not None
+    assert resolved.answer == "Yes"
+
+
+def test_notice_period_maps_to_numeric_days():
+    assert resolve_field(Field(label="* Notice Period"), TOKENS).answer == "0"
+    assert resolve_field(Field(label="Notice Priod ✱"), TOKENS).answer == "0"
+    tokens = dict(TOKENS, earliest_start_date="30 days")
+    assert resolve_field(Field(label="Notice Period"), tokens).answer == "30"
 
 
 def test_monthly_usd_salary_converts_from_inr_annual():
@@ -291,8 +391,8 @@ def test_date_picker_start_question_uses_concrete_date():
     tokens = dict(TOKENS, start_date="06/18/2026", earliest_start_date="Immediately")
     assert resolve_field(Field(label="When can you start a new role?"), tokens).answer == "06/18/2026"
     assert resolve_field(Field(label="Earliest start date"), tokens).answer == "06/18/2026"
-    # A generic "notice period" still uses the free-text availability.
-    assert resolve_field(Field(label="Notice period"), tokens).answer == "Immediately"
+    # Workable notice-period widgets need numeric days, not free text.
+    assert resolve_field(Field(label="Notice period"), tokens).answer == "0"
 
 
 def test_workable_skill_requirement_radiogroup_resolves_yes():
@@ -326,3 +426,40 @@ def test_remaining_gaps_are_location_traps_only():
     mixed = traps + [Field(label="Experience: 5 years Python", options=("Yes", "No"))]
     assert remaining_gaps_are_location_traps(traps)
     assert not remaining_gaps_are_location_traps(mixed)
+
+
+def test_micro1_numeric_screening_fields():
+    tokens = dict(TOKENS, years_experience="10+", salary_number="180000")
+    react = Field(
+        label="How many years of experience do you have working with React?",
+        type="number",
+    )
+    assert resolve_field(react, tokens).answer == "10"
+    start = Field(label="How soon can you start the work? (in days)", type="number")
+    assert resolve_field(start, tokens).answer == "0"
+    hourly = Field(label="What is your expected hourly rate in USD?", type="number")
+    assert resolve_field(hourly, tokens).answer == "87"
+    hours = Field(label="How many hours per week are you available to work?", type="number")
+    assert resolve_field(hours, dict(tokens, available_for_full_time="Yes")).answer == "40"
+
+
+def test_sponsorship_details_textarea_when_sponsorship_required():
+    tokens = dict(
+        TOKENS,
+        require_sponsorship="Yes",
+        work_permit_type="H1B",
+        sponsorship_details=(
+            "I will require employer sponsorship for work authorization to commence employment. "
+            "Current permit/status: H1B."
+        ),
+    )
+    field = Field(
+        label="Please provide details.*",
+        tag="textarea",
+        required=True,
+        section_header="Visa sponsorship",
+    )
+    res = resolve_field(field, tokens)
+    assert res is not None
+    assert "H1B" in res.answer
+    assert res.via == "label"

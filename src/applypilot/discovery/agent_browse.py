@@ -84,7 +84,7 @@ def run_agent_discover(
 ) -> list[dict]:
     """Run Claude browser session to discover jobs on one careers page."""
     port = BASE_CDP_PORT + worker_id
-    launch_chrome(worker_id, port=port, headless=headless)
+    chrome_proc = launch_chrome(worker_id, port=port, headless=headless)
     mcp_path = config.APP_DIR / f".mcp-discover-{worker_id}.json"
     mcp_path.write_text(json.dumps(_make_mcp_config(port)), encoding="utf-8")
 
@@ -147,7 +147,7 @@ def run_agent_discover(
         log.error("claude CLI not found — install Claude Code for agent discover")
         return []
     finally:
-        cleanup_worker(worker_id)
+        cleanup_worker(worker_id, chrome_proc)
 
     combined = "\n".join(text_parts)
     jobs = parse_jobs_json(combined)

@@ -313,6 +313,11 @@ def run_discover(*, workers: int = 1) -> dict[str, Any]:
             workers=workers,
         )
 
+    if sources.get("oracle_hcm"):
+        from applypilot.discovery.oracle_hcm import run_oracle_hcm_discovery
+
+        stats["oracle_hcm"] = _run_source("oracle_hcm", run_oracle_hcm_discovery)
+
     if sources.get("remoteok"):
         from applypilot.discovery.feeds.remoteok import run_remoteok_discovery
 

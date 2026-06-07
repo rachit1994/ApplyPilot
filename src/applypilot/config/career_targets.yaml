@@ -1,8 +1,8 @@
 targets:
-- name: JP Morgan
-  careers_url: https://careers.jpmorgan.com/global/en/search-results
-  ats: custom
-  mode: smartextract
+- name: JP Morgan Chase
+  careers_url: https://jpmc.fa.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001/jobs?lastSelectedFacet=CATEGORIES&selectedCategoriesFacet=300000086152753&selectedPostingDatesFacet=30
+  ats: oracle_hcm
+  mode: oracle_hcm
 - name: Goldman Sachs
   careers_url: https://www.goldmansachs.com/careers/
   ats: custom
@@ -29,7 +29,8 @@ targets:
   mode: smartextract
 - name: Bank of America
   careers_url: https://careers.bankofamerica.com/
-  ats: custom
+  ats: workday
+  workday_key: boa_lateral
   mode: smartextract
 - name: Wells Fargo
   careers_url: https://www.wellsfargo.com/about/careers/
@@ -44,7 +45,7 @@ targets:
   ats: custom
   mode: smartextract
 - name: Accenture
-  careers_url: https://www.accenture.com/in-en/careers
+  careers_url: https://www.accenture.com/in-en/careers/jobsearch?aoi=Customer%20%26%20User%20Experience%7CProduct%20Development%7CProgramming%20Languages%7CSoftware%20Engineering%7CTechnology%7CTechnology%20Platforms&jt=Experience%3A%2010-12%20years
   ats: custom
   mode: smartextract
 - name: Deloitte
@@ -185,7 +186,8 @@ targets:
   mode: smartextract
 - name: BlackRock
   careers_url: https://careers.blackrock.com/
-  ats: custom
+  ats: workday
+  workday_key: blackrock
   mode: smartextract
 - name: Bloomberg
   careers_url: https://careers.bloomberg.com/

@@ -303,3 +303,23 @@ employers:
     tenant: "canadiansolar"
     site_id: "CanadianSolar"
     base_url: "https://canadiansolar.wd5.myworkdayjobs.com"
+
+  # ── US Financial Services (target employers) ─────────────────────────────
+
+  blackrock:
+    name: "BlackRock"
+    tenant: "blackrock"
+    site_id: "BlackRock_Professional"
+    base_url: "https://blackrock.wd1.myworkdayjobs.com"
+
+  boa_lateral:
+    name: "Bank of America"
+    tenant: "ghr"
+    site_id: "lateral-us"
+    base_url: "https://ghr.wd1.myworkdayjobs.com"
+
+  accenture:
+    name: "Accenture"
+    tenant: "accenture"
+    site_id: "AccentureCareers"
+    base_url: "https://accenture.wd103.myworkdayjobs.com"

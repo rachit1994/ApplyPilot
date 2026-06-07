@@ -331,6 +331,16 @@ def ensure_apply_outcomes_table(conn: sqlite3.Connection | None = None) -> None:
         "CREATE INDEX IF NOT EXISTS idx_apply_outcomes_fingerprint "
         "ON apply_outcomes(fingerprint)"
     )
+    cols = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(apply_outcomes)").fetchall()
+    }
+    if "canonical_url" not in cols:
+        conn.execute("ALTER TABLE apply_outcomes ADD COLUMN canonical_url TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_apply_outcomes_canonical_created "
+        "ON apply_outcomes(canonical_url, created_at)"
+    )
 
 
 def record_apply_outcome(
@@ -352,17 +362,21 @@ def record_apply_outcome(
     if conn is None:
         conn = get_connection()
     ensure_apply_outcomes_table(conn)
+    from applypilot.apply.visit_ledger import canonical_apply_url
+
+    canon = canonical_apply_url(url)
     conn.execute(
         """
         INSERT INTO apply_outcomes (
-            url, ats_family, fingerprint, result, tier_resolved,
+            url, canonical_url, ats_family, fingerprint, result, tier_resolved,
             escalated, escalate_reason, fields_total, fields_llm,
             elapsed_ms, created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             url,
+            canon or None,
             ats_family,
             fingerprint,
             result,

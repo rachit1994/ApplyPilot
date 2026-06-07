@@ -12,6 +12,11 @@ from applypilot.apply.direct import extractor, unblock
 
 logger = logging.getLogger(__name__)
 
+
+class EscalationCapHit(Exception):
+    """Per-family fail-rate cap tripped — structural wall, not a code bug."""
+
+
 try:
     from applypilot.apply.direct import playbook as _playbook
 except ImportError:  # pragma: no cover
@@ -346,7 +351,12 @@ def run_unblock_with_learning(
                     attempts,
                     fail_fraction * 100,
                 )
-                return False
+                raise EscalationCapHit(
+                    f"escalation_cap:{family} "
+                    f"fail_rate={fail_fraction:.2f} attempts={attempts}"
+                )
+        except EscalationCapHit:
+            raise
         except Exception:  # noqa: BLE001
             logger.debug("escalation cap check failed", exc_info=True)
 

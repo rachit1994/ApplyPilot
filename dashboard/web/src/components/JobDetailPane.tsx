@@ -1,38 +1,26 @@
 import type { Job } from "../api";
 import { jobTriageLabel } from "../utils/jobTriage";
+import { statusbarClass } from "../utils/statusbar";
 import {
+  companyInitials,
+  companyLabelFromSite,
   displayJobField,
   formatApplyStatusDetail,
   formatFitScoreDetail,
+  formatPreFilterReason,
   inferRemoteFromLocation,
 } from "../utils/jobFacts";
 
 type Props = {
   job: Job | null;
+  onSkip?: () => void;
 };
 
-function formatPreFilterReason(reason: string | null | undefined): string {
-  if (!reason) return "—";
-  const labels: Record<string, string> = {
-    "title:junior_or_intern": "Junior or intern title",
-    "title:exec_non_eng": "Executive non-engineering role",
-    "title:adjacent_role": "Adjacent non-core role",
-    "title:not_in_allowlist": "Title outside target roles",
-    "location:reject_pattern": "Location outside target regions",
-    "salary:below_floor": "Salary below floor",
-    "description:blocked_keyword": "Blocked JD keyword",
-    "description:junior_signal": "Junior signal in JD",
-    "profile:low_keyword_overlap": "Low profile/JD keyword overlap",
-    "embedding_low": "Low resume/JD embedding match",
-  };
-  return labels[reason] ?? reason.replace(/_/g, " ");
-}
-
-export function JobDetailPane({ job }: Props) {
+export function JobDetailPane({ job, onSkip }: Props) {
   if (!job) {
     return (
       <aside className="job-detail" aria-label="Job details">
-        <p className="panel__sub">Select a job to see fit score, resume path, and actions.</p>
+        <p className="panel__sub">Select a job to review fit, reasoning, and apply actions.</p>
       </aside>
     );
   }
@@ -40,25 +28,36 @@ export function JobDetailPane({ job }: Props) {
   const fit = formatFitScoreDetail(job);
   const scoreClass = fit.accent ? "fact__value fact__value--acc" : "fact__value";
   const remote = job.remote ?? inferRemoteFromLocation(job.location);
+  const company = companyLabelFromSite(job.site);
+  const initials = companyInitials(company === "—" ? (job.title ?? "?") : company);
+  const saved = Boolean(job.tailored_at || job.tailored_resume_path);
+  const applyHref = job.application_url || job.url;
 
   return (
     <aside className="job-detail" aria-label="Job details">
       <div className="job-detail__hd">
-        <div className="job-detail__statusrow">
-          <span className="statusbar statusbar--new">{jobTriageLabel(job)}</span>
+        <div className="job-detail__brand">
+          <span className="job-detail__logo" aria-hidden>
+            {initials}
+          </span>
+          <div className="job-detail__brand-copy">
+            <div className="job-detail__statusrow">
+              <span className={statusbarClass(jobTriageLabel(job))}>{jobTriageLabel(job)}</span>
+            </div>
+            <h2 className="job-detail__name">{displayJobField(job.title)}</h2>
+            <p className="job-detail__company">
+              {company}
+              {job.url ? (
+                <>
+                  {" · "}
+                  <a href={job.url} target="_blank" rel="noreferrer">
+                    View posting
+                  </a>
+                </>
+              ) : null}
+            </p>
+          </div>
         </div>
-        <h2 className="job-detail__name">{displayJobField(job.title)}</h2>
-        <p className="job-detail__company">
-          {displayJobField(job.site)}
-          {job.url ? (
-            <>
-              {" · "}
-              <a href={job.url} target="_blank" rel="noreferrer">
-                View posting
-              </a>
-            </>
-          ) : null}
-        </p>
       </div>
 
       <div className="job-detail__facts">
@@ -99,6 +98,7 @@ export function JobDetailPane({ job }: Props) {
 
       {job.score_reasoning ? (
         <div className="job-detail__why">
+          <div className="job-detail__why-label">Why ApplyPilot picked this</div>
           <p>{job.score_reasoning}</p>
         </div>
       ) : null}
@@ -110,14 +110,21 @@ export function JobDetailPane({ job }: Props) {
       ) : null}
 
       <div className="job-detail__actions">
-        {job.url ? (
-          <a className="btn btn--accent" href={job.url} target="_blank" rel="noreferrer">
-            Open posting
-          </a>
-        ) : null}
-        <button type="button" className="btn btn--ghost">
-          Tailor resume
+        <button type="button" className="btn btn--ghost" onClick={onSkip} disabled={!onSkip}>
+          Skip
         </button>
+        <button type="button" className="btn btn--ghost" disabled={saved} title={saved ? "Resume already tailored" : undefined}>
+          {saved ? "Saved" : "Save"}
+        </button>
+        {applyHref ? (
+          <a className="btn btn--accent" href={applyHref} target="_blank" rel="noreferrer">
+            Apply
+          </a>
+        ) : (
+          <button type="button" className="btn btn--accent" disabled>
+            Apply
+          </button>
+        )}
       </div>
     </aside>
   );

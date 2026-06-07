@@ -29,6 +29,7 @@ from __future__ import annotations
 import logging
 import os
 import random
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -59,6 +60,20 @@ _PHOTO_LABEL_HINTS = (
     "profile_photo",
     "image",
 )
+_TRANSIENT_SUBMIT_FRAGMENTS = (
+    "something went wrong",
+    "try again later",
+    "please try again",
+    "temporarily unavailable",
+    "service unavailable",
+    "internal server error",
+    "gateway timeout",
+)
+
+
+def _is_transient_submit_error(messages: list[str]) -> bool:
+    blob = " ".join(messages).lower()
+    return any(frag in blob for frag in _TRANSIENT_SUBMIT_FRAGMENTS)
 
 
 @dataclass
@@ -83,24 +98,29 @@ def _job_url(job: dict) -> str:
 
 
 def _canonical_apply_url(url: str, family: str) -> str:
-    """Rewrite custom-domain Greenhouse links to the hosted embedded form.
+    """Rewrite ATS-specific job URLs to the page that actually hosts the form.
 
-    Many employers embed Greenhouse on their own careers site
-    (careers.datadoghq.com/detail/123?gh_jid=123, databricks.com/...?gh_jid=...).
-    Those pages render the JD, not a fillable form, so the Driver saw 'no_form'
-    or the wrong submit button. The job's real application form is always at
-    boards.greenhouse.io/embed/job_app?token=<gh_jid>; navigate straight there.
+    Greenhouse: custom-domain JD links → boards.greenhouse.io embed form.
+    Workday: posting URLs without ``/apply`` only show the JD; the apply wizard
+    lives at ``<posting>/apply`` (then Apply / Apply Manually).
     """
-    if family != "greenhouse":
-        return url
-    from urllib.parse import parse_qs, urlsplit
+    from urllib.parse import urlsplit
 
     parts = urlsplit(url)
-    if "greenhouse.io" in parts.netloc.lower():
-        return url  # already a native Greenhouse-hosted form
-    token = (parse_qs(parts.query).get("gh_jid") or [None])[0]
-    if token:
-        return f"https://boards.greenhouse.io/embed/job_app?token={token}"
+    if family == "greenhouse":
+        if "greenhouse.io" in parts.netloc.lower():
+            return url
+        from urllib.parse import parse_qs
+
+        token = (parse_qs(parts.query).get("gh_jid") or [None])[0]
+        if token:
+            return f"https://boards.greenhouse.io/embed/job_app?token={token}"
+        return url
+    if family == "workday" and "myworkdayjobs.com" in parts.netloc.lower():
+        path = parts.path.rstrip("/")
+        low = path.lower()
+        if "/job/" in low and "/apply" not in low:
+            return f"{parts.scheme}://{parts.netloc}{path}/apply"
     return url
 
 
@@ -245,6 +265,65 @@ def _record_row(label: str, value: str, *, ftype: str, via: str) -> dict:
     }
 
 
+def _partition_checkbox_radio_groups(
+    non_combo: list,
+) -> tuple[dict[str, list], dict[str, list], list[str], list[str], set[str]]:
+    """Group checkbox/radio fields for multi-option fill passes."""
+    checkbox_groups: dict[str, list] = {}
+    radio_groups: dict[str, list] = {}
+    for f in non_combo:
+        if f.type == "checkbox":
+            group_key = ""
+            if f.section_header:
+                group_key = f"section:{f.section_header}"
+            elif f.name_attr:
+                group_key = f.name_attr
+            if group_key:
+                checkbox_groups.setdefault(group_key, []).append(f)
+        if f.type == "radio" and f.name_attr:
+            radio_groups.setdefault(f.name_attr, []).append(f)
+    multi_group_keys = [k for k, v in checkbox_groups.items() if len(v) > 1]
+
+    def _yes_no_option_pair(members: list) -> bool:
+        labels = {m.label.strip().lower() for m in members}
+        return labels == {"yes", "no"} or labels <= {"yes", "no", "n/a"}
+
+    multi_radio_group_keys = [
+        k for k, v in radio_groups.items()
+        if len(v) > 1
+        and (
+            not _yes_no_option_pair(v)
+            or any(m.section_header for m in v)
+        )
+    ]
+    group_member_keys = {
+        f.key for k in multi_group_keys for f in checkbox_groups[k]
+    }
+    group_member_keys.update(
+        f.key for k in multi_radio_group_keys for f in radio_groups[k]
+    )
+    return (
+        checkbox_groups,
+        radio_groups,
+        multi_group_keys,
+        multi_radio_group_keys,
+        group_member_keys,
+    )
+
+
+def _normalize_audit_label(label: str) -> str:
+    return re.sub(r"[*#]+", "", (label or "").lower()).strip()
+
+
+def _is_workday_progress_noise(field) -> bool:
+    """Workday stepper widgets are not application fields."""
+    label = _normalize_audit_label(getattr(field, "label", ""))
+    tag = (getattr(field, "tag", "") or "").lower()
+    if tag in {"ul", "ol", "nav"}:
+        return True
+    return bool(re.search(r"(completed )?step \d+ of \d+", label))
+
+
 def _required_empty_fields(form_state) -> list:
     """Required fields still empty after fill (checkbox/radio groups handled)."""
     checked_group_names: set[str] = set()
@@ -259,9 +338,15 @@ def _required_empty_fields(form_state) -> list:
         f.name_attr for f in form_state.fields
         if f.type == "radio" and f.name_attr and str(f.value).strip()
     }
+    label_has_value = {
+        _normalize_audit_label(f.label)
+        for f in form_state.fields
+        if str(f.value).strip()
+    }
     return [
         f for f in form_state.fields
         if f.required and not f.combobox and not str(f.value).strip()
+        and not _is_workday_progress_noise(f)
         and not (f.type == "checkbox" and f.name_attr in checked_group_names)
         and not (
             f.type == "checkbox"
@@ -269,7 +354,791 @@ def _required_empty_fields(form_state) -> list:
             and f.section_header in checked_group_sections
         )
         and not (f.type == "radio" and f.name_attr in checked_radio_names)
+        and _normalize_audit_label(f.label) not in label_has_value
     ]
+
+
+def _radio_groups_from_form(form_state) -> dict[str, list]:
+    groups: dict[str, list] = {}
+    for f in form_state.fields:
+        if f.type == "radio" and f.name_attr:
+            groups.setdefault(f.name_attr, []).append(f)
+    return groups
+
+
+def _empty_radio_group_names(still_empty: list) -> set[str]:
+    return {
+        f.name_attr for f in still_empty
+        if f.type == "radio" and f.name_attr
+    }
+
+
+_CLICK_RADIO_GROUP_JS = r"""({nameAttr, pick}) => {
+  const norm = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const want = norm(pick);
+  if (!nameAttr || !want) return false;
+  const answerMatches = (txt) => {
+    const t = norm(txt);
+    return t === want || t.startsWith(want + ',') ||
+      t.startsWith(want + ' ') || t.includes(want);
+  };
+  const inputs = [...document.querySelectorAll(`input[type="radio"][name="${nameAttr}"]`)];
+  for (const el of inputs) {
+    const txt = (el.labels && el.labels[0] && el.labels[0].innerText) ||
+      el.getAttribute('aria-label') || el.value || '';
+    if (!answerMatches(txt)) continue;
+    if (!el.checked) el.click();
+    if (!el.checked) {
+      el.checked = true;
+      el.dispatchEvent(new Event('input', {bubbles: true}));
+      el.dispatchEvent(new Event('change', {bubbles: true}));
+    }
+    return !!el.checked;
+  }
+  return false;
+}"""
+
+
+def _radio_group_is_checked(page, name_attr: str) -> bool:
+    if not name_attr:
+        return False
+    try:
+        return bool(
+            page.evaluate(
+                """(nameAttr) => !!document.querySelector(
+                  `input[type="radio"][name="${nameAttr}"]:checked`
+                )""",
+                name_attr,
+            )
+        )
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _click_radio_group_option(page, members, pick: str) -> bool:
+    name_attr = members[0].name_attr if members else ""
+    if not name_attr or not pick:
+        return False
+    try:
+        return bool(
+            page.evaluate(
+                _CLICK_RADIO_GROUP_JS,
+                {"nameAttr": name_attr, "pick": pick},
+            )
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("radio group DOM click failed for %r", name_attr, exc_info=True)
+        return False
+
+
+def _refill_empty_radio_groups(
+    page,
+    form_state,
+    still_empty: list,
+    *,
+    tokens: dict,
+    job: dict | None,
+    gemini_enabled: bool,
+    filled_rows: list[dict],
+    outcome,
+) -> None:
+    """Re-fill required radio groups that verify still sees as empty."""
+    empty_names = _empty_radio_group_names(still_empty)
+    if not empty_names:
+        return
+    groups = _radio_groups_from_form(form_state)
+    for name_attr in empty_names:
+        members = groups.get(name_attr) or []
+        if len(members) < 2:
+            continue
+        status, pick, via = _fill_radio_group(
+            page,
+            members,
+            tokens=tokens,
+            job=job,
+            gemini_enabled=gemini_enabled,
+        )
+        if status == "filled" and pick:
+            filled_rows.append(
+                _record_row(
+                    members[0].section_header or "radio group",
+                    pick,
+                    ftype="radio",
+                    via=via or "group-retry",
+                )
+            )
+            if outcome is not None:
+                outcome.tier_max = max(outcome.tier_max, 0)
+
+
+def _technology_groups_from_form(form_state) -> dict[str, list]:
+    from applypilot.apply.direct import profile_binding
+
+    groups: dict[str, list] = {}
+    for f in form_state.fields:
+        if f.type != "checkbox" or not f.section_header:
+            continue
+        if not profile_binding.is_technology_multi_checkbox_question(f.section_header):
+            continue
+        gkey = f"section:{f.section_header}"
+        groups.setdefault(gkey, []).append(f)
+    return {k: v for k, v in groups.items() if len(v) > 1}
+
+
+def _technology_group_is_empty(members: list) -> bool:
+    return not any(str(m.value).strip() for m in members)
+
+
+def _refill_empty_technology_checkbox_groups(
+    page,
+    form_state,
+    *,
+    tokens: dict,
+    job: dict | None,
+    gemini_enabled: bool,
+    filled_rows: list[dict],
+    outcome,
+) -> None:
+    """Re-fill Lever technology multi-check groups cleared by resume upload."""
+    groups = _technology_groups_from_form(form_state)
+    for gkey, members in groups.items():
+        if not _technology_group_is_empty(members):
+            continue
+        if not any(m.required for m in members):
+            continue
+        status, pick, via = _fill_technology_checkbox_group(
+            page,
+            members,
+            tokens=tokens,
+            job=job,
+            gemini_enabled=gemini_enabled,
+        )
+        if status == "filled" and pick:
+            filled_rows.append(
+                _record_row(
+                    members[0].section_header or "technology group",
+                    pick,
+                    ftype="checkbox",
+                    via=via or "technology-retry",
+                )
+            )
+            if outcome is not None:
+                outcome.tier_max = max(outcome.tier_max, 0)
+
+
+_FILL_TEXT_STABLE_JS = r"""({nameAttr, labelHint, value}) => {
+  const norm = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const setVal = (el) => {
+    if (!el) return false;
+    const t = (el.type || '').toLowerCase();
+    if (t === 'file' || t === 'checkbox' || t === 'radio' || t === 'hidden') return false;
+    el.focus();
+    el.value = value;
+    el.dispatchEvent(new Event('input', {bubbles: true}));
+    el.dispatchEvent(new Event('change', {bubbles: true}));
+    el.blur();
+    return !!String(el.value || '').trim();
+  };
+  if (nameAttr) {
+    const el = document.querySelector(
+      `input[name="${nameAttr}"], textarea[name="${nameAttr}"]`
+    );
+    if (setVal(el)) return true;
+  }
+  const want = norm(labelHint).replace(/^\*\s*/, '');
+  if (!want) return false;
+  for (const el of document.querySelectorAll('input, textarea')) {
+    const t = (el.type || '').toLowerCase();
+    if (['hidden', 'file', 'checkbox', 'radio'].includes(t)) continue;
+    const lab = norm(
+      (el.labels && el.labels[0] && el.labels[0].innerText) ||
+      el.getAttribute('aria-label') ||
+      el.placeholder ||
+      ''
+    );
+    if (!lab) continue;
+    if (lab.includes(want) || want.includes(lab)) return setVal(el);
+  }
+  return false;
+}"""
+
+
+def _empty_text_fields(still_empty: list) -> list:
+    return [
+        f
+        for f in still_empty
+        if f.tag in {"input", "textarea"}
+        and f.type not in {"file", "checkbox", "radio", "hidden"}
+    ]
+
+
+def _fill_text_field_stable(page, field, answer: str) -> bool:
+    if not str(answer or "").strip():
+        return False
+    try:
+        return bool(
+            page.evaluate(
+                _FILL_TEXT_STABLE_JS,
+                {
+                    "nameAttr": field.name_attr or "",
+                    "labelHint": field.label or "",
+                    "value": answer,
+                },
+            )
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("stable text fill failed for %r", field.label, exc_info=True)
+        return False
+
+
+def _is_workday_search_field(field) -> bool:
+    """Workday prompt-select widgets: plain text inputs with placeholder Search."""
+    placeholder = (getattr(field, "placeholder", None) or "").strip().lower()
+    blob = f"{field.label} {placeholder}".lower()
+    if placeholder == "search":
+        return True
+    return any(
+        m in blob
+        for m in ("country phone code", "how did you hear", "hear about us")
+    )
+
+
+def _fill_workday_search_select(page, field, answer: str) -> bool:
+    """Fill Workday autocomplete prompt-selects (Search placeholder)."""
+    from applypilot.apply.direct import profile_binding
+
+    label = field.label.replace("*", "").strip()
+    try:
+        inp = page.get_by_label(label, exact=False).first
+        if inp.count() == 0:
+            return False
+        inp.scroll_into_view_if_needed(timeout=3_000)
+        inp.click(timeout=4_000)
+        inp.fill("")
+        if profile_binding.is_source_question(field.label):
+            for pref in profile_binding.PREFERRED_SOURCE_OPTIONS:
+                inp.press_sequentially(pref[:24], delay=35, timeout=8_000)
+                page.wait_for_timeout(900)
+                for pick in profile_binding.PREFERRED_SOURCE_OPTIONS:
+                    opt = page.get_by_role("option", name=pick, exact=False)
+                    if opt.count() > 0:
+                        opt.first.click(timeout=3_000)
+                        page.wait_for_timeout(400)
+                        if inp.input_value().strip():
+                            return True
+                inp.fill("")
+        inp.press_sequentially(answer[:40], delay=35, timeout=8_000)
+        page.wait_for_timeout(900)
+        options = tuple(page.locator('[role="option"]').all_inner_texts())
+        if not options:
+            return bool(inp.input_value().strip())
+        snapped = profile_binding.choose_select_option(answer, options) or options[0]
+        opt = page.get_by_role("option", name=snapped, exact=False).first
+        if opt.count() > 0:
+            opt.click(timeout=3_000)
+        page.wait_for_timeout(400)
+        return bool(inp.input_value().strip())
+    except Exception:  # noqa: BLE001
+        logger.debug("workday search fill failed for %r", field.label, exc_info=True)
+        return False
+
+
+def _fill_workday_prompt_select(page, label_hint: str, answer: str) -> bool:
+    """Fill a Workday prompt-select ('Select One') tied to a question label."""
+    from applypilot.apply.direct import profile_binding
+
+    if not str(answer or "").strip():
+        return False
+    needle = label_hint.strip().lower()[:80]
+    try:
+        clicked = page.evaluate(
+            r"""({needle}) => {
+              const norm = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+              for (const root of document.querySelectorAll('[data-automation-id*="formField"]')) {
+                const blob = norm(root.innerText);
+                if (needle && !blob.includes(needle)) continue;
+                const btn = [...root.querySelectorAll('button')].find(
+                  (b) => norm(b.innerText).includes('select one')
+                );
+                if (!btn) continue;
+                btn.scrollIntoView({ block: 'center' });
+                btn.click();
+                return true;
+              }
+              return false;
+            }""",
+            {"needle": needle.split(".")[0][:48]},
+        )
+        if not clicked:
+            label = page.get_by_text(label_hint[:48], exact=False).first
+            if label.count() == 0:
+                return False
+            root = label.locator('xpath=ancestor::*[contains(@data-automation-id,"formField")][1]')
+            btn = root.get_by_role("button", name="Select One").first
+            if btn.count() == 0:
+                return False
+            btn.scroll_into_view_if_needed(timeout=3_000)
+            btn.click(timeout=4_000)
+        page.wait_for_timeout(700)
+        opts = tuple(page.locator('[role="option"]').all_inner_texts())
+        pick = profile_binding.choose_select_option(answer, opts) if opts else answer
+        for candidate in (pick, answer, "Yes", "No", "Not applicable"):
+            if not candidate:
+                continue
+            opt = page.get_by_role("option", name=candidate, exact=False).first
+            if opt.count() > 0:
+                opt.click(timeout=3_000)
+                page.wait_for_timeout(400)
+                return True
+    except Exception:  # noqa: BLE001
+        logger.debug("workday prompt-select failed for %r", label_hint[:40], exc_info=True)
+        return False
+    return False
+
+
+def _fill_workday_compliance_prompts(
+    page,
+    *,
+    tokens: dict,
+    filled_rows: list[dict],
+) -> None:
+    """BlackRock-style compliance prompt-selects on My Information."""
+    from applypilot.apply.direct import profile_binding
+
+    hints = (
+        "legal authorization to work",
+        "obtain, renew, extend or transfer a visa",
+        "personal relationship",
+    )
+    for hint in hints:
+        field = profile_binding.Field(
+            label=hint,
+            type="select",
+            tag="button",
+            name_attr="",
+            section_header="",
+            required=True,
+            options=(),
+            key=f"workday-prompt|{hint}",
+        )
+        res = profile_binding.resolve_field(field, tokens)
+        if not res:
+            continue
+        if _fill_workday_prompt_select(page, hint, res.answer):
+            filled_rows.append(
+                _record_row(hint, res.answer, ftype="select", via=res.via or "workday:prompt")
+            )
+    _fill_workday_followup_textareas(page, tokens=tokens, filled_rows=filled_rows)
+
+
+def _fill_workday_followup_textareas(
+    page,
+    *,
+    tokens: dict,
+    filled_rows: list[dict],
+) -> None:
+    """Fill conditional Workday textareas (e.g. visa sponsorship details)."""
+    from applypilot.apply.direct import profile_binding
+
+    form = extractor.extract_fields(page)
+    still = _required_empty_fields(form)
+    for f in _empty_text_fields(still):
+        res = profile_binding.resolve_field(f, tokens)
+        if not res:
+            continue
+        ok = _fill_text_field_stable(page, f, res.answer) or _fill_field(
+            page, f, res.answer, family="workday",
+        )
+        if ok:
+            filled_rows.append(
+                _record_row(
+                    f.label,
+                    res.answer,
+                    ftype=f.type or f.tag,
+                    via=res.via or "workday:followup-text",
+                )
+            )
+
+
+def _fill_workday_ack_checkboxes(page, filled_rows: list[dict]) -> None:
+    """Required Workday acknowledgment checkboxes (Yes / I agree / I confirm)."""
+    try:
+        count = page.evaluate(
+            r"""() => {
+              const norm = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+              let n = 0;
+              for (const cb of document.querySelectorAll('input[type="checkbox"]')) {
+                if (cb.checked || cb.disabled) continue;
+                const label = norm(
+                  (cb.labels && cb.labels[0] && cb.labels[0].innerText) ||
+                  cb.getAttribute('aria-label') ||
+                  ''
+                );
+                const req = !!(cb.required || cb.getAttribute('aria-required') === 'true');
+                const ack = /^(yes\*?|i agree|i acknowledge|i confirm|accept|consent)/.test(label);
+                if (!req && !ack) continue;
+                cb.scrollIntoView({ block: 'center' });
+                cb.click();
+                n += 1;
+              }
+              return n;
+            }"""
+        )
+        if count:
+            filled_rows.append(
+                _record_row("Acknowledgment", "Yes", ftype="checkbox", via="workday:ack")
+            )
+    except Exception:  # noqa: BLE001
+        logger.debug("workday ack checkbox fill failed", exc_info=True)
+
+
+def _fill_workday_voluntary_disclosures(
+    page,
+    *,
+    tokens: dict,
+    filled_rows: list[dict],
+) -> None:
+    """EEO / voluntary disclosures page (radios, prompt-selects, text, ack boxes)."""
+    from applypilot.apply.direct import profile_binding
+
+    _fill_workday_fieldset_radios(page, tokens=tokens, filled_rows=filled_rows)
+    prompts = (
+        "disability",
+        "veteran",
+        "gender",
+        "race",
+        "ethnicity",
+        "citizen of another country",
+        "permanent residency",
+    )
+    for hint in prompts:
+        field = profile_binding.Field(
+            label=hint,
+            type="select",
+            tag="button",
+            section_header="Voluntary Disclosures",
+            required=False,
+            options=(),
+            key=f"workday-voluntary|{hint}",
+        )
+        res = profile_binding.resolve_field(field, tokens)
+        if not res:
+            continue
+        if _fill_workday_prompt_select(page, hint, res.answer):
+            filled_rows.append(
+                _record_row(hint, res.answer, ftype="select", via=res.via or "workday:voluntary")
+            )
+    _fill_workday_followup_textareas(page, tokens=tokens, filled_rows=filled_rows)
+    form = extractor.extract_fields(page)
+    still = _required_empty_fields(form)
+    _refill_empty_text_fields(
+        page,
+        form,
+        _empty_text_fields(still),
+        tokens=tokens,
+        job=None,
+        gemini_enabled=False,
+        filled_rows=filled_rows,
+        outcome=None,
+        family="workday",
+    )
+    _fill_workday_ack_checkboxes(page, filled_rows)
+
+
+def _fill_workday_hear_about_us(page, answer: str = "LinkedIn") -> bool:
+    """Workday hear-about widgets need a selected chip, not only typed search text."""
+    from applypilot.apply.direct import profile_binding
+
+    js = r"""({answer}) => {
+      const norm = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+      const want = norm(answer);
+      let root = null;
+      for (const el of document.querySelectorAll('label, legend, h3, p, span')) {
+        const t = norm(el.innerText);
+        if (!t.includes('how did you hear') && !t.includes('hear about us')) continue;
+        root = el.closest('[data-automation-id*="formField"]')
+          || el.closest('fieldset')
+          || el.parentElement?.parentElement;
+        if (root) break;
+      }
+      if (!root) return { ok: false, reason: 'no-root' };
+      for (const cb of root.querySelectorAll('input[type="checkbox"]')) {
+        const lbl = norm(
+          (cb.labels && cb.labels[0] && cb.labels[0].innerText)
+          || cb.getAttribute('aria-label') || ''
+        );
+        if (lbl.includes('linkedin') || lbl.includes(want)) {
+          cb.click();
+          if (cb.checked) return { ok: true, via: 'checkbox' };
+        }
+      }
+      const inp = root.querySelector(
+        'input[type="text"], input[placeholder*="earch" i], [role="combobox"] input'
+      );
+      if (!inp) return { ok: false, reason: 'no-input' };
+      inp.focus();
+      inp.click();
+      inp.value = '';
+      inp.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
+      inp.value = answer;
+      inp.dispatchEvent(new InputEvent('input', { bubbles: true, data: answer, inputType: 'insertText' }));
+      inp.dispatchEvent(new Event('change', { bubbles: true }));
+      let picked = false;
+      for (const opt of document.querySelectorAll('[role="option"], li[data-automation-id*="option"]')) {
+        const t = norm(opt.innerText);
+        if (!t) continue;
+        if (t.includes(want) || want.includes(t) || t.includes('linkedin')) {
+          opt.click();
+          picked = true;
+          break;
+        }
+      }
+      if (!picked) {
+        inp.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        inp.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }));
+      }
+      const chips = [...root.querySelectorAll(
+        'ul li, [data-automation-id*="selected"], [class*="selectedItem"], [class*="multiSelect"]'
+      )].map((el) => norm(el.innerText)).filter((t) => t && t !== 'items selected');
+      const ok = chips.length > 0 || norm(inp.value).includes('linkedin');
+      return { ok, chips, picked, via: picked ? 'option' : 'enter' };
+    }"""
+    try:
+        result = page.evaluate(js, {"answer": answer})
+        if isinstance(result, dict) and result.get("ok"):
+            page.wait_for_timeout(500)
+            return True
+    except Exception:  # noqa: BLE001
+        logger.debug("workday hear-about JS fill failed", exc_info=True)
+
+    picks = profile_binding.PREFERRED_SOURCE_OPTIONS + (answer,)
+    for pref in picks:
+        if not pref:
+            continue
+        try:
+            cb = page.get_by_role("checkbox", name=pref, exact=False).first
+            if cb.count() > 0:
+                cb.check(timeout=3_000)
+                page.wait_for_timeout(400)
+                return True
+        except Exception:  # noqa: BLE001
+            logger.debug("workday hear-about checkbox %r failed", pref, exc_info=True)
+    form = extractor.extract_fields(page)
+    for f in form.fillable():
+        if profile_binding.is_source_question(f.label):
+            if _fill_workday_search_select(page, f, answer):
+                page.wait_for_timeout(400)
+                return True
+    return False
+
+
+def _workday_advance_until_review(
+    page,
+    *,
+    tokens: dict,
+    filled_rows: list[dict],
+    worker_id: int,
+) -> None:
+    """Clear validation errors and keep clicking Next until review/submit."""
+    from applypilot.apply.direct.adapters import workday as wd_mod
+
+    answer = str(tokens.get("referral_source") or tokens.get("hear_about") or "LinkedIn")
+    for attempt in range(8):
+        state = wd_mod.detect_workday_state(page.content())
+        if state in {"review", "submit"}:
+            return
+        _workday_fix_validation_errors(page, tokens=tokens, filled_rows=filled_rows)
+        _fill_workday_hear_about_us(page, answer)
+        _fill_workday_compliance_prompts(page, tokens=tokens, filled_rows=filled_rows)
+        _fill_workday_voluntary_disclosures(page, tokens=tokens, filled_rows=filled_rows)
+        _fill_workday_phone_device_type(page)
+        page.wait_for_timeout(600)
+        if _workday_has_validation_errors(page):
+            logger.info(
+                "[W%d] Workday: validation errors remain (attempt %d)",
+                worker_id,
+                attempt + 1,
+            )
+            continue
+        state = wd_mod.detect_workday_state(page.content())
+        if state in {"review", "submit"}:
+            return
+        advance = _find_advance_button(page, family="workday")
+        if not advance:
+            return
+        if not unblock._click_text(page, advance):
+            return
+        logger.info("[W%d] Workday: advanced via %r", worker_id, advance)
+        page.wait_for_timeout(2_000)
+
+
+def _workday_has_validation_errors(page) -> bool:
+    try:
+        return bool(
+            page.evaluate(
+                """() => {
+                  const norm = (s) => (s || '').toLowerCase();
+                  for (const b of document.querySelectorAll('button, [role="button"]')) {
+                    const t = norm(b.innerText || b.getAttribute('aria-label'));
+                    if (t.includes('errors found') || t.startsWith('error-')) return true;
+                  }
+                  return false;
+                }"""
+            )
+        )
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _fill_workday_phone_device_type(page) -> bool:
+    """Workday 'Phone Device Type' prompt-select (Mobile / Home / Work)."""
+    prefs = ("Mobile", "Cell Phone", "Mobile Phone", "Cell", "Personal Mobile")
+    try:
+        btn = page.locator('[data-automation-id*="phoneDevice"]').first
+        if btn.count() == 0:
+            label = page.get_by_text("Phone Device Type", exact=False).first
+            if label.count() > 0:
+                btn = label.locator("xpath=ancestor::div[1]").get_by_role("button").first
+        if btn.count() == 0:
+            btn = page.get_by_role("button", name="Select One").first
+        if btn.count() == 0:
+            return False
+        btn.scroll_into_view_if_needed(timeout=3_000)
+        btn.click(timeout=4_000)
+        page.wait_for_timeout(700)
+        for pref in prefs:
+            opt = page.get_by_role("option", name=pref, exact=False).first
+            if opt.count() > 0:
+                opt.click(timeout=3_000)
+                page.wait_for_timeout(400)
+                return True
+    except Exception:  # noqa: BLE001
+        logger.debug("workday phone device type fill failed", exc_info=True)
+        return False
+    return False
+
+
+def _workday_fix_validation_errors(
+    page,
+    *,
+    tokens: dict,
+    filled_rows: list[dict],
+) -> None:
+    """Re-fill Workday fields flagged by the inline Errors Found banner."""
+    if not _workday_has_validation_errors(page):
+        return
+    from applypilot.apply.direct import profile_binding
+
+    if _fill_workday_phone_device_type(page):
+        filled_rows.append(
+            _record_row("Phone Device Type", "Mobile", ftype="select", via="workday:device-type")
+        )
+    _fill_workday_hear_about_us(
+        page,
+        str(tokens.get("referral_source") or tokens.get("hear_about") or "LinkedIn"),
+    )
+    _fill_workday_compliance_prompts(page, tokens=tokens, filled_rows=filled_rows)
+    _fill_workday_voluntary_disclosures(page, tokens=tokens, filled_rows=filled_rows)
+    _fill_workday_followup_textareas(page, tokens=tokens, filled_rows=filled_rows)
+    form = extractor.extract_fields(page)
+    for f in form.fillable():
+        blob = f"{f.label} {getattr(f, 'placeholder', '')}".lower()
+        if _is_workday_search_field(f) or "phone device" in blob:
+            res = profile_binding.resolve_field(f, tokens)
+            if not res:
+                continue
+            if "phone device" in blob:
+                if _fill_workday_phone_device_type(page):
+                    filled_rows.append(
+                        _record_row(f.label, res.answer, ftype=f.type or f.tag, via=res.via or "workday:device-type")
+                    )
+            elif _fill_workday_search_select(page, f, res.answer):
+                filled_rows.append(
+                    _record_row(f.label, res.answer, ftype=f.type or f.tag, via=res.via or "workday-search-retry")
+                )
+    page.wait_for_timeout(500)
+
+
+def _workday_final_refill(
+    page,
+    *,
+    tokens: dict,
+    filled_rows: list[dict],
+) -> None:
+    """Last-pass refill on review/submit pages before pre-submit audit."""
+    _workday_fix_validation_errors(page, tokens=tokens, filled_rows=filled_rows)
+    _fill_workday_voluntary_disclosures(page, tokens=tokens, filled_rows=filled_rows)
+    form = extractor.extract_fields(page)
+    still = _required_empty_fields(form)
+    _refill_workday_search_fields(page, still, tokens=tokens, filled_rows=filled_rows)
+    _fill_workday_followup_textareas(page, tokens=tokens, filled_rows=filled_rows)
+    _fill_workday_phone_device_type(page)
+    page.wait_for_timeout(600)
+
+
+def _refill_workday_search_fields(
+    page,
+    still_empty: list,
+    *,
+    tokens: dict,
+    filled_rows: list[dict],
+) -> None:
+    from applypilot.apply.direct import profile_binding
+
+    for f in still_empty:
+        if not _is_workday_search_field(f):
+            continue
+        res = profile_binding.resolve_field(f, tokens)
+        if not res:
+            continue
+        if _fill_workday_search_select(page, f, res.answer):
+            filled_rows.append(
+                _record_row(f.label, res.answer, ftype=f.type or f.tag, via=res.via or "workday-search")
+            )
+
+
+def _refill_empty_text_fields(
+    page,
+    form_state,
+    still_empty: list,
+    *,
+    tokens: dict,
+    job: dict | None,
+    gemini_enabled: bool,
+    filled_rows: list[dict],
+    outcome,
+    family: str,
+) -> None:
+    """Re-fill text inputs that verify still sees empty (common after resume upload)."""
+    from applypilot.apply.direct import profile_binding
+
+    retry_fields = _empty_text_fields(still_empty)
+    if not retry_fields:
+        return
+    for f in retry_fields:
+        res = profile_binding.resolve_field(f, tokens)
+        ans = res.answer if res else None
+        via = res.via if res else ""
+        if not ans and gemini_enabled:
+            sub = resolver.resolve(
+                [f], tokens, job=job, gemini_enabled=True,
+            )
+            if outcome is not None:
+                outcome.tier_max = max(outcome.tier_max, sub.tier_max)
+                outcome.llm_field_count += sub.llm_field_count
+            ans = sub.answers.get(f.key)
+            via = sub.via.get(f.key, via)
+        if not ans:
+            continue
+        ok = _fill_text_field_stable(page, f, ans) or _fill_field(
+            page, f, ans, family=family,
+        )
+        if ok:
+            filled_rows.append(
+                _record_row(f.label, ans, ftype=f.type or f.tag, via=via or "text-retry")
+            )
+            if outcome is not None and res:
+                outcome.tier_max = max(outcome.tier_max, 0)
 
 
 _FILE_UPLOAD_AUDIT_JS = r"""() => {
@@ -334,6 +1203,16 @@ def _pre_submit_audit(
 
     form = extractor.extract_fields(page)
     still_empty = _required_empty_fields(form)
+    filled_map = {r["label"]: r for r in filled_rows}
+    filled_labels = {
+        _normalize_audit_label(lbl)
+        for lbl, row in filled_map.items()
+        if str(row.get("value") or "").strip()
+    }
+    still_empty = [
+        f for f in still_empty
+        if _normalize_audit_label(f.label) not in filled_labels
+    ]
     location_traps = [
         f for f in form.fillable()
         if profile_binding.is_yes_no_radiogroup(f)
@@ -342,7 +1221,6 @@ def _pre_submit_audit(
         )
         and f.empty
     ]
-    filled_map = {r["label"]: r for r in filled_rows}
     audit_rows: list[dict] = []
     for field in form.fillable():
         dom_value = str(field.value or "").strip()
@@ -485,9 +1363,10 @@ def _reveal_form(page, adapter: Adapter) -> None:
 def _wait_for_form_ready(page, *, timeout_ms: int = 8_000) -> None:
     """Wait for JS-rendered ATS forms to mount before declaring no_form.
 
-    Ashby often reaches domcontentloaded while the React application tab is
-    still rendering. A fixed 1.2s wait is too short on real pages and causes a
-    false no_form escalation even though the form appears a few seconds later.
+    Ashby, Workable, and similar React apps often reach domcontentloaded while
+    the application tab is still rendering. A fixed 1.2s wait is too short on
+    real pages and causes a false no_form escalation even though the form
+    appears a few seconds later.
     """
     deadline = time.monotonic() + (timeout_ms / 1000)
     while time.monotonic() < deadline:
@@ -558,6 +1437,67 @@ def _click_option_near_label(page, field, answer: str) -> bool:
         )
     except Exception:  # noqa: BLE001
         logger.debug("option click fallback failed for %r", field.label, exc_info=True)
+        return False
+
+
+_CLICK_LEVER_SECTION_CHECKBOX_JS = r"""({sectionHint, optionLabel}) => {
+  const norm = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const wantSec = norm(sectionHint).replace(/[\u2731✱]/g, '').slice(0, 100);
+  const wantOpt = norm(optionLabel);
+  if (!wantSec || !wantOpt) return false;
+  const secMatches = (txt) => {
+    const t = norm(txt).replace(/[\u2731✱]/g, '');
+    return t.includes(wantSec.slice(0, 40)) || wantSec.includes(t.slice(0, 40));
+  };
+  const optMatches = (txt) => {
+    const t = norm(txt);
+    return t === wantOpt || t.includes(wantOpt) || wantOpt.includes(t);
+  };
+  const labels = [...document.querySelectorAll('.application-label')];
+  for (const block of labels) {
+    const txtNode = block.querySelector('.text') || block;
+    if (!secMatches(txtNode.innerText || '')) continue;
+    let el = block;
+    for (let i = 0; i < 24 && el; i++) {
+      el = el.nextElementSibling;
+      if (!el) break;
+      if (el.classList && el.classList.contains('application-label')) break;
+      const inputs = el.querySelectorAll('input[type="checkbox"]');
+      for (const inp of inputs) {
+        const ltxt = (inp.labels && inp.labels[0] && inp.labels[0].innerText) ||
+          inp.getAttribute('aria-label') || inp.value || '';
+        if (!optMatches(ltxt)) continue;
+        if (!inp.checked) inp.click();
+        if (!inp.checked) {
+          inp.checked = true;
+          inp.dispatchEvent(new Event('input', {bubbles: true}));
+          inp.dispatchEvent(new Event('change', {bubbles: true}));
+        }
+        return !!inp.checked;
+      }
+    }
+  }
+  return false;
+}"""
+
+
+def _click_lever_section_checkbox(page, section: str, option_label: str) -> bool:
+    if not section or not option_label:
+        return False
+    try:
+        return bool(
+            page.evaluate(
+                _CLICK_LEVER_SECTION_CHECKBOX_JS,
+                {"sectionHint": section, "optionLabel": option_label},
+            )
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "lever section checkbox click failed for %r / %r",
+            section[:40],
+            option_label,
+            exc_info=True,
+        )
         return False
 
 
@@ -672,6 +1612,10 @@ def _fill_field_legacy(page, field, answer: str, *, family: str = "") -> bool:
                 except Exception:  # noqa: BLE001
                     pass
             return True
+        if field.type == "number":
+            digits = re.sub(r"[^0-9.]+", "", answer)
+            if digits:
+                answer = digits
         if field.type == "tel":
             # intl-tel-input detects the country from keystrokes, not a bulk
             # value set; typing the E.164 number makes it format/validate as the
@@ -803,6 +1747,64 @@ def _fill_checkbox_group(
         return "unresolved", None, ""
 
 
+def _fill_technology_checkbox_group(
+    page,
+    members,
+    *,
+    tokens: dict,
+    job: dict | None = None,
+    gemini_enabled: bool = True,
+) -> tuple[str, str | None, str]:
+    """Check multiple technology options for 'select all that apply' groups."""
+    from applypilot.apply.direct import profile_binding
+
+    question = next((m.section_header for m in members if m.section_header), "")
+    labels = tuple(m.label for m in members)
+    picks = profile_binding.technology_checkbox_picks(labels)
+    if not picks:
+        return "unresolved", None, ""
+    checked = 0
+    picked: list[str] = []
+    for pick in picks:
+        target = next((m for m in members if m.label == pick), None)
+        if target is None:
+            continue
+        clicked = False
+        try:
+            loc = _locator(page, target)
+            if loc.count() > 0:
+                loc.scroll_into_view_if_needed(timeout=3_000)
+                try:
+                    if not loc.is_checked():
+                        loc.check(timeout=4_000)
+                    clicked = loc.is_checked()
+                except Exception:  # noqa: BLE001
+                    clicked = False
+        except Exception:  # noqa: BLE001
+            clicked = False
+        if not clicked and target is not None:
+            clicked = _check_checkbox_dom(page, target)
+        if not clicked:
+            clicked = _click_lever_section_checkbox(page, question, pick)
+        if not clicked and target is not None:
+            clicked = _click_option_near_label(page, target, pick)
+        if clicked:
+            checked += 1
+            picked.append(pick)
+        else:
+            logger.debug(
+                "technology checkbox fill failed for %r / %r",
+                question,
+                pick,
+            )
+    if not checked:
+        return "unresolved", None, ""
+    summary = ", ".join(picked[:6])
+    if len(picked) > 6:
+        summary += f" (+{len(picked) - 6} more)"
+    return "filled", summary, "technology-group"
+
+
 def _resolve_radio_group_pick(
     members,
     *,
@@ -851,6 +1853,8 @@ def _fill_radio_group(
     job: dict | None = None,
     gemini_enabled: bool = True,
 ) -> tuple[str, str | None, str]:
+    from applypilot.apply.direct import profile_binding
+
     pick, via = _resolve_radio_group_pick(
         members, tokens=tokens, job=job, gemini_enabled=gemini_enabled
     )
@@ -859,15 +1863,24 @@ def _fill_radio_group(
     target = next((m for m in members if m.label == pick), None)
     if target is None:
         return "unresolved", None, ""
+    name_attr = members[0].name_attr if members else ""
     try:
         loc = _locator(page, target)
         if loc.count() == 0:
-            return "unresolved", None, ""
-        loc.scroll_into_view_if_needed(timeout=3_000)
-        try:
-            loc.check(timeout=4_000)
-        except Exception:  # noqa: BLE001
-            if not _click_option_near_label(page, target, pick):
+            if not _click_radio_group_option(page, members, pick):
+                return "unresolved", None, ""
+        else:
+            loc.scroll_into_view_if_needed(timeout=3_000)
+            try:
+                loc.check(timeout=4_000)
+            except Exception:  # noqa: BLE001
+                if not _click_radio_group_option(page, members, pick):
+                    section = (members[0].section_header or "").strip()
+                    hint = section if target.label.strip().lower() in {"yes", "no", "n/a"} else target.label
+                    if not _click_option_near_label(page, profile_binding.Field(label=hint), pick):
+                        return "unresolved", None, ""
+        if name_attr and not _radio_group_is_checked(page, name_attr):
+            if not _click_radio_group_option(page, members, pick):
                 return "unresolved", None, ""
         return "filled", pick, via
     except Exception:  # noqa: BLE001
@@ -1168,17 +2181,186 @@ def _try_clear_verification_wall(
         logger.debug("Failed to fill verification code", exc_info=True)
         return False, "email_verification_code"
 
-    if apply_settings.captcha_solving_enabled():
-        if not direct_captcha.solve_recaptcha_v2_if_present(page):
-            logger.info("[W%d] reCAPTCHA v2 present but not solved", worker_id)
-            return False, "captcha_unsolved"
+    if not direct_captcha.solve_captcha_if_present(page):
+        logger.info("[W%d] Captcha present but not solved", worker_id)
+        return False, "captcha_unsolved"
 
     _click_verification_continue(page)
     page.wait_for_timeout(1_800)
     return True, None
 
 
+def _click_workday_submit(page) -> bool:
+    """Workday final submit uses data-automation-id, not always type=submit."""
+    selectors = (
+        '[data-automation-id="submitButton"]',
+        '[data-automation-id="SubmitButton"]',
+        '[data-automation-id="bottom-navigation-next-button"]',
+    )
+    for sel in selectors:
+        try:
+            loc = page.locator(sel)
+            if loc.count() == 0:
+                continue
+            btn = loc.first
+            btn_text = (btn.inner_text(timeout=2_000) or "").strip().lower()
+            if sel.endswith("next-button") and "submit" not in btn_text:
+                continue
+            btn.scroll_into_view_if_needed(timeout=3_000)
+            btn.click(timeout=8_000)
+            return True
+        except Exception:  # noqa: BLE001
+            continue
+    try:
+        clicked = page.evaluate(
+            """() => {
+              const norm = (s) => (s || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+              const vis = (el) => {
+                if (!el) return false;
+                const r = el.getBoundingClientRect();
+                return r.width > 0 && r.height > 0;
+              };
+              const tryClick = (el) => {
+                if (!vis(el)) return false;
+                el.scrollIntoView({ block: 'center', inline: 'nearest' });
+                el.click();
+                return true;
+              };
+              for (const sel of [
+                '[data-automation-id="submitButton"]',
+                '[data-automation-id="bottom-navigation-next-button"]',
+              ]) {
+                for (const el of document.querySelectorAll(sel)) {
+                  const t = norm(el.innerText || el.value || el.getAttribute('aria-label'));
+                  if (sel.includes('submitButton') || t.includes('submit')) {
+                    if (tryClick(el)) return true;
+                  }
+                }
+              }
+              for (const el of document.querySelectorAll('button, [role="button"], input[type="submit"]')) {
+                const t = norm(el.innerText || el.value || el.getAttribute('aria-label'));
+                if (t === 'submit' || t.startsWith('submit ') || t === 'submit application') {
+                  if (tryClick(el)) return true;
+                }
+              }
+              return false;
+            }"""
+        )
+        if clicked:
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    return False
+
+
+def _fill_workday_fieldset_radios(
+    page,
+    *,
+    tokens: dict,
+    filled_rows: list,
+) -> None:
+    """Fill Workday EEO/voluntary radiogroups located by fieldset legend."""
+    try:
+        groups = page.evaluate(
+            """() => {
+              const norm = (s) => (s || '').replace(/\\s+/g, ' ').trim();
+              const vis = (el) => {
+                const r = el.getBoundingClientRect();
+                return r.width > 0 && r.height > 0;
+              };
+              const out = [];
+              for (const fs of document.querySelectorAll('fieldset')) {
+                const lg = fs.querySelector('legend');
+                if (!lg || !vis(fs)) continue;
+                const legend = norm(lg.innerText);
+                if (!legend) continue;
+                if (fs.querySelector('input[type="radio"]:checked, [role="radio"][aria-checked="true"]')) {
+                  continue;
+                }
+                const options = [];
+                for (const r of fs.querySelectorAll('input[type="radio"], [role="radio"]')) {
+                  if (!vis(r)) continue;
+                  const label = norm(
+                    (r.labels && r.labels[0] && r.labels[0].innerText) ||
+                    r.getAttribute('aria-label') ||
+                    r.value ||
+                    ''
+                  );
+                  if (label) options.push(label);
+                }
+                if (options.length) out.push({ legend, options });
+              }
+              return out;
+            }"""
+        )
+    except Exception:  # noqa: BLE001
+        return
+    if not groups:
+        return
+    from applypilot.apply.direct import profile_binding
+
+    for group in groups:
+        legend = str(group.get("legend") or "")
+        options = tuple(str(o) for o in (group.get("options") or []) if o)
+        if not legend or not options:
+            continue
+        pseudo = profile_binding.Field(
+            label=legend,
+            type="radio",
+            tag="input",
+            section_header=legend,
+            required=False,
+            options=options,
+        )
+        res = profile_binding.resolve_field(pseudo, tokens)
+        pick = None
+        via = ""
+        if res:
+            pick = profile_binding.choose_select_option(res.answer, options)
+            via = res.via or "label"
+        if not pick:
+            pick = profile_binding.choose_select_option("Decline to answer", options)
+            via = via or "decline"
+        if not pick:
+            continue
+        try:
+            page.evaluate(
+                """({ legend, pick }) => {
+                  const norm = (s) => (s || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+                  const want = norm(pick);
+                  for (const fs of document.querySelectorAll('fieldset')) {
+                    const lg = fs.querySelector('legend');
+                    if (!lg || norm(lg.innerText) !== norm(legend)) continue;
+                    for (const r of fs.querySelectorAll('input[type="radio"], [role="radio"]')) {
+                      const label = norm(
+                        (r.labels && r.labels[0] && r.labels[0].innerText) ||
+                        r.getAttribute('aria-label') ||
+                        r.value ||
+                        ''
+                      );
+                      if (label === want || label.includes(want) || want.includes(label)) {
+                        r.click();
+                        return true;
+                      }
+                    }
+                  }
+                  return false;
+                }""",
+                {"legend": legend, "pick": pick},
+            )
+            filled_rows.append(
+                _record_row(legend, pick, ftype="radio", via=via or "workday:fieldset")
+            )
+        except Exception:  # noqa: BLE001
+            continue
+
+
 def _click_submit(page, adapter: Adapter) -> bool:
+    if adapter.family == "workday":
+        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        page.wait_for_timeout(400)
+        if _click_workday_submit(page):
+            return True
     # 1) Text-matched submit control (button / link / input / any element whose
     #    normalized text equals a submit label). unblock._click_text handles
     #    scroll-into-view, overlay-intercept (force), and styled buttons.
@@ -1226,6 +2408,28 @@ def _multistep_max_pages() -> int:
         return max(1, int(os.environ.get("APPLYPILOT_DIRECT_MAX_PAGES", "6")))
     except ValueError:
         return 6
+
+
+def _is_review_only_multistep_page(fields) -> bool:
+    """True when a post-Next step is a final review/submit screen, not questions.
+
+    Micro1 and similar portals use optional number/text screening on later steps.
+    Treat those as fillable pages even when no identity field is marked required.
+    """
+    from applypilot.apply.direct import unblock
+
+    if len(fields) < 2:
+        return True
+    if unblock.has_identity_field(fields) or any(f.required for f in fields):
+        return False
+    substantive = [
+        f
+        for f in fields
+        if f.type != "file"
+        and f.type not in {"hidden", "submit", "button"}
+        and str(f.label or "").strip()
+    ]
+    return len(substantive) == 0
 
 
 def _find_advance_button(page, *, family: str = ""):
@@ -1520,6 +2724,12 @@ def apply_via_direct(
     if not url:
         return done("failed:direct_no_url", escalate=True, reason="no_url")
 
+    from applypilot.apply import visit_ledger
+
+    skip_visit, visit_reason, _last_visit = visit_ledger.visit_should_skip(url)
+    if skip_visit:
+        return done(f"skipped:apply_visit:{visit_reason}")
+
     # Resume is required to fill/submit. Fail fast for a known adapter (skips a
     # browser launch); for the content-sniff path defer this until the page
     # confirms a supported ATS so an unsniffable page escalates as no_adapter.
@@ -1552,12 +2762,12 @@ def apply_via_direct(
             page.goto(nav_url, wait_until="domcontentloaded", timeout=_NAV_TIMEOUT_MS)
         except Exception:  # noqa: BLE001
             return done("failed:direct_nav_timeout", escalate=True, reason="nav_timeout")
-        if family == "ashby":
+        if family in {"ashby", "workday"}:
             try:
                 page.wait_for_load_state("networkidle", timeout=15_000)
             except Exception:  # noqa: BLE001
                 pass
-        page.wait_for_timeout(1_200)
+        page.wait_for_timeout(2_500 if family == "workday" else 1_200)
         try:
             unblock._dismiss_cookies(page)
         except Exception:  # noqa: BLE001
@@ -1603,6 +2813,36 @@ def apply_via_direct(
                 login_reason,
             )
             return done(f"awaiting_login:{dom}", reason=login_reason)
+
+        if family == "workday":
+            from applypilot.apply.direct.adapters import workday as wd_mod
+
+            try:
+                wd_html = page.content()
+            except Exception:  # noqa: BLE001
+                wd_html = html_text
+            wd_state = wd_mod.detect_workday_state(wd_html)
+            if (
+                wd_mod.is_login_wall(wd_html)
+                or wd_mod.is_unauthenticated_apply_gate(wd_html, page_url=page.url)
+                or wd_state == "account_or_signin"
+            ):
+                dom = login_detect.login_domain(page.url) or login_detect.login_domain(url)
+                has_google = login_detect.has_google_signin(body_text, html=wd_html)
+                login_reason = "workday_sign_in"
+                login_gate.request_login(
+                    dom,
+                    url=url,
+                    reason=login_reason,
+                    has_google_signin=has_google,
+                )
+                logger.info(
+                    "[W%d] Workday sign-in wall on %s — awaiting login (%s)",
+                    worker_id,
+                    dom,
+                    login_reason,
+                )
+                return done(f"awaiting_login:{dom}", reason=login_reason)
 
         # Content-based ATS detection: the URL fingerprint said 'unknown', so
         # sniff the loaded page for a known backing ATS (custom-domain Greenhouse
@@ -1656,8 +2896,10 @@ def apply_via_direct(
             return done("expired")
 
         _reveal_form(page, adapter)
-        if family == "ashby":
-            _wait_for_form_ready(page)
+        _wait_for_form_ready(
+            page,
+            timeout_ms=15_000 if family == "workday" else 8_000,
+        )
         form = extractor.extract_fields(page)
         fields = form.fillable()
 
@@ -1693,6 +2935,12 @@ def apply_via_direct(
                     _reveal_form(page, adapter)
                     form = extractor.extract_fields(page)
                     fields = form.fillable()
+            except unblock_learning.EscalationCapHit as exc:
+                return done(
+                    "failed:direct_escalation_cap",
+                    escalate=False,
+                    reason=str(exc)[:120],
+                )
             except unblock.GeminiQuotaExhausted as exc:
                 # Gemini is capped — fall through to the normal escalate path so
                 # the next tier (Claude, if allowed) or park-and-continue runs.
@@ -1708,6 +2956,12 @@ def apply_via_direct(
         if not unblock.has_identity_field(fields):
             return done(
                 "failed:direct_no_application_form", escalate=True,
+                reason="no_application_form",
+            )
+        if unblock.looks_like_non_application_form(fields):
+            return done(
+                "failed:direct_no_application_form",
+                escalate=False,
                 reason="no_application_form",
             )
 
@@ -1751,11 +3005,9 @@ def apply_via_direct(
                 _wait_for_form_ready(page)
                 form = extractor.extract_fields(page)
                 fields = form.fillable()
-                if len(fields) < 2 or not unblock.has_identity_field(fields) and not any(
-                    f.required for f in fields
-                ):
+                if _is_review_only_multistep_page(fields):
                     # Confirmation/review page (just a Submit, or only optional
-                    # fields) — finalize and submit.
+                    # chrome) — finalize and submit.
                     break
 
             # Three field classes, each handled differently:
@@ -1766,39 +3018,20 @@ def apply_via_direct(
             non_combo = [f for f in fields if not f.combobox and f.type != "file"]
             # Required checkbox GROUPS (>=2 checkboxes sharing a name) need exactly
             # one option checked — pull their members out of the per-field resolve.
-            checkbox_groups: dict[str, list] = {}
-            radio_groups: dict[str, list] = {}
-            for f in non_combo:
-                if f.type == "checkbox":
-                    group_key = ""
-                    if f.section_header:
-                        group_key = f"section:{f.section_header}"
-                    elif f.name_attr:
-                        group_key = f.name_attr
-                    if group_key:
-                        checkbox_groups.setdefault(group_key, []).append(f)
-                if f.type == "radio" and f.name_attr:
-                    radio_groups.setdefault(f.name_attr, []).append(f)
-            multi_group_keys = [k for k, v in checkbox_groups.items() if len(v) > 1]
-            def _yes_no_option_pair(members: list) -> bool:
-                labels = {m.label.strip().lower() for m in members}
-                return labels == {"yes", "no"} or labels <= {"yes", "no", "n/a"}
+            (
+                checkbox_groups,
+                radio_groups,
+                multi_group_keys,
+                multi_radio_group_keys,
+                group_member_keys,
+            ) = _partition_checkbox_radio_groups(non_combo)
+            from applypilot.apply.direct import profile_binding
 
-            multi_radio_group_keys = [
-                k for k, v in radio_groups.items()
-                if len(v) > 1
-                and (
-                    not _yes_no_option_pair(v)
-                    or any(m.section_header for m in v)
-                )
+            regular = [
+                f for f in non_combo
+                if f.key not in group_member_keys
+                and not profile_binding.is_phantom_technology_select(f)
             ]
-            group_member_keys = {
-                f.key for k in multi_group_keys for f in checkbox_groups[k]
-            }
-            group_member_keys.update(
-                f.key for k in multi_radio_group_keys for f in radio_groups[k]
-            )
-            regular = [f for f in non_combo if f.key not in group_member_keys]
 
             # Let JS widgets (intl-tel-input, react-select) finish initializing.
             page.wait_for_timeout(1_500)
@@ -1828,8 +3061,16 @@ def apply_via_direct(
                 outcome.llm_field_count += page_outcome.llm_field_count
             for f in regular:
                 ans = page_outcome.answers.get(f.key)
+                if not ans and family == "workday" and _is_workday_search_field(f):
+                    res = profile_binding.resolve_field(f, tokens)
+                    if res:
+                        ans = res.answer
                 if ans:
-                    if _fill_field(page, f, ans, family=family):
+                    if family == "workday" and _is_workday_search_field(f):
+                        ok = _fill_workday_search_select(page, f, ans)
+                    else:
+                        ok = _fill_field(page, f, ans, family=family)
+                    if ok:
                         filled_rows.append(
                             _record_row(f.label, ans, ftype=f.type or f.tag,
                                         via=page_outcome.via.get(f.key, ""))
@@ -1860,11 +3101,42 @@ def apply_via_direct(
                     unresolved_labels.append(f"{f.label[:50]} [{status}]")
                 _sleep_fill()
 
+            # Lever re-renders card fields after text fills; re-stamp groups.
+            if family == "lever" and (multi_group_keys or multi_radio_group_keys):
+                refreshed = extractor.extract_fields(page)
+                fresh_non_combo = [
+                    f for f in refreshed.fillable()
+                    if not f.combobox and f.type != "file"
+                ]
+                (
+                    checkbox_groups,
+                    radio_groups,
+                    multi_group_keys,
+                    multi_radio_group_keys,
+                    _refreshed_group_keys,
+                ) = _partition_checkbox_radio_groups(fresh_non_combo)
+
             for gkey in multi_group_keys:
                 members = checkbox_groups[gkey]
-                status, pick, via = _fill_checkbox_group(
-                    page, members, tokens=tokens, job=job, gemini_enabled=gemini_enabled,
-                )
+                question = members[0].section_header if members else ""
+                from applypilot.apply.direct import profile_binding
+
+                if profile_binding.is_technology_multi_checkbox_question(question):
+                    status, pick, via = _fill_technology_checkbox_group(
+                        page,
+                        members,
+                        tokens=tokens,
+                        job=job,
+                        gemini_enabled=gemini_enabled,
+                    )
+                else:
+                    status, pick, via = _fill_checkbox_group(
+                        page,
+                        members,
+                        tokens=tokens,
+                        job=job,
+                        gemini_enabled=gemini_enabled,
+                    )
                 if status == "filled":
                     filled_rows.append(
                         _record_row(
@@ -1898,6 +3170,39 @@ def apply_via_direct(
                     )
                 _sleep_fill()
 
+            if family == "workday":
+                _fill_workday_phone_device_type(page)
+                _fill_workday_compliance_prompts(
+                    page, tokens=tokens, filled_rows=filled_rows,
+                )
+                page.wait_for_timeout(300)
+
+            if family == "workday":
+                _fill_workday_fieldset_radios(
+                    page,
+                    tokens=tokens,
+                    filled_rows=filled_rows,
+                )
+                page.wait_for_timeout(300)
+
+            # Lever re-renders card fields after group fills; identity text can clear.
+            if family == "lever" and (multi_group_keys or multi_radio_group_keys):
+                post_group = extractor.extract_fields(page)
+                post_group_empty = _required_empty_fields(post_group)
+                if _empty_text_fields(post_group_empty):
+                    _refill_empty_text_fields(
+                        page,
+                        post_group,
+                        post_group_empty,
+                        tokens=tokens,
+                        job=job,
+                        gemini_enabled=gemini_enabled,
+                        filled_rows=filled_rows,
+                        outcome=outcome,
+                        family=family,
+                    )
+                    page.wait_for_timeout(300)
+
             # Safety guard (page 1 only): if we filled NO identity field, this is
             # a search box / cookie banner / landing page, NOT an application —
             # never submit it.
@@ -1923,6 +3228,42 @@ def apply_via_direct(
                     cover_upload = cover_pdf or None
                     cover_resolved = True
                 _upload_files(page, form, resume_pdf, cover_upload, family=family)
+            if family in {"lever", "workable"}:
+                post_upload = extractor.extract_fields(page)
+                post_empty = _required_empty_fields(post_upload)
+                if family == "lever" and _empty_radio_group_names(post_empty):
+                    _refill_empty_radio_groups(
+                        page,
+                        post_upload,
+                        post_empty,
+                        tokens=tokens,
+                        job=job,
+                        gemini_enabled=gemini_enabled,
+                        filled_rows=filled_rows,
+                        outcome=outcome,
+                    )
+                if family == "lever":
+                    _refill_empty_technology_checkbox_groups(
+                        page,
+                        post_upload,
+                        tokens=tokens,
+                        job=job,
+                        gemini_enabled=gemini_enabled,
+                        filled_rows=filled_rows,
+                        outcome=outcome,
+                    )
+                if family in {"lever", "workable"} and _empty_text_fields(post_empty):
+                    _refill_empty_text_fields(
+                        page,
+                        post_upload,
+                        post_empty,
+                        tokens=tokens,
+                        job=job,
+                        gemini_enabled=gemini_enabled,
+                        filled_rows=filled_rows,
+                        outcome=outcome,
+                        family=family,
+                    )
             if family == "ashby":
                 for label, value in _fill_ashby_required_visible_controls(page, tokens):
                     filled_rows.append(
@@ -1949,8 +3290,53 @@ def apply_via_direct(
             verify = extractor.extract_fields(page)
             still_empty = _required_empty_fields(verify)
             if still_empty:
+                _refill_empty_radio_groups(
+                    page,
+                    verify,
+                    still_empty,
+                    tokens=tokens,
+                    job=job,
+                    gemini_enabled=gemini_enabled,
+                    filled_rows=filled_rows,
+                    outcome=outcome,
+                )
+                if family == "lever":
+                    _refill_empty_technology_checkbox_groups(
+                        page,
+                        verify,
+                        tokens=tokens,
+                        job=job,
+                        gemini_enabled=gemini_enabled,
+                        filled_rows=filled_rows,
+                        outcome=outcome,
+                    )
+                if family in {"lever", "workable", "workday"}:
+                    _refill_empty_text_fields(
+                        page,
+                        verify,
+                        still_empty,
+                        tokens=tokens,
+                        job=job,
+                        gemini_enabled=gemini_enabled,
+                        filled_rows=filled_rows,
+                        outcome=outcome,
+                        family=family,
+                    )
+                    if family == "workday":
+                        _refill_workday_search_fields(
+                            page,
+                            still_empty,
+                            tokens=tokens,
+                            filled_rows=filled_rows,
+                        )
+                page.wait_for_timeout(400)
+                verify = extractor.extract_fields(page)
+                still_empty = _required_empty_fields(verify)
                 retry_fields = [
-                    f for f in still_empty if f.type != "file" and f.tag != "select"
+                    f for f in still_empty
+                    if f.type != "file"
+                    and f.tag != "select"
+                    and not (f.type == "radio" and f.name_attr)
                 ]
                 if retry_fields:
                     retry = resolver.resolve(
@@ -1995,6 +3381,22 @@ def apply_via_direct(
 
             # Page complete and valid. Multi-step? Click Next and fill the next
             # page; otherwise drop out to the final-submit section below.
+            if family == "workday":
+                from applypilot.apply.direct.adapters import workday as wd_mod
+
+                wd_state = wd_mod.detect_workday_state(page.content())
+                if wd_state in {"review", "submit"}:
+                    logger.info(
+                        "[W%d] Direct workday: on %s — skipping advance, finalizing submit",
+                        worker_id,
+                        wd_state,
+                    )
+                    break
+                _workday_fix_validation_errors(
+                    page,
+                    tokens=tokens,
+                    filled_rows=filled_rows,
+                )
             advance = _find_advance_button(page, family=family)
             if advance and page_num < max_pages - 1:
                 logger.info(
@@ -2012,6 +3414,15 @@ def apply_via_direct(
 
         if outcome is None:
             return done("failed:direct_no_form", escalate=True, reason="no_form")
+
+        if family == "workday":
+            _workday_advance_until_review(
+                page,
+                tokens=tokens,
+                filled_rows=filled_rows,
+                worker_id=worker_id,
+            )
+            _workday_final_refill(page, tokens=tokens, filled_rows=filled_rows)
 
         audit_rows, upload_rows, audit_block = _pre_submit_audit(
             page,
@@ -2080,8 +3491,52 @@ def apply_via_direct(
                         worker_id, len(filled_rows), url[:80])
             return result_dr
 
+        captcha_info = direct_captcha.detect_captcha_blocking(page)
+        captcha_type = (captcha_info.get("type") or "").lower() if captcha_info else ""
+        captcha_blocking = (
+            captcha_info is not None
+            and captcha_type not in direct_captcha._SKIP_TYPES
+        ) or direct_captcha.turnstile_wall_visible(page)
+        if captcha_blocking:
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            page.wait_for_timeout(400)
+            if not direct_captcha.solve_captcha_if_present(page):
+                _persist_form_filled(job.get("url") or url, _form_record())
+                return done(
+                    "failed:direct_captcha",
+                    escalate=True,
+                    reason="captcha_unsolved",
+                    outcome=outcome,
+                    fields_total=len(fields),
+                )
+            page.wait_for_timeout(400)
+
+        if adapter.family == "workday" and _workday_has_validation_errors(page):
+            _workday_advance_until_review(
+                page,
+                tokens=tokens,
+                filled_rows=filled_rows,
+                worker_id=worker_id,
+            )
+
         pre_url = page.url
         if not _click_submit(page, adapter):
+            if adapter.family == "workday":
+                try:
+                    btn_dump = page.evaluate(
+                        """() => [...document.querySelectorAll('button, [role="button"], input[type="submit"]')]
+                          .map(b => ({
+                            text: (b.innerText || b.value || b.getAttribute('aria-label') || '').trim(),
+                            auto: b.getAttribute('data-automation-id'),
+                          })).filter(x => x.text).slice(0, 12)"""
+                    )
+                    logger.info(
+                        "[W%d] Workday submit missed; visible buttons=%s",
+                        worker_id,
+                        btn_dump,
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
             result_dr.result = "failed:direct_no_submit_button"
             result_dr.escalate = True
             result_dr.escalate_reason = "no_submit_button"
@@ -2154,22 +3609,58 @@ def apply_via_direct(
                     logger.debug("stamp_verified failed", exc_info=True)
             logger.info("[W%d] Direct APPLIED %s (shot=%s)", worker_id, url[:70], shot)
         elif after.visible_errors:
-            result_dr.result = "failed:direct_submit_rejected"
-            result_dr.escalate = True
-            result_dr.escalate_reason = "submit_rejected:" + "; ".join(
-                after.visible_errors[:4]
-            )
-            logger.info("[W%d] Direct submit REJECTED %s: %s",
-                        worker_id, url[:70], after.visible_errors[:4])
+            if _is_transient_submit_error(after.visible_errors):
+                result_dr.result = "failed:direct_transient_submit"
+                result_dr.escalate = False
+                result_dr.escalate_reason = "transient:" + "; ".join(
+                    after.visible_errors[:2]
+                )
+                logger.info(
+                    "[W%d] Direct submit transient error (retry later) %s: %s",
+                    worker_id,
+                    url[:70],
+                    after.visible_errors[:2],
+                )
+            else:
+                result_dr.result = "failed:direct_submit_rejected"
+                result_dr.escalate = True
+                result_dr.escalate_reason = "submit_rejected:" + "; ".join(
+                    after.visible_errors[:4]
+                )
+                logger.info("[W%d] Direct submit REJECTED %s: %s",
+                            worker_id, url[:70], after.visible_errors[:4])
         else:
-            # Form still on screen, no confirmation and no error we could read:
-            # treat as NOT submitted so it parks/escalates for a clean retry
-            # rather than being falsely recorded as applied.
-            result_dr.result = "failed:direct_not_submitted"
-            result_dr.escalate = True
-            result_dr.escalate_reason = "no_confirmation"
-            logger.info("[W%d] Direct NOT confirmed (form still present) %s (shot=%s)",
-                        worker_id, url[:70], shot)
+            post_captcha = direct_captcha.detect_captcha_blocking(page, wait_s=1.5)
+            if (
+                direct_captcha.is_blocking_captcha(post_captcha)
+                or direct_captcha.turnstile_wall_visible(page)
+                or "verify you are human" in post_body
+            ):
+                result_dr.result = "failed:direct_captcha"
+                result_dr.escalate = True
+                result_dr.escalate_reason = "captcha_unsolved"
+                logger.info(
+                    "[W%d] Direct NOT confirmed — captcha still present %s (shot=%s)",
+                    worker_id, url[:70], shot,
+                )
+            elif "verify you are human" in post_body or (
+                "cloudflare" in post_body and "turnstile" in post_body
+            ):
+                result_dr.result = "failed:direct_captcha"
+                result_dr.escalate = True
+                result_dr.escalate_reason = "captcha_unsolved"
+                logger.info(
+                    "[W%d] Direct NOT confirmed — Turnstile wall %s (shot=%s)",
+                    worker_id, url[:70], shot,
+                )
+            else:
+                result_dr.result = "failed:direct_not_submitted"
+                result_dr.escalate = True
+                result_dr.escalate_reason = "no_confirmation"
+                logger.info(
+                    "[W%d] Direct NOT confirmed (form still present) %s (shot=%s)",
+                    worker_id, url[:70], shot,
+                )
         result_dr.elapsed_ms = int((time.monotonic() - start) * 1000)
         return result_dr
     except Exception as exc:  # noqa: BLE001

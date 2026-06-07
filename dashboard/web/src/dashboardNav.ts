@@ -136,13 +136,16 @@ export function pageSubtitleWithStats(page: DashboardPage, stats: Stats | undefi
   const p = stats?.pipeline;
   if (page === "jobs") {
     const newPicks = stats?.triage_counts?.new ?? (p?.scored ?? 0) + (p?.unscored ?? 0);
-    return `${newPicks} new picks · plus everything else · filter by status`;
+    const ready = stats?.ready_to_apply ?? p?.pending_apply ?? 0;
+    return `${newPicks} new picks · ${ready} ready to apply · skip or save the rest`;
   }
   if (page === "applications") {
     const applied = p?.applied ?? 0;
-    const help = p?.submitted_unverified ?? 0;
+    const needsHelp =
+      (p?.submitted_unverified ?? 0) +
+      ((stats?.extra?.apply_manual as number | undefined) ?? 0);
     const queued = p?.ready_to_apply ?? 0;
-    return `${applied} applied · ${help} need your help · ${queued} queued`;
+    return `${applied} applied · ${needsHelp} need your help · ${queued} queued`;
   }
   if (page === "outreach") {
     const drafts =

@@ -20,6 +20,7 @@ def apply_db(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(launcher, "_load_blocked", lambda: (set(), []))
     monkeypatch.setattr(launcher, "role_resumes_available", lambda: False)
     monkeypatch.setattr(config, "load_profile", lambda: {})
+    launcher._stop_event.clear()
 
     def fake_ensure_resume_pdf(path: str | Path) -> Path:
         pdf = Path(path)
@@ -581,7 +582,7 @@ def test_try_direct_apply_requires_gmail_receipt_for_applied(
     )
     monkeypatch.setattr(
         "applypilot.apply.gmail_auth.wait_for_application_receipt",
-        lambda _job: SimpleNamespace(
+        lambda _job, **kwargs: SimpleNamespace(
             confirmed=False,
             reason="gmail_receipt_not_found",
             message=None,
@@ -857,3 +858,38 @@ def test_worker_retries_pending_claude_rescue_after_quota_window(apply_db, monke
 
     assert (applied, failed) == (1, 0)
     assert calls == ["run"]
+
+
+def test_target_url_acquire_candidates_strips_apply_suffix():
+    from applypilot.apply import launcher
+
+    base = "https://jobs.lever.co/cscgeneration-2/d0df490d-99cd-4795-98aa-65ec290e95e0"
+    exact, like = launcher._target_url_acquire_candidates(f"{base}/apply")
+    assert base in exact
+    assert f"{base}/apply" in exact
+    assert like == f"{base}%"
+
+
+def test_acquire_job_target_url_matches_apply_form_url(apply_db):
+    from applypilot.apply import launcher
+
+    base = "https://jobs.lever.co/cscgeneration-2/d0df490d-99cd-4795-98aa-65ec290e95e0"
+    _insert_job(apply_db, base, application_url=f"{base}/apply")
+    job = launcher.acquire_job(target_url=f"{base}/apply", worker_id=0)
+    assert job is not None
+    assert job["url"] == base
+
+
+def test_explain_target_url_miss_applied_at_without_status(apply_db):
+    from applypilot.apply import launcher
+
+    url = "https://jobs.micro1.ai/post/abc123"
+    _insert_job(apply_db, url)
+    apply_db.execute(
+        "UPDATE jobs SET applied_at = datetime('now') WHERE url = ?",
+        (url,),
+    )
+    apply_db.commit()
+    reason = launcher.explain_target_url_miss(url, include_untailored=True)
+    assert reason is not None
+    assert "applied_at" in reason

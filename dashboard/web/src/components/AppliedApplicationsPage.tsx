@@ -26,6 +26,7 @@ import {
   type ApplyStatusFilter,
 } from "../utils/applicationAudit";
 import { useDebouncedValue } from "../utils/useDebouncedValue";
+import { companyInitials, companyLabelFromSite } from "../utils/jobFacts";
 import { statusbarClass } from "../utils/statusbar";
 
 const APP_ROW_PX = 56;
@@ -143,8 +144,16 @@ export function AppliedApplicationsPage({
     queryFn: fetchStats,
   });
 
-  const { data, isLoading, error, isFetching } = useQuery({
-    queryKey: ["applications", statusFilter, querySearch, filters.page, filters.limit],
+  const applicationsQueryKey = [
+    "applications",
+    statusFilter,
+    querySearch,
+    filters.page,
+    filters.limit,
+  ] as const;
+
+  const { data, isPending, error, isFetching } = useQuery({
+    queryKey: applicationsQueryKey,
     queryFn: () =>
       fetchApplications({
         limit: filters.limit,
@@ -158,14 +167,15 @@ export function AppliedApplicationsPage({
     refetchInterval: 15_000,
   });
 
-  const pageAligned = isLoading || !isFetching;
-  const applications = pageAligned ? (data?.applications ?? []) : [];
-  const total = pageAligned ? (data?.total ?? 0) : 0;
+  // Keep showing the last loaded page while refetching the same query key.
+  // (Clearing on isFetching was wiping "All attempts" every 15s.)
+  const applications = data?.applications ?? [];
+  const total = data?.total ?? 0;
   const pages = total > 0 ? Math.ceil(total / filters.limit) : 0;
   const currentPage = filters.page;
   const pageStart = total === 0 ? 0 : (currentPage - 1) * filters.limit + 1;
   const pageEnd = total === 0 ? 0 : Math.min(currentPage * filters.limit, total);
-  const listLoading = isLoading || (isFetching && !pageAligned);
+  const listLoading = isPending || (isFetching && applications.length === 0);
 
   const manualRows = useMemo(
     () => (statusFilter === "all" ? applications.filter(needsHumanIntervention) : []),
@@ -179,10 +189,7 @@ export function AppliedApplicationsPage({
     return applications;
   }, [applications, statusFilter]);
 
-  // Client-side sort of the loaded page. (Server paginates by offset; sorting
-  // the current page is the no-API-change increment — full cross-page sort
-  // would need a `sort` query param on /applications.)
-  const sortedListRows = useMemo(() => {
+  const sortedMainRows = useMemo(() => {
     const mul = sort.dir === "asc" ? 1 : -1;
     const rows = [...mainListRows];
     rows.sort((a, b) => {
@@ -211,6 +218,22 @@ export function AppliedApplicationsPage({
     return rows;
   }, [mainListRows, sort]);
 
+  const pinnedNeedsRows = useMemo(() => {
+    if (statusFilter !== "all" || manualRows.length === 0) return [];
+    return [...manualRows].sort((a, b) => {
+      const ta = applicationAttemptAt(a);
+      const tb = applicationAttemptAt(b);
+      return (tb ? Date.parse(tb) : 0) - (ta ? Date.parse(ta) : 0);
+    });
+  }, [manualRows, statusFilter]);
+
+  const displayRows = useMemo(
+    () => (pinnedNeedsRows.length > 0 ? [...pinnedNeedsRows, ...sortedMainRows] : sortedMainRows),
+    [pinnedNeedsRows, sortedMainRows],
+  );
+
+  const showPagination = pages > 1;
+
   const toggleSort = useCallback((key: SortKey) => {
     setSort((prev) =>
       prev.key === key
@@ -236,11 +259,11 @@ export function AppliedApplicationsPage({
     (stats?.extra?.claude_escalated as number | undefined) ?? 0;
 
   useEffect(() => {
-    if (!pageAligned || pages === 0) return;
+    if (isPending || pages === 0) return;
     if (filters.page > pages) {
       patchParams({ page: pages });
     }
-  }, [filters.page, pages, pageAligned, patchParams]);
+  }, [filters.page, pages, isPending, patchParams]);
 
   useEffect(() => {
     if (applications.length === 0) {
@@ -281,12 +304,18 @@ export function AppliedApplicationsPage({
                 : total;
 
   return (
-    <PageCanvas>
+    <PageCanvas wide className="apps-page">
       <div className="apps__hd">
         <div className="apps__hd-copy">
           <div className="apps__hd-kicker">Queue</div>
           <div className="apps__hd-line">
             {readyCount} jobs ready to apply · {needsActionCount} need your help
+            {!isPending && total > 0 ? (
+              <>
+                {" "}
+                · {total} in this view
+              </>
+            ) : null}
           </div>
         </div>
         <div className="apps__hd-actions">
@@ -344,77 +373,53 @@ export function AppliedApplicationsPage({
         </div>
       ) : null}
 
-      <div className="apps__filterbar">
-        {filterChips.map((chip) => {
-          const on = statusFilter === chip.key;
-          return (
-            <button
-              key={chip.key}
-              type="button"
-              className={on ? "chip chip--on" : "chip"}
-              onClick={() => handleStatusChange(chip.key)}
-            >
-              {chip.label}
-              {chip.count != null ? <span className="chip__count">{chip.count}</span> : null}
-            </button>
-          );
-        })}
-        <label className="control">
-          <span className="control__label">Search</span>
-          <input
-            className="control__input"
-            type="search"
-            value={searchInput}
-            onChange={(e) => setSearchInput(e.target.value)}
-            placeholder="Company or role…"
-          />
-        </label>
-        <div className="apps__sort">
-          <span className="apps__sort-label">Sort</span>
-          <select
-            className="apps__sort-select"
-            value={sort.key}
-            onChange={(e) => {
-              const key = e.target.value as SortKey;
-              setSort({ key, dir: SORT_DEFAULT_DIR[key] });
-            }}
-          >
-            {SORT_OPTIONS.map((o) => (
-              <option key={o.key} value={o.key}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-        </div>
-      </div>
-
       <div className="apps">
         <div className="apps__list">
-          {manualRows.length > 0 ? (
-            <div className="errors-band">
-              <div className="errors-band__hd">
-                <span className="errors-band__pulse" aria-hidden />
-                <span className="errors-band__title">Needs you</span>
-                <span className="errors-band__sub">
-                  — jobs the agent couldn&rsquo;t finish on its own
-                </span>
-                <span className="errors-band__count">{manualRows.length}</span>
-              </div>
-              {manualRows.map((app) => (
-                <AppRow
-                  key={app.url}
-                  app={app}
-                  manual
-                  selected={selectedUrl === app.url}
-                  onSelect={() => setSelectedUrl(app.url)}
-                  onApplyListAction={handleApplyListAction}
-                />
-              ))}
-            </div>
-          ) : null}
+          <div className="apps__filterbar">
+            {filterChips.map((chip) => {
+              const on = statusFilter === chip.key;
+              return (
+                <button
+                  key={chip.key}
+                  type="button"
+                  className={on ? "chip chip--on" : "chip"}
+                  onClick={() => handleStatusChange(chip.key)}
+                >
+                  {chip.label}
+                  {chip.count != null ? <span className="chip__count">{chip.count}</span> : null}
+                </button>
+              );
+            })}
+          </div>
 
-          <div className="panel apps__panel">
-            <div className="panel__head panel__head--inset">
+          <div className="apps__controls apps__controls--compact" aria-label="Search and sort applications">
+            <input
+              className="apps__controls-search"
+              type="search"
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              placeholder="Search company or role…"
+              aria-label="Search company or role"
+            />
+            <select
+              className="apps__controls-sort"
+              value={sort.key}
+              aria-label="Sort by"
+              onChange={(e) => {
+                const key = e.target.value as SortKey;
+                setSort({ key, dir: SORT_DEFAULT_DIR[key] });
+              }}
+            >
+              {SORT_OPTIONS.map((o) => (
+                <option key={o.key} value={o.key}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="apps__ledger">
+            <div className="apps__ledger-hd panel__head panel__head--inset">
               <div>
                 <div className="panel__title">
                   {statusFilter === "failed"
@@ -433,123 +438,131 @@ export function AppliedApplicationsPage({
                   {panelCount || "—"}{" "}
                   {statusFilter === "applied"
                     ? "verified submissions · all time"
-                    : "matching · audit ledger"}
+                    : statusFilter === "all" && pinnedNeedsRows.length > 0
+                      ? `${pinnedNeedsRows.length} need you · audit ledger`
+                      : "matching · audit ledger"}
                 </div>
-              </div>
-            </div>
-
-            <div className="jobs__pager apps__pager" aria-label="Applications list pagination">
-              <label className="control jobs__pager-size">
-                <span className="control__label">Per page</span>
-                <select
-                  className="control__input"
-                  value={filters.limit}
-                  onChange={(e) =>
-                    patchParams({ limit: normalizePageSize(Number(e.target.value)), page: 1 })
-                  }
-                >
-                  {PAGE_SIZES.map((n) => (
-                    <option key={n} value={n}>
-                      {n}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <p className="jobs__pager-meta panel__sub">
-                {listLoading ? (
-                  "Loading…"
-                ) : total === 0 ? (
-                  "No rows match these filters."
-                ) : (
-                  <>
-                    Showing <strong>{pageStart}</strong>–<strong>{pageEnd}</strong> of{" "}
-                    <strong>{total}</strong>
-                    {pages > 1 ? (
-                      <>
-                        {" "}
-                        · page <strong>{currentPage}</strong> of <strong>{pages}</strong>
-                      </>
-                    ) : null}
-                  </>
-                )}
-              </p>
-              <div className="jobs__pager-actions">
-                <button
-                  type="button"
-                  className="btn btn--sm"
-                  disabled={currentPage <= 1 || listLoading}
-                  onClick={() => patchParams({ page: currentPage - 1 })}
-                >
-                  Previous
-                </button>
-                <button
-                  type="button"
-                  className="btn btn--sm"
-                  disabled={pages === 0 || currentPage >= pages || listLoading}
-                  onClick={() => patchParams({ page: currentPage + 1 })}
-                >
-                  Next
-                </button>
               </div>
             </div>
 
             {error ? (
-              <p className="panel__sub" style={{ padding: 16 }}>
-                {error instanceof Error ? error.message : "Error"}
-              </p>
-            ) : sortedListRows.length === 0 && !listLoading ? (
-              <p className="panel__sub" style={{ padding: 16 }}>
-                No applications match these filters.
-              </p>
+              <div className="apps__scroll apps__scroll--empty">
+                <p className="panel__sub" style={{ padding: 16 }}>
+                  {error instanceof Error ? error.message : "Error"}
+                </p>
+              </div>
+            ) : displayRows.length === 0 && !listLoading ? (
+              <div className="apps__scroll apps__scroll--empty">
+                <p className="panel__sub" style={{ padding: 16 }}>
+                  No applications match these filters.
+                </p>
+              </div>
             ) : (
-              <>
-                <div className="apps__thead" role="row">
-                  <SortableTh label="Status" sortKey="status" sort={sort} onSort={toggleSort} />
-                  <SortableTh
-                    label="Role / Company"
-                    sortKey="company"
-                    sort={sort}
-                    onSort={toggleSort}
-                  />
-                  <SortableTh
-                    label="Fit"
-                    sortKey="fit"
-                    sort={sort}
-                    onSort={toggleSort}
-                    align="center"
-                  />
-                  <SortableTh label="When" sortKey="recent" sort={sort} onSort={toggleSort} />
-                  <span className="apps__th">Outcome</span>
-                  <SortableTh
-                    label="Tries"
-                    sortKey="attempts"
-                    sort={sort}
-                    onSort={toggleSort}
-                    align="center"
-                  />
-                  <span className="apps__th apps__th--right">Actions</span>
-                </div>
-                <div className="apps__scroll">
-                  <VirtualScroll
-                    scrollRef={scrollRef}
-                    className="panel__body panel__body--tight"
-                    items={sortedListRows}
-                    getItemKey={(app) => app.url}
-                    estimateSize={APP_ROW_PX}
-                    overscan={12}
-                  >
-                    {(app) => (
-                      <AppRow
-                        app={app}
-                        selected={selectedUrl === app.url}
-                        onSelect={() => setSelectedUrl(app.url)}
-                        onApplyListAction={handleApplyListAction}
+              <div className="apps__table">
+                <div className="apps__grid-viewport">
+                  <div className="apps__grid-inner">
+                    <div className="apps__thead" role="row">
+                      <SortableTh label="Status" sortKey="status" sort={sort} onSort={toggleSort} />
+                      <SortableTh
+                        label="Role / Company"
+                        sortKey="company"
+                        sort={sort}
+                        onSort={toggleSort}
                       />
-                    )}
-                  </VirtualScroll>
+                      <SortableTh
+                        label="Fit"
+                        sortKey="fit"
+                        sort={sort}
+                        onSort={toggleSort}
+                        align="center"
+                      />
+                      <SortableTh label="When" sortKey="recent" sort={sort} onSort={toggleSort} />
+                      <span className="apps__th">Outcome</span>
+                      <SortableTh
+                        label="Tries"
+                        sortKey="attempts"
+                        sort={sort}
+                        onSort={toggleSort}
+                        align="center"
+                      />
+                      <span className="apps__th apps__th--right">Actions</span>
+                    </div>
+                    <VirtualScroll
+                      scrollRef={scrollRef}
+                      className="apps__scroll"
+                      items={displayRows}
+                      getItemKey={(app) => app.url}
+                      estimateSize={APP_ROW_PX}
+                      overscan={12}
+                    >
+                      {(app) => (
+                        <AppRow
+                          app={app}
+                          manual={needsHumanIntervention(app)}
+                          selected={selectedUrl === app.url}
+                          onSelect={() => setSelectedUrl(app.url)}
+                          onApplyListAction={handleApplyListAction}
+                        />
+                      )}
+                    </VirtualScroll>
+                  </div>
                 </div>
-              </>
+              </div>
             )}
+
+            {showPagination ? (
+              <div
+                className="jobs__pager apps__pager apps__pager--foot"
+                aria-label="Applications list pagination"
+              >
+                <label className="control jobs__pager-size">
+                  <span className="control__label">Per page</span>
+                  <select
+                    className="control__input"
+                    value={filters.limit}
+                    onChange={(e) =>
+                      patchParams({ limit: normalizePageSize(Number(e.target.value)), page: 1 })
+                    }
+                  >
+                    {PAGE_SIZES.map((n) => (
+                      <option key={n} value={n}>
+                        {n}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <p className="jobs__pager-meta panel__sub">
+                  {listLoading ? (
+                    "Loading…"
+                  ) : (
+                    <>
+                      Showing <strong>{pageStart}</strong>–<strong>{pageEnd}</strong> of{" "}
+                      <strong>{total}</strong>
+                      {" · "}
+                      page <strong>{currentPage}</strong> of <strong>{pages}</strong>
+                    </>
+                  )}
+                </p>
+                <div className="jobs__pager-actions">
+                  <button
+                    type="button"
+                    className="btn btn--sm"
+                    disabled={currentPage <= 1 || listLoading}
+                    onClick={() => patchParams({ page: currentPage - 1 })}
+                  >
+                    Previous
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn--sm"
+                    disabled={currentPage >= pages || listLoading}
+                    onClick={() => patchParams({ page: currentPage + 1 })}
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            ) : null}
           </div>
         </div>
 
@@ -598,16 +611,31 @@ function AppRow({
   const reasonTone = applicationReasonTone(manual ? "manual" : status);
 
   const fit = app.fit_score;
+  const company = companyLabelFromSite(app.site);
+  const initials = companyInitials(company === "—" ? (app.title ?? "?") : company);
 
   return (
     <div
-      className={selected ? "app-row app-row--selected" : "app-row"}
+      className={
+        selected
+          ? manual
+            ? "app-row app-row--selected app-row--needs"
+            : "app-row app-row--selected"
+          : manual
+            ? "app-row app-row--needs"
+            : "app-row"
+      }
       onClick={onSelect}
     >
       <span className={statusbarClass(label)}>{label}</span>
       <button type="button" className="app-row__main app-row__select" onClick={onSelect}>
-        <div className="app-row__title">{app.title ?? "Untitled"}</div>
-        <div className="app-row__company">{app.site ?? "—"}</div>
+        <div className="app-row__title-line">
+          <span className="app-row__logo" aria-hidden>
+            {initials}
+          </span>
+          <span className="app-row__title">{app.title ?? "Untitled"}</span>
+        </div>
+        <div className="app-row__company">{company}</div>
       </button>
       <div className={fit != null && fit >= 8 ? "app-row__fit app-row__fit--hi" : "app-row__fit"}>
         {fit != null ? fit : "—"}

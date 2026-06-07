@@ -13,7 +13,7 @@ from applypilot.apply.direct.adapters.base import Adapter
 ADAPTER = Adapter(
     family="workday",
     apply_button_texts=("apply", "apply now", "apply manually"),
-    submit_button_texts=("submit", "submit application"),
+    submit_button_texts=("submit", "submit application", "submit my application"),
     success_markers=(
         "thank you for applying",
         "application has been submitted",
@@ -123,6 +123,35 @@ def is_login_wall(html_or_text: str) -> bool:
     """True when the page shows Workday sign-in / account creation chrome."""
     text = _normalize(html_or_text)
     return any(marker in text for marker in _LOGIN_WALL_MARKERS)
+
+
+def is_unauthenticated_apply_gate(html_or_text: str, *, page_url: str = "") -> bool:
+    """Workday posting/apply page gated behind sign-in without wizard fields yet.
+
+    Some tenants (e.g. Accenture) show generic ``Sign In`` plus ``Apply manually``
+    on ``/apply`` instead of the explicit ``sign in to apply`` copy we key on elsewhere.
+    """
+    if is_login_wall(html_or_text):
+        return True
+    if detect_workday_state(html_or_text) is not None:
+        return False
+    url = (page_url or "").lower()
+    if "myworkdayjobs.com" not in url:
+        return False
+    if "/apply" not in url and "/job/" not in url:
+        return False
+    text = _normalize(html_or_text)
+    has_signin = "sign in" in text
+    apply_gate = any(
+        marker in text
+        for marker in (
+            "apply manually",
+            "autofill with resume",
+            "use my last application",
+            "start application",
+        )
+    )
+    return has_signin and apply_gate
 
 
 def detect_workday_state(html_or_text: str) -> str | None:

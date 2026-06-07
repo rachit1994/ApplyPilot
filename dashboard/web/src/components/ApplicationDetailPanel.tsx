@@ -20,6 +20,7 @@ import {
   statusLabel,
 } from "../utils/applicationAudit";
 import { statusbarClass } from "../utils/statusbar";
+import { companyInitials, companyLabelFromSite } from "../utils/jobFacts";
 
 type Props = {
   app: Application | null;
@@ -97,7 +98,7 @@ export function ApplicationDetailPanel({ app, onApplyListAction }: Props) {
           </div>
           <p className="app-detail__empty-title">Select an application</p>
           <p className="app-detail__empty-sub">
-            Pick a row to review status, what was filled on the form, and apply logs.
+            Pick a row to review outcome, form values, and what the agent did.
           </p>
         </div>
       </aside>
@@ -126,17 +127,27 @@ export function ApplicationDetailPanel({ app, onApplyListAction }: Props) {
     verificationReasons.length > 0 ||
     (parsed?.visible_errors?.length ?? 0) > 0;
 
+  const company = companyLabelFromSite(app.site);
+  const initials = companyInitials(company === "—" ? (app.title ?? "?") : company);
+
   return (
     <aside className="app-detail" aria-label="Application details">
       <header className="app-detail__hd">
-        <div className="app-detail__statusrow">
-          <span className={statusbarClass(statusLabel(status))}>{statusLabel(status)}</span>
-          {app.verification_confidence ? (
-            <span className="app-detail__pill">Confidence {app.verification_confidence}</span>
-          ) : null}
+        <div className="app-detail__brand">
+          <span className="app-detail__logo" aria-hidden>
+            {initials}
+          </span>
+          <div className="app-detail__brand-copy">
+            <div className="app-detail__statusrow">
+              <span className={statusbarClass(statusLabel(status))}>{statusLabel(status)}</span>
+              {app.verification_confidence ? (
+                <span className="app-detail__pill">Confidence {app.verification_confidence}</span>
+              ) : null}
+            </div>
+            <h2 className="app-detail__title">{app.title ?? "Untitled"}</h2>
+            <p className="app-detail__company">{company}</p>
+          </div>
         </div>
-        <h2 className="app-detail__title">{app.title ?? "Untitled"}</h2>
-        <p className="app-detail__company">{app.site ?? "—"}</p>
         <div className="app-detail__links">
           {app.application_url ? (
             <a href={app.application_url} target="_blank" rel="noreferrer" className="app-detail__link">

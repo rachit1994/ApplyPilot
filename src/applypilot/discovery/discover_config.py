@@ -26,6 +26,7 @@ _DEFAULT_SOURCES = {
     "linkedin_harvest": False,
     "career_targets": True,
     "funded_startups": False,
+    "oracle_hcm": True,
 }
 
 _DEFAULT_COMPANY_FIRST = {

@@ -265,6 +265,24 @@ def test_canonical_apply_url_non_greenhouse_untouched():
     assert driver._canonical_apply_url(u, "ashby") == u
 
 
+@pytest.mark.parametrize("url,expected", [
+    (
+        "https://blackrock.wd1.myworkdayjobs.com/BlackRock_Professional/job/Mumbai-India/Frontend-Engineer_R263770",
+        "https://blackrock.wd1.myworkdayjobs.com/BlackRock_Professional/job/Mumbai-India/Frontend-Engineer_R263770/apply",
+    ),
+    (
+        "https://blackrock.wd1.myworkdayjobs.com/BlackRock_Professional/job/Mumbai-India/Frontend-Engineer_R263770/apply",
+        "https://blackrock.wd1.myworkdayjobs.com/BlackRock_Professional/job/Mumbai-India/Frontend-Engineer_R263770/apply",
+    ),
+    (
+        "https://blackrock.wd1.myworkdayjobs.com/BlackRock_Professional/job/Mumbai-India/Frontend-Engineer_R263770/apply/applyManually",
+        "https://blackrock.wd1.myworkdayjobs.com/BlackRock_Professional/job/Mumbai-India/Frontend-Engineer_R263770/apply/applyManually",
+    ),
+])
+def test_canonical_apply_url_workday(url, expected):
+    assert driver._canonical_apply_url(url, "workday") == expected
+
+
 class _FakePage:
     """Minimal stand-in for a Playwright page for content-sniff tests."""
 
@@ -306,6 +324,12 @@ def test_content_sniff_unknown_page_stays_unknown():
 def test_driver_matches_any():
     assert driver._matches_any("thank you for applying", ("thank you for",))
     assert not driver._matches_any("loading...", ("thank you for",))
+    from applypilot.apply.direct.generic import ADAPTER
+
+    assert driver._matches_any(
+        "you have already applied for this job",
+        ADAPTER.success_markers,
+    )
 
 
 def test_record_row_shape():
@@ -328,6 +352,52 @@ def test_required_empty_fields_ignores_satisfied_checkbox_group():
         ]
     )
     assert driver._required_empty_fields(form) == []
+
+
+def test_required_empty_fields_ignores_workday_progress_stepper():
+    from applypilot.apply.direct.profile_binding import Field
+
+    form = driver.extractor.FormState(
+        fields=[
+            Field(
+                label="completed step 1 of 4",
+                type="",
+                tag="ul",
+                name_attr="",
+                section_header="",
+                required=True,
+                key="stepper",
+            ),
+            Field(
+                label="Email",
+                type="email",
+                tag="input",
+                name_attr="email",
+                section_header="Contact",
+                required=True,
+                key="email",
+            ),
+        ]
+    )
+    assert driver._required_empty_fields(form) == [form.fields[1]]
+
+
+def test_partition_checkbox_radio_groups():
+    from applypilot.apply.direct.profile_binding import Field
+
+    non_combo = [
+        Field(label="Python", type="checkbox", section_header="Tech stack", key="t1"),
+        Field(label="Java", type="checkbox", section_header="Tech stack", key="t2"),
+        Field(label="Yes", type="radio", name_attr="auth", key="r1"),
+        Field(label="No", type="radio", name_attr="auth", key="r2"),
+    ]
+    cbg, rg, multi_cb, multi_radio, member_keys = driver._partition_checkbox_radio_groups(
+        non_combo
+    )
+    assert len(cbg["section:Tech stack"]) == 2
+    assert multi_cb == ["section:Tech stack"]
+    assert "auth" not in multi_radio
+    assert member_keys == {"t1", "t2"}
 
 
 def test_file_hint_classifiers():
@@ -498,3 +568,211 @@ def test_lever_extractor_card_text_uses_application_label_not_ancestor():
     text_fields = [f for f in state.fields if f.tag == "input" and f.type == "text"]
     assert len(text_fields) == 1
     assert "salary" in text_fields[0].label.lower()
+
+
+def test_lever_extractor_select_uses_application_label_not_distant_aria():
+    pytest.importorskip("playwright")
+    from playwright.sync_api import sync_playwright
+
+    from applypilot.apply.direct import extractor
+
+    html = """
+    <html><body>
+      <div class="application-label full-width multiple-choice">
+        <div class="text">Kindly select all the technologies you are hands on with? ✱</div>
+      </div>
+      <div class="application-field full-width required-field">
+        <label><input type="checkbox" name="cards[t][field0]" value="React"><span>React</span></label>
+      </div>
+      <div class="application-label full-width">
+        <div class="text">This is a Remote role via Deel ✱</div>
+      </div>
+      <div class="application-field full-width required-field">
+        <select required name="cards[t][field7]" aria-labelledby="wrong-tech-label">
+          <option>Select...</option><option>Yes</option><option>No</option>
+        </select>
+      </div>
+      <div id="wrong-tech-label" hidden>Kindly select all the technologies you are hands on with?</div>
+    </body></html>
+    """
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(html)
+        state = extractor.extract_fields(page)
+        browser.close()
+    selects = [f for f in state.fields if f.tag == "select"]
+    assert len(selects) == 1
+    assert "remote role" in selects[0].label.lower()
+    assert "deel" in selects[0].label.lower()
+    assert "technolog" not in selects[0].label.lower()
+
+
+def test_click_radio_group_option_scoped_by_name_attr():
+    pytest.importorskip("playwright")
+    from playwright.sync_api import sync_playwright
+
+    from applypilot.apply.direct import extractor, driver
+
+    html = """
+    <html><body>
+      <div class="application-label"><div class="text">Eligible for US employment?</div></div>
+      <div class="application-field">
+        <label><input type="radio" name="cards[a][field0]" value="Yes"><span>Yes</span></label>
+        <label><input type="radio" name="cards[a][field0]" value="No"><span>No</span></label>
+      </div>
+      <div class="application-label"><div class="text">Need sponsorship?</div></div>
+      <div class="application-field">
+        <label><input type="radio" name="cards[a][field1]" value="Yes"><span>Yes</span></label>
+        <label><input type="radio" name="cards[a][field1]" value="No"><span>No</span></label>
+      </div>
+    </body></html>
+    """
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(html)
+        state = extractor.extract_fields(page)
+        groups = driver._radio_groups_from_form(state)
+        members = groups["cards[a][field1]"]
+        assert driver._click_radio_group_option(page, members, "No")
+        assert driver._radio_group_is_checked(page, "cards[a][field1]")
+        assert not driver._radio_group_is_checked(page, "cards[a][field0]")
+        browser.close()
+
+
+def test_fill_text_field_stable_by_name_and_label():
+    pytest.importorskip("playwright")
+    from playwright.sync_api import sync_playwright
+
+    from applypilot.apply.direct import driver, extractor
+
+    html = """
+    <html><body>
+      <label for="fname">* First name</label>
+      <input id="fname" name="first_name" type="text" required>
+      <label for="notice">* Notice Period</label>
+      <input id="notice" name="notice_period" type="text" required>
+    </body></html>
+    """
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(html)
+        state = extractor.extract_fields(page)
+        first = next(f for f in state.fields if "first name" in f.label.lower())
+        notice = next(f for f in state.fields if "notice" in f.label.lower())
+        assert driver._fill_text_field_stable(page, first, "Rachit")
+        assert driver._fill_text_field_stable(page, notice, "Immediately")
+        assert page.input_value("#fname") == "Rachit"
+        assert page.input_value("#notice") == "Immediately"
+        browser.close()
+
+
+def test_extractor_skips_workable_ca_companion_proxy():
+    pytest.importorskip("playwright")
+    from playwright.sync_api import sync_playwright
+
+    from applypilot.apply.direct import extractor
+
+    html = """
+    <html><body>
+      <label for="firstname">* First name</label>
+      <input id="firstname" name="firstname" type="text" required>
+      <input name="CA_32652" type="text" required aria-label="* First name">
+      <input name="input_CA_32652_input" type="text">
+      <label for="notice">* Notice Period</label>
+      <input id="notice" name="CA_25140" type="text" required>
+    </body></html>
+    """
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(html)
+        state = extractor.extract_fields(page)
+        names = {f.name_attr for f in state.fields}
+        browser.close()
+    assert "firstname" in names
+    assert "CA_25140" in names
+    assert "CA_32652" not in names
+    assert "input_CA_32652_input" not in names
+
+
+def test_extractor_ignores_hidden_error_templates():
+    """Lever keeps upload error copy in hidden .error-message nodes — not visible errors."""
+    pytest.importorskip("playwright")
+    from playwright.sync_api import sync_playwright
+
+    from applypilot.apply.direct import extractor
+
+    html = """
+    <html><body>
+      <div class="error-message" style="display:none">
+        File exceeds the maximum upload size of 100MB. Please try a smaller size.
+      </div>
+      <div class="resume-upload-failure" hidden>Couldn't auto-read resume.</div>
+      <label for="email">Email</label>
+      <input id="email" name="email" type="email" required>
+      <div class="field-error" role="alert">Email is required</div>
+    </body></html>
+    """
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(html)
+        state = extractor.extract_fields(page)
+        browser.close()
+    assert state.visible_errors == ["Email is required"]
+
+
+def test_is_transient_submit_error():
+    from applypilot.apply.direct.driver import _is_transient_submit_error
+
+    assert _is_transient_submit_error(
+        ["Something went wrong. We are working on this, please try again later."]
+    )
+    assert not _is_transient_submit_error(["Phone number is required"])
+
+
+def test_looks_like_non_application_form():
+    from applypilot.apply.direct import extractor, unblock
+
+    fields = [
+        extractor.Field(label="Email", type="text", tag="input"),
+        extractor.Field(label="Password", type="password", tag="input"),
+        extractor.Field(label="Share your feedback", type="textarea", tag="textarea"),
+    ]
+    assert unblock.looks_like_non_application_form(fields)
+    assert not unblock.looks_like_non_application_form([
+        extractor.Field(label="First name", type="text", tag="input"),
+        extractor.Field(label="Last name", type="text", tag="input"),
+        extractor.Field(label="Email", type="email", tag="input"),
+        extractor.Field(label="Resume", type="file", tag="input"),
+    ])
+
+
+def test_review_only_multistep_page_skips_empty_confirmation():
+    from applypilot.apply.direct import extractor
+
+    assert driver._is_review_only_multistep_page([]) is True
+    assert driver._is_review_only_multistep_page([
+        extractor.Field(label="Submit application", type="submit", tag="button"),
+    ]) is True
+
+
+def test_review_only_multistep_page_keeps_optional_screening():
+    from applypilot.apply.direct import extractor
+
+    micro1 = [
+        extractor.Field(
+            label="How many years of experience do you have working with React?",
+            type="number",
+            tag="input",
+        ),
+        extractor.Field(
+            label="What is your expected hourly rate in USD?",
+            type="number",
+            tag="input",
+        ),
+    ]
+    assert driver._is_review_only_multistep_page(micro1) is False

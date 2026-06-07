@@ -25,6 +25,19 @@ CAPTCHA_HOST_MARKERS: tuple[str, ...] = (
     "smartrecruiters",
 )
 
+# ATS/career hosts that rarely (or never) send Gmail application receipts.
+# Direct Apply on-page success is treated as ``applied`` when confirmation is required.
+GMAIL_OPTIONAL_HOST_MARKERS: tuple[str, ...] = (
+    "kula.ai",
+    "micro1.ai",
+)
+
+# Enterprise HCM / SSO career portals — generic direct apply cannot complete these
+# (email OTP, captcha walls, account gates). Park manual instead of retrying forever.
+DIRECT_MANUAL_HOST_MARKERS: tuple[str, ...] = (
+    "oraclecloud.com",
+)
+
 
 def _env_bool(name: str, default: bool) -> bool:
     raw = os.environ.get(name)
@@ -66,7 +79,7 @@ def email_verification_enabled() -> bool:
 
 
 def captcha_solving_enabled() -> bool:
-    """Solve visible reCAPTCHA v2 via CapSolver when CAPSOLVER_API_KEY is set."""
+    """Whether CapSolver API calls are allowed (requires CAPSOLVER_API_KEY)."""
     if not _env_bool("APPLYPILOT_DIRECT_CAPTCHA", True):
         return False
     return bool(os.environ.get("CAPSOLVER_API_KEY", "").strip())
@@ -92,6 +105,14 @@ def direct_job_timeout() -> float:
         return float(_env_str("APPLYPILOT_DIRECT_JOB_TIMEOUT", "100"))
     except ValueError:
         return 100.0
+
+
+def login_wait_seconds() -> float:
+    """How long an apply worker waits on a login gate before moving on (0 = skip wait)."""
+    try:
+        return max(0.0, float(_env_str("APPLYPILOT_LOGIN_WAIT_SECONDS", "1800")))
+    except ValueError:
+        return 1800.0
 
 
 def max_per_ats_family_per_day() -> int:
@@ -135,6 +156,22 @@ def apply_retry_cooldown_hours() -> float:
         )
     except ValueError:
         return float(config.DEFAULTS.get("apply_retry_cooldown_hours", 18))
+
+
+def apply_visit_repeat_minutes() -> float:
+    """Minutes before the same canonical apply URL may be opened again after a visit."""
+    try:
+        return max(
+            1.0,
+            float(
+                _env_str(
+                    "APPLYPILOT_APPLY_VISIT_REPEAT_MINUTES",
+                    str(config.DEFAULTS.get("apply_visit_repeat_minutes", 120)),
+                )
+            ),
+        )
+    except ValueError:
+        return float(config.DEFAULTS.get("apply_visit_repeat_minutes", 120))
 
 
 def apply_fallback_model() -> str:
@@ -202,6 +239,32 @@ def require_gmail_confirmation() -> bool:
     )
 
 
+def trust_direct_page_confirmation() -> bool:
+    """When Direct Apply returns ``applied`` (on-page success markers), skip Gmail polling."""
+    return _env_bool("APPLYPILOT_APPLY_TRUST_DIRECT_CONFIRMATION", False)
+
+
+def gmail_receipt_wait_seconds() -> int:
+    """How long to poll Gmail after a browser submit before ``submitted_unverified``."""
+    try:
+        return max(0, int(_env_str("APPLYPILOT_GMAIL_RECEIPT_TIMEOUT", "90")))
+    except ValueError:
+        return 90
+
+
+def _job_url_blob(job: dict) -> str:
+    return " ".join(
+        str(job.get(key) or "")
+        for key in ("url", "application_url", "site")
+    ).lower()
+
+
+def job_requires_manual_host(job: dict) -> bool:
+    """Hosts that need human login/OTP — skip in deterministic overnight apply."""
+    blob = _job_url_blob(job)
+    return any(marker in blob for marker in DIRECT_MANUAL_HOST_MARKERS)
+
+
 def job_likely_needs_captcha(job: dict) -> bool:
     if not prompt_slim_enabled():
         return True
@@ -212,15 +275,38 @@ def job_likely_needs_captcha(job: dict) -> bool:
     return any(marker in blob for marker in CAPTCHA_HOST_MARKERS)
 
 
+def _job_url_blob(job: dict) -> str:
+    return " ".join(
+        str(job.get(key) or "")
+        for key in ("application_url", "url", "site")
+    ).lower()
+
+
+def job_on_gmail_optional_host(job: dict) -> bool:
+    """True when the apply URL host is known not to send Gmail receipts."""
+    blob = _job_url_blob(job)
+    return any(marker in blob for marker in GMAIL_OPTIONAL_HOST_MARKERS)
+
+
+def job_requires_gmail_receipt(job: dict) -> bool:
+    """Whether launcher should poll Gmail after Direct returns ``applied``."""
+    if not require_gmail_confirmation():
+        return False
+    if trust_direct_page_confirmation():
+        return False
+    if job_on_gmail_optional_host(job):
+        return False
+    return True
+
+
 def job_likely_needs_gmail(job: dict) -> bool:
     if gmail_mcp_enabled():
         return True
     if not prompt_slim_enabled():
         return True
-    blob = " ".join(
-        str(job.get(key) or "")
-        for key in ("application_url", "url", "site")
-    ).lower()
+    blob = _job_url_blob(job)
+    if job_on_gmail_optional_host(job):
+        return False
     if any(
         marker in blob
         for marker in ("greenhouse", "lever.co", "ashby", "workday", "myworkdayjobs")
@@ -460,6 +546,8 @@ def apply_telemetry_flags() -> dict[str, bool | str]:
         "session_reuse": session_reuse_enabled(),
         "gmail_mcp": gmail_mcp_enabled(),
         "require_gmail_confirmation": require_gmail_confirmation(),
+        "trust_direct_page_confirmation": trust_direct_page_confirmation(),
+        "gmail_receipt_wait_seconds": gmail_receipt_wait_seconds(),
         "apply_model_default": apply_model_default(),
         "apply_fallback_model": apply_fallback_model(),
         "deterministic_only": deterministic_only_enabled(),

@@ -1,0 +1,11 @@
+# Oracle HCM Candidate Experience portals (public REST API — no browser scrape).
+portals:
+  jpmc_technology:
+    name: "JP Morgan Chase"
+    host: jpmc.fa.oraclecloud.com
+    site_number: CX_1001
+    locale: en
+    # Technology category, last 30 days (matches user careers filter URL).
+    selected_categories_facet: "300000086152753"
+    selected_posting_dates_facet: "30"
+    page_size: 100

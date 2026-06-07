@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from applypilot.apply.direct import extractor
 from applypilot.apply.direct.qa_bank import question_key
@@ -381,6 +382,10 @@ def fill_field_with_strategy(page, field, answer: str, *, family: str) -> bool:
         return _fill_click_label(page, field, answer, family=family)
     if field.type == "tel":
         return _fill_press_sequentially(page, field, answer)
+    if field.type == "number":
+        digits = re.sub(r"[^0-9.]+", "", answer)
+        if digits:
+            answer = digits
     return _fill_value(page, field, answer)
 
 

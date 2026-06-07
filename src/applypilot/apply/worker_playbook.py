@@ -19,7 +19,9 @@ def _non_decline_veteran_status(value: str | None) -> str:
     text = str(value or "").strip()
     norm = text.lower()
     if not text or "decline" in norm or "prefer not" in norm or "wish" in norm:
-        return "I am not a protected veteran"
+        return "Decline to self-identify"
+    if "protected veteran" in norm:
+        return "I am not a veteran"
     return text
 
 
@@ -74,6 +76,21 @@ def _job_company(job: dict) -> str:
     return site
 
 
+def _sponsorship_details_text(work_auth: dict) -> str:
+    """Factual visa/sponsorship follow-up for 'Please provide details' prompts."""
+    req = str(work_auth.get("require_sponsorship") or "").strip().lower()
+    if req in {"no", "false", "n"}:
+        return "Not applicable — I do not require visa or work permit sponsorship."
+    permit = str(work_auth.get("work_permit_type") or "").strip()
+    base = (
+        "I will require employer sponsorship for work authorization "
+        "to commence employment."
+    )
+    if permit:
+        return f"{base} Current permit/status: {permit}."
+    return base
+
+
 def build_playbook_tokens(
     profile: dict,
     job: dict,
@@ -111,6 +128,9 @@ def build_playbook_tokens(
     # international phone widgets (intl-tel-input on Greenhouse, etc.) detect the
     # right country instead of treating it as an over-long US number.
     phone_e164 = ("+" + phone_digits) if raw_phone.startswith("+") else phone_digits
+    phone_national = phone_digits
+    if raw_phone.startswith("+") and phone_digits.startswith("91") and len(phone_digits) >= 12:
+        phone_national = phone_digits[2:]
 
     return {
         "full_name": full_name,
@@ -119,6 +139,7 @@ def build_playbook_tokens(
         "phone": str(personal.get("phone") or "").strip(),
         "phone_digits": phone_digits,
         "phone_e164": phone_e164,
+        "phone_national": phone_national,
         "address": str(personal.get("address") or "").strip(),
         "city": str(personal.get("city") or "").strip(),
         "province_state": str(personal.get("province_state") or "").strip(),
@@ -132,6 +153,7 @@ def build_playbook_tokens(
         "work_auth": str(work_auth.get("legally_authorized_to_work") or "").strip(),
         "require_sponsorship": str(work_auth.get("require_sponsorship") or "").strip(),
         "work_permit_type": str(work_auth.get("work_permit_type") or "").strip(),
+        "sponsorship_details": _sponsorship_details_text(work_auth),
         "salary_number": str(comp.get("salary_expectation") or "").strip(),
         "salary_currency": str(comp.get("salary_currency") or "USD").strip(),
         "years_experience": str(exp.get("years_of_experience_total") or "").strip(),
@@ -141,6 +163,8 @@ def build_playbook_tokens(
         "job_title": str(job.get("title") or "").strip(),
         "company": _job_company(job),
         "earliest_start_date": str(avail.get("earliest_start_date") or "Immediately").strip(),
+        "available_for_full_time": str(avail.get("available_for_full_time") or "Yes").strip(),
+        "hours_per_week": str(avail.get("hours_per_week") or "").strip(),
         # Concrete date (MM/DD/YYYY) for date-picker "when can you start" fields,
         # which reject free text like "Immediately". Two weeks out = realistic notice.
         "start_date": (date.today() + timedelta(days=14)).strftime("%m/%d/%Y"),

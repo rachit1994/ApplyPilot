@@ -145,6 +145,34 @@ def has_identity_field(fields) -> bool:
     return False
 
 
+_NON_APPLICATION_LABEL_HINTS = (
+    "share your feedback",
+    "employee referral",
+    "refer a friend",
+    "sign in to continue",
+    "log in to",
+    "login to",
+)
+
+
+def looks_like_non_application_form(fields) -> bool:
+    """Detect login/feedback shells that expose email but are not job applications."""
+    if len(fields) >= 8:
+        return False
+    labels = " ".join((f.label or "").lower() for f in fields)
+    types = {(f.type or f.tag or "").lower() for f in fields}
+    has_password = "password" in types
+    has_name = any(
+        hint in labels
+        for hint in ("first name", "last name", "full name", "given name", "family name")
+    )
+    if has_password and not has_name:
+        return True
+    if any(hint in labels for hint in _NON_APPLICATION_LABEL_HINTS):
+        return True
+    return False
+
+
 def _snapshot(page) -> dict:
     form = extractor.extract_fields(page)
     try:

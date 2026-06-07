@@ -90,6 +90,39 @@ def _start_date(tokens: dict) -> str:
     return tokens.get("start_date", "")
 
 
+def _notice_period(_label: str, tokens: dict) -> str:
+    """Workable notice-period widgets accept day counts, not free text."""
+    raw = str(tokens.get("earliest_start_date") or "Immediately").strip().lower()
+    if raw in {"immediately", "immediate", "now", "asap", "0 days", "0 day"}:
+        return "0"
+    match = re.search(r"(\d+)", raw)
+    if match:
+        return match.group(1)
+    if "week" in raw:
+        return "15"
+    if "month" in raw:
+        return "30"
+    return "15"
+
+
+def _years_numeric(tokens: dict) -> str:
+    """Strip non-digits from years_experience for <input type=number> widgets."""
+    raw = str(tokens.get("years_experience") or "").strip()
+    match = re.search(r"(\d+)", raw)
+    return match.group(1) if match else raw
+
+
+def _hours_per_week(_label: str, tokens: dict) -> str:
+    """Micro1/contractor forms ask weekly availability as a number."""
+    explicit = str(tokens.get("hours_per_week") or "").strip()
+    match = re.search(r"(\d+)", explicit)
+    if match:
+        return match.group(1)
+    full_time = str(tokens.get("available_for_full_time") or "Yes").strip().lower()
+    if full_time in {"yes", "true", "1", "full-time", "full time"}:
+        return "40"
+    return "20"
+
 def _location(tokens: dict) -> str:
     parts = [
         tokens.get("city", ""),
@@ -129,7 +162,31 @@ def _salary_for_label(label: str, tokens: dict) -> str:
         value = annual / 83.0
     if any(marker in label for marker in ("monthly", "per month", "/ month")):
         value /= 12.0
+    if any(
+        marker in label
+        for marker in ("hourly", "per hour", "/ hour", "hr rate", "rate in usd")
+    ):
+        value /= 2080.0
     return str(int(round(value / 100.0) * 100 if value >= 1000 else round(value)))
+
+
+_COUNTRY_PHONE_CODE_MARKERS = (
+    "telephone country code",
+    "phone country code",
+    "country phone code",
+    "country calling code",
+    "calling code",
+)
+
+
+def _is_country_phone_code_label(label: str) -> bool:
+    return any(m in label for m in _COUNTRY_PHONE_CODE_MARKERS)
+
+
+def _phone_local_answer(label: str, tokens: dict) -> str:
+    if _is_country_phone_code_label(label) or "extension" in label:
+        return ""
+    return str(tokens.get("phone_national") or tokens.get("phone_digits") or "").strip()
 
 
 # Each rule: (list of label substrings, token_key OR callable(tokens)->str)
@@ -143,9 +200,11 @@ FIELD_MAP: tuple[tuple[tuple[str, ...], object], ...] = (
     # Workable (and similar) split phone into country-code combobox + local number.
     # Must precede the generic phone rule — "telephone" alone would bind phone_e164.
     (
-        ("telephone country code", "phone country code", "country calling code", "calling code"),
+        ("telephone country code", "phone country code", "country phone code", "country calling code", "calling code"),
         "country",
     ),
+    (("phone number", "mobile number"), "phone_national"),
+    (("phone device type", "device type"), lambda _l, _t: "Mobile"),
     (("phone", "mobile", "telephone"), "phone_e164"),
     (("location",), _location),
     (("address", "street"), "address"),
@@ -158,9 +217,25 @@ FIELD_MAP: tuple[tuple[tuple[str, ...], object], ...] = (
     (("portfolio", "website", "personal site"), "portfolio_url"),
     (("current company", "current employer"), "current_company"),
     (("current title", "current job title", "most recent title"), "current_job_title"),
-    (("years of experience", "years experience"), "years_experience"),
+    (
+        (
+            "years of experience",
+            "years experience",
+            "overall engineering experience",
+            "engineering experience",
+        ),
+        _years_numeric,
+    ),
+    (
+        ("how soon can you start", "start the work"),
+        _notice_period,
+    ),
+    (("hours per week", "hours/week", "hours a week", "weekly hours"), _hours_per_week),
     (("education", "degree", "highest level"), "education_level"),
-    (("salary", "compensation", "expected pay", "desired salary"), _salary_for_label),
+    (
+        ("salary", "compensation", "expected pay", "desired salary", "ctc", "hourly rate"),
+        _salary_for_label,
+    ),
     # Date-picker phrasings need a real date, not "Immediately" — checked before
     # the generic start/availability rule below.
     (
@@ -174,7 +249,8 @@ FIELD_MAP: tuple[tuple[tuple[str, ...], object], ...] = (
         ),
         _start_date,
     ),
-    (("start date", "available", "notice period"), "earliest_start_date"),
+    (("start date", "available"), "earliest_start_date"),
+    (("notice period", "notice priod"), _notice_period),
 )
 
 # HTML autocomplete / name attribute -> token key. Checked BEFORE label rules
@@ -199,7 +275,7 @@ ATTR_MAP: tuple[tuple[tuple[str, ...], str], ...] = (
 QUESTION_MAP: tuple[tuple[tuple[str, ...], str, bool], ...] = (
     (("only for us based positions", "roles posted in the us only"), "Not applicable", False),
     (("does this range meet your compensation", "meet your compensation requirements"), "Yes", False),
-    (("authorized to work", "legally authorized", "eligible to work"), "Yes", False),
+    (("authorized to work", "legally authorized", "eligible to work", "legal authorization to work"), "Yes", False),
     (
         (
             "minimum education",
@@ -219,18 +295,33 @@ QUESTION_MAP: tuple[tuple[tuple[str, ...], str, bool], ...] = (
             "sponsor an immigration",
             "sponsor immigration",
             "immigration case",
+            "obtain, renew, extend or transfer a visa",
+            "work permit in order to commence",
+            "need support in obtaining a work visa",
         ),
         "require_sponsorship",
         True,
+    ),
+    (
+        (
+            "personal relationship",
+            "relationship with a current",
+            "contingent worker",
+            "family relationship includes",
+        ),
+        "No",
+        False,
     ),
     (("18 years", "over 18", "age 18", "at least 18"), "Yes", False),
     (("background check",), "Yes", False),
     (("criminal", "felony", "convicted"), "No", False),
     (("previously worked", "worked here before", "former employee"), "No", False),
     (("interviewed", "interview before", "previously interviewed", "interview with"), "No", False),
-    (("how did you hear", "referral source", "source"), "LinkedIn", False),
+    (("how did you hear", "referral source", "hear about us", "hear about this"), "LinkedIn", False),
     (("ai policy", "acknowledge", "i have read", "i agree", "i confirm", "candidate privacy", "terms"), "Yes", False),
     (("by checking this box", "i consent", "consent to", "i authorize", "i certify"), "Yes", False),
+    (("based in india", "currently based in india"), "Yes", False),
+    (("remote role", "auto renewing", "deel", "direct contract"), "Yes", False),
     (("willing to relocate", "relocation", "relocate"), "Yes", False),
     (
         (
@@ -258,6 +349,28 @@ QUESTION_MAP: tuple[tuple[tuple[str, ...], str, bool], ...] = (
     (("hispanic", "latino"), "race_ethnicity", True),
     (("veteran",), "veteran_status", True),
     (("disability",), "disability_status", True),
+    (("citizen of another country", "permanent residency status"), "No", False),
+    (("additional nationalities", "confirm them"), "Not applicable", False),
+    (
+        (
+            "direct reports",
+            "team members you",
+            "team size",
+            "people you manage",
+        ),
+        "Not in my current role; prior experience leading squads of 4–6 engineers.",
+        False,
+    ),
+    (
+        (
+            "hiring, performance reviews",
+            "performance reviews, or mentoring",
+            "mentoring within your team",
+            "involved in hiring",
+        ),
+        "Yes — hiring, performance reviews, and mentoring.",
+        False,
+    ),
 )
 
 # Free-text triggers (the only place a sentence is written).
@@ -373,6 +486,100 @@ def _pick_export_control_option(
     return None
 
 
+_TECHNOLOGY_QUESTION_MARKERS = (
+    "select all the technologies",
+    "technologies you are",
+    "technology you are",
+    "tech stack",
+    "select all skills",
+    "hands on experience with",
+    "hands-on experience with",
+    "front-end framework",
+    "frontend framework",
+    "front end framework",
+    "frameworks have you worked",
+    "which technologies",
+    "programming languages",
+    "languages have you worked",
+)
+
+_TECHNOLOGY_KEYWORDS = (
+    "python",
+    "java",
+    "javascript",
+    "typescript",
+    "react",
+    "vue",
+    "angular",
+    "node",
+    "aws",
+    "gcp",
+    "azure",
+    "kubernetes",
+    "docker",
+    "sql",
+    "postgres",
+    "mongodb",
+    "redis",
+    "go",
+    "golang",
+    "rust",
+    "scala",
+    "kafka",
+    "spark",
+    "terraform",
+    "linux",
+    "git",
+    "api",
+    "microservice",
+    "devops",
+    "cloud",
+    "backend",
+    "frontend",
+    "full stack",
+    "full-stack",
+    ".net",
+    "dotnet",
+    "c++",
+    "spring",
+    "django",
+    "flask",
+    "fastapi",
+    "graphql",
+    "rest",
+)
+
+
+def is_technology_multi_checkbox_question(question: str | None) -> bool:
+    """True for Lever-style 'select all technologies' checkbox groups."""
+    q = _norm(question)
+    if not q:
+        return False
+    return any(marker in q for marker in _TECHNOLOGY_QUESTION_MARKERS)
+
+
+def technology_checkbox_picks(option_labels: tuple[str, ...]) -> tuple[str, ...]:
+    """Labels to check for a required multi-select technology group."""
+    if not option_labels:
+        return ()
+    skip = {"none", "other", "n/a", "not applicable"}
+    picks: list[str] = []
+    for opt in option_labels:
+        lo = _norm(opt)
+        if not lo or lo in skip:
+            continue
+        if any(kw in lo for kw in _TECHNOLOGY_KEYWORDS):
+            picks.append(opt)
+    if picks:
+        return tuple(picks)
+    broad = tuple(
+        opt
+        for opt in option_labels
+        if _norm(opt) not in skip
+    )
+    return broad[: min(8, len(broad))]
+
+
 def choose_checkbox_group_option(
     question: str | None, option_labels: tuple[str, ...]
 ) -> str | None:
@@ -407,6 +614,8 @@ def _question_context(field: Field) -> str:
 
 
 def _match_field_map(label: str, tokens: dict) -> tuple[str, str] | None:
+    if "extension" in label:
+        return None
     for substrings, target in FIELD_MAP:
         if any(sub in label for sub in substrings):
             if callable(target):
@@ -444,7 +653,13 @@ def _match_attr_map(field: Field, tokens: dict) -> tuple[str, str] | None:
     # type=email/tel are strong signals too.
     if field.type == "email" and tokens.get("email"):
         return tokens["email"], "attr"
+    label = _norm(field.label)
+    if _is_country_phone_code_label(label) or "phone extension" in label:
+        return None
     if field.type == "tel" and tokens.get("phone_e164"):
+        if "phone number" in label or "mobile" in label:
+            local = str(tokens.get("phone_national") or tokens.get("phone_digits") or "").strip()
+            return (local, "attr") if local else None
         return tokens["phone_e164"], "attr"
     return None
 
@@ -506,6 +721,24 @@ def is_yes_no_radiogroup(field: Field) -> bool:
     return opts <= _YES_NO_OPTIONS
 
 
+def is_yes_no_select_options(options: tuple[str, ...]) -> bool:
+    """True when a <select> only offers screening-style Yes/No choices."""
+    if not options:
+        return False
+    normalized = {_norm_option(o) for o in options if _norm_option(o)}
+    normalized = {o for o in normalized if o not in {"select", "select..."}}
+    return bool(normalized) and normalized <= _YES_NO_OPTIONS
+
+
+def is_phantom_technology_select(field: Field) -> bool:
+    """Lever mis-labels some Yes/No card selects with a technology question."""
+    if field.tag != "select" and field.type not in {"select-one", "select"}:
+        return False
+    if not is_technology_multi_checkbox_question(field.label):
+        return False
+    return is_yes_no_select_options(field.options)
+
+
 def is_location_requirement_trap(label: str) -> bool:
     blob = _norm(label)
     return any(marker in blob for marker in LOCATION_REQUIREMENT_MARKERS)
@@ -533,6 +766,43 @@ def _workable_self_assessment(field: Field, tokens: dict) -> Resolution | None:
         pick = choose_select_option("Yes", field.options)
         if pick:
             return Resolution(answer=pick, confidence=0.75, via="label")
+    return None
+
+
+def _sponsorship_details_field(field: Field, tokens: dict) -> Resolution | None:
+    """Visa/sponsorship follow-up textareas ('Please provide details')."""
+    label = _norm(field.label)
+    if "provide detail" not in label and "please provide" not in label:
+        return None
+    ctx = _question_context(field)
+    visa_ctx = any(
+        marker in ctx
+        for marker in (
+            "visa",
+            "sponsor",
+            "work permit",
+            "immigration",
+            "authorization",
+            "permit",
+        )
+    )
+    needs_sponsor = str(tokens.get("require_sponsorship") or "").strip().lower() in {
+        "yes",
+        "true",
+        "y",
+    }
+    if not visa_ctx and not needs_sponsor:
+        return None
+    detail = str(tokens.get("sponsorship_details") or "").strip()
+    if not detail:
+        permit = str(tokens.get("work_permit_type") or "").strip()
+        if needs_sponsor:
+            detail = (
+                "I will require employer sponsorship for work authorization to commence employment."
+                + (f" Current permit/status: {permit}." if permit else "")
+            )
+    if detail:
+        return Resolution(answer=detail, confidence=0.88, via="label")
     return None
 
 
@@ -574,10 +844,31 @@ def resolve_field(field: Field, tokens: dict) -> Resolution | None:
     """
     label = _norm(field.label)
 
+    if "extension" in label and "phone" in label:
+        return None
+
+    # Country-code search widgets share type=tel with the local number field.
+    if _is_country_phone_code_label(label):
+        fm = _match_field_map(label, tokens)
+        if fm:
+            return Resolution(answer=fm[0], confidence=0.95, via=fm[1])
+        return None
+
+    if "phone number" in label or (
+        "mobile" in label and "country" not in label and "extension" not in label
+    ):
+        local = str(tokens.get("phone_national") or tokens.get("phone_digits") or "").strip()
+        if local:
+            return Resolution(answer=local, confidence=0.95, via="label")
+
     # 1. HTML attribute signals (most reliable).
     attr = _match_attr_map(field, tokens)
     if attr:
         return Resolution(answer=attr[0], confidence=0.97, via=attr[1])
+
+    sponsor_detail = _sponsorship_details_field(field, tokens)
+    if sponsor_detail:
+        return sponsor_detail
 
     # 2. Screening / EEO questions (yes-no, dropdown).
     q = _match_question_map(_question_context(field), tokens)
@@ -662,6 +953,11 @@ def choose_select_option(answer: str, options: tuple[str, ...]) -> str | None:
     for opt in options:
         if norm_answer in _norm(opt):
             return opt
+    if "veteran" in norm_answer and "not" in norm_answer:
+        for opt in options:
+            n = _norm(opt)
+            if "veteran" in n and "not" in n:
+                return opt
     # Decline-style fallback fires ONLY when our answer is itself a decline
     # (e.g. "I do not wish to answer" vs "I don't wish to answer" on the form).
     # For a non-decline answer with no match, escalate rather than guess "No".

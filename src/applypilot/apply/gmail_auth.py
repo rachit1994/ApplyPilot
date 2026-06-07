@@ -202,6 +202,8 @@ _SUCCESS_PHRASES: tuple[str, ...] = (
     "your application was received",
     "application received",
     "application was successfully submitted",
+    "was submitted successfully",
+    "job was submitted successfully",
     "successfully submitted",
     "submitted your application",
     "your application for",

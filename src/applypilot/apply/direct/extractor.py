@@ -40,17 +40,8 @@ EXTRACT_JS = r"""() => {
     return r.width > 0 || r.height > 0 || el.type === 'hidden';
   };
   const sectionOf = (el) => {
-    const labelled = el.closest('[aria-labelledby]');
-    if (labelled) {
-      const ids = (labelled.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean);
-      for (const id of ids) {
-        if (/checkbox_label/i.test(id)) continue;
-        const t = document.getElementById(id);
-        const txt = norm(t ? t.innerText : '');
-        if (txt.length > 2 && txt.length < 240) return txt.slice(0, 200);
-      }
-    }
-    // Lever cards: question lives in a sibling .application-label above .application-field.
+    // Lever cards: sibling .application-label is authoritative; aria-labelledby
+    // on the control often points at a stale/distant question id.
     const appField = el.closest('.application-field');
     if (appField) {
       let prev = appField.previousElementSibling;
@@ -62,6 +53,16 @@ EXTRACT_JS = r"""() => {
           break;
         }
         prev = prev.previousElementSibling;
+      }
+    }
+    const labelled = el.closest('[aria-labelledby]');
+    if (labelled) {
+      const ids = (labelled.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean);
+      for (const id of ids) {
+        if (/checkbox_label/i.test(id)) continue;
+        const t = document.getElementById(id);
+        const txt = norm(t ? t.innerText : '');
+        if (txt.length > 2 && txt.length < 240) return txt.slice(0, 200);
       }
     }
     // Nearest fieldset legend, else preceding heading.
@@ -116,6 +117,13 @@ EXTRACT_JS = r"""() => {
       const sec = sectionOf(el);
       if (sec.length > 2) return sec.slice(0, 120);
     }
+    const tag = el.tagName.toLowerCase();
+    // Lever card <select> widgets often share aria-labelledby with a distant
+    // question (e.g. a technology multi-checkbox label on a Yes/No dropdown).
+    if (tag === 'select' && el.closest('.application-field')) {
+      const sec = sectionOf(el);
+      if (sec.length > 2) return sec.slice(0, 120);
+    }
     const strong = norm(
       (el.labels && el.labels[0] && el.labels[0].innerText) ||
       el.getAttribute('aria-label') ||
@@ -164,9 +172,13 @@ EXTRACT_JS = r"""() => {
     if (el.tagName.toLowerCase() !== 'input') return false;
     const name = norm(el.getAttribute('name') || el.id || '');
     if (!/^CA_\d+$/i.test(name)) return false;
+    const companion = document.querySelector(
+      `input[name="input_${name}_input"], input[id="input_${name}_input"]`
+    );
+    if (companion) return true;
     const label = norm(labelOf(el)).toLowerCase();
     if (!/^(yes|no|n\/a|not applicable)$/i.test(label)) return false;
-    return !!document.querySelector(`input[name="input_${name}_input"], input[id="input_${name}_input"]`);
+    return false;
   };
 
   const els = document.querySelectorAll('input, select, textarea, [role="combobox"], [role="listbox"], [role="radiogroup"]');
@@ -176,6 +188,9 @@ EXTRACT_JS = r"""() => {
     if (tag === 'input' && type === 'hidden') return;
     if (isSelectRequiredProxy(el)) return;
     if (isWorkableSelectedValueProxy(el)) return;
+    const label = labelOf(el);
+    if (/completed step \d+ of \d+/i.test(label)) return;
+    if ((tag === 'ul' || tag === 'ol') && el.getAttribute('role') === 'listbox') return;
     // Individual radios inside a radiogroup are filled via the group's options.
     if (tag === 'input' && type === 'radio' && el.closest('[role="radiogroup"]')) return;
     if (!visible(el) && type !== 'hidden') {
@@ -184,9 +199,9 @@ EXTRACT_JS = r"""() => {
       // fields (Workable renders selected values this way).
       if (!(type === 'file' || type === 'date' || type === 'datetime-local' || type === 'checkbox' || type === 'radio' || isCombobox(el))) return;
     }
-    const label = labelOf(el);
     const section = sectionOf(el);
     const name = norm(el.getAttribute('name') || el.id || '');
+    if (/^input_CA_\d+_input$/i.test(name)) return;
     const autocomplete = norm(el.getAttribute('autocomplete') || '');
     const required = el.required || el.getAttribute('aria-required') === 'true';
 
@@ -244,6 +259,7 @@ EXTRACT_JS = r"""() => {
 
   const errorNodes = new Set();
   const pushErr = (el) => {
+    if (!el || !visible(el)) return;
     const t = norm(el.innerText);
     if (t.length > 2 && t.length < 200) errorNodes.add(t);
   };
