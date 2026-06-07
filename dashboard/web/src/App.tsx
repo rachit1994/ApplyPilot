@@ -175,8 +175,6 @@ export default function App() {
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
 
-  useRunLiveRefresh();
-
   const { data: stats } = useQuery({
     queryKey: ["stats"],
     queryFn: fetchStats,
@@ -186,8 +184,10 @@ export default function App() {
   const { data: activeRun } = useQuery({
     queryKey: ["runs", "active"],
     queryFn: fetchActiveRun,
-    refetchInterval: 5000,
+    refetchInterval: 10_000,
   });
+
+  useRunLiveRefresh(activeRun);
 
   const navBadges = useMemo(() => {
     const pipeline = stats?.pipeline;
@@ -241,10 +241,21 @@ export default function App() {
     setSelectedApplication(null);
   }, []);
 
+  const headerActiveRun = useMemo(() => {
+    if (page !== "applications") return activeRun ?? null;
+    return activeRun?.run_type === "apply" ? activeRun : null;
+  }, [page, activeRun]);
+
   const handleStopRun = useCallback(() => {
+    if (page === "applications") {
+      if (activeRun?.run_type === "apply" && activeRun.id) {
+        void stopRun(activeRun.id);
+      }
+      return;
+    }
     const id = activeRun?.id;
     if (id) void stopRun(id);
-  }, [activeRun?.id]);
+  }, [activeRun?.id, activeRun?.run_type, page]);
 
   const headerSubtitle = useMemo(
     () => pageSubtitleWithStats(page, stats),
@@ -297,7 +308,7 @@ export default function App() {
         setSelectedJob(null);
         setSelectedApplication(null);
       }}
-      activeRun={activeRun ?? null}
+      activeRun={headerActiveRun}
       navBadges={navBadges}
       onStopRun={handleStopRun}
     >

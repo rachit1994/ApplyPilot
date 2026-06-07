@@ -10,7 +10,6 @@ hardcoded. Supports sequential search + detail fetching with proxy.
 import json
 import logging
 import re
-import sqlite3
 import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -21,6 +20,8 @@ import yaml
 
 from applypilot import config
 from applypilot.config import CONFIG_DIR
+from applypilot.db.connection import Connection
+from applypilot.db.dialect import is_unique_violation
 from applypilot.database import get_connection, init_db
 
 log = logging.getLogger(__name__)
@@ -298,7 +299,7 @@ def fetch_details(employer: dict, jobs: list[dict]) -> list[dict]:
 
 # -- DB storage --------------------------------------------------------------
 
-def store_results(conn: sqlite3.Connection, jobs: list[dict], employers: dict) -> tuple[int, int]:
+def store_results(conn: Connection, jobs: list[dict], employers: dict) -> tuple[int, int]:
     """Store corporate jobs in DB. Returns (new, existing)."""
     now = datetime.now(timezone.utc).isoformat()
     new = 0
@@ -337,7 +338,9 @@ def store_results(conn: sqlite3.Connection, jobs: list[dict], employers: dict) -
                  site, strategy, now, full_description, url, detail_scraped_at, detail_error),
             )
             new += 1
-        except sqlite3.IntegrityError:
+        except Exception as exc:
+            if not is_unique_violation(exc):
+                raise
             existing += 1
 
     conn.commit()

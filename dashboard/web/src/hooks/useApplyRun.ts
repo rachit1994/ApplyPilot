@@ -21,6 +21,9 @@ import {
   deriveApplyAgentState,
   type WorkerHeartbeatInfo,
 } from "../utils/applyRunState";
+import { createInvalidateThrottle } from "../utils/queryInvalidateThrottle";
+
+const LIVE_INVALIDATE_MS = 4000;
 
 function isApplyRun(run: Run | null | undefined): run is Run {
   return run?.run_type === "apply";
@@ -49,6 +52,7 @@ export function useApplyRun() {
   const [starting, setStarting] = useState(false);
   const eventsRef = useRef(events);
   const activeRunRef = useRef(activeRun);
+  const invalidateLiveRef = useRef(createInvalidateThrottle(LIVE_INVALIDATE_MS));
 
   useEffect(() => {
     eventsRef.current = events;
@@ -128,12 +132,13 @@ export function useApplyRun() {
         })
         .catch(() => {});
     };
-    const id = window.setInterval(tick, 3000);
+    const id = window.setInterval(tick, 10_000);
     return () => window.clearInterval(id);
   }, [refreshRun]);
 
   useEffect(() => {
     if (!activeRun?.id || activeRun.status !== "running") return;
+    invalidateLiveRef.current = createInvalidateThrottle(LIVE_INVALIDATE_MS);
     const lastId = eventsRef.current.reduce((m, e) => Math.max(m, e.id ?? 0), 0);
     const unsub = subscribeRunEvents(
       activeRun.id,
@@ -147,8 +152,9 @@ export function useApplyRun() {
           event.event_type === "stats_tick" ||
           event.event_type === "worker_heartbeat"
         ) {
-          queryClient.invalidateQueries({ queryKey: ["stats"] });
-          queryClient.invalidateQueries({ queryKey: ["applications"] });
+          invalidateLiveRef.current(() => {
+            void queryClient.invalidateQueries({ queryKey: ["applications"] });
+          });
         }
         if (event.event_type === "run_finished") {
           refreshRun(activeRun.id);
@@ -196,6 +202,57 @@ export function useApplyRun() {
     watch,
     workers,
   ]);
+
+  const handleStartPrepare = useCallback(async () => {
+    setError(null);
+    setStarting(true);
+    try {
+      const run = await startRun({
+        run_type: "apply",
+        min_score: minScore,
+        workers: 1,
+        watch: true,
+        pace: !watch,
+        headless: false,
+        continuous,
+        prepare: true,
+        dry_run: true,
+        limit: limit === "" ? undefined : Number(limit),
+      });
+      setActiveRun(run);
+      setEvents([]);
+      queryClient.invalidateQueries({ queryKey: ["runs", "active"] });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to start prepare run");
+    } finally {
+      setStarting(false);
+    }
+  }, [continuous, limit, minScore, queryClient, watch]);
+
+  const handleStartStaged = useCallback(async () => {
+    setError(null);
+    setStarting(true);
+    try {
+      const run = await startRun({
+        run_type: "apply",
+        min_score: minScore,
+        workers: 1,
+        watch: true,
+        pace: !watch,
+        headless: false,
+        continuous: false,
+        staged_only: true,
+        limit: limit === "" ? undefined : Number(limit),
+      });
+      setActiveRun(run);
+      setEvents([]);
+      queryClient.invalidateQueries({ queryKey: ["runs", "active"] });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to start staged submit");
+    } finally {
+      setStarting(false);
+    }
+  }, [limit, minScore, queryClient, watch]);
 
   const handleStop = useCallback(async () => {
     if (!activeRun?.id) return;
@@ -329,6 +386,8 @@ export function useApplyRun() {
     dryRun,
     setDryRun,
     handleStart,
+    handleStartPrepare,
+    handleStartStaged,
     handleStop,
     applyCli,
     applySettings,

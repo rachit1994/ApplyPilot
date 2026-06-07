@@ -58,9 +58,7 @@ def scoring_env(tmp_path, monkeypatch):
         ),
         encoding="utf-8",
     )
-
-    db_path = tmp_path / "applypilot.db"
-    conn = database.init_db(db_path)
+    conn = database.init_db()
     resume_path = tmp_path / "resume.txt"
     resume_path.write_text("Python React resume", encoding="utf-8")
 
@@ -83,7 +81,7 @@ def scoring_env(tmp_path, monkeypatch):
 
     yield scorer, conn
 
-    database.close_connection(db_path)
+    database.close_connection()
 
 
 def _insert_jobs(conn, count: int, *, long_description: bool = False) -> None:

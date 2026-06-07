@@ -34,15 +34,12 @@ def _reset_embedding_filter(monkeypatch, tmp_path):
 
 @pytest.fixture
 def temp_db(monkeypatch, tmp_path):
-    db_path = tmp_path / "applypilot.db"
     monkeypatch.setenv("APPLYPILOT_DIR", str(tmp_path))
     monkeypatch.setattr(config, "APP_DIR", tmp_path)
-    monkeypatch.setattr(config, "DB_PATH", db_path)
-    monkeypatch.setattr(database, "DB_PATH", db_path)
     database.close_connection()
-    database.init_db(db_path)
-    yield db_path
-    database.close_connection(db_path)
+    database.init_db()
+    yield
+    database.close_connection()
 
 
 def test_encode_resume_caches_in_process():
@@ -94,7 +91,7 @@ def test_run_scoring_marks_low_similarity_without_llm(monkeypatch, tmp_path, tem
 
     monkeypatch.setattr(scorer, "score_job", fake_score_job)
 
-    conn = database.get_connection(temp_db)
+    conn = database.get_connection()
     conn.execute(
         """
         INSERT INTO jobs (url, title, site, location, full_description)

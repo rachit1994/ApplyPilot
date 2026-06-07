@@ -12,35 +12,30 @@ from fastapi.testclient import TestClient
 
 
 @pytest.fixture
-def temp_db(monkeypatch):
+def temp_db(monkeypatch, isolated_db):
     with tempfile.TemporaryDirectory() as tmp:
-        db = Path(tmp) / "test.db"
         monkeypatch.setenv("APPLYPILOT_DIR", tmp)
         from applypilot import config
         from applypilot import database
-        from applypilot.orchestration import events
 
         config.load_env()
         monkeypatch.setattr(config, "APP_DIR", Path(tmp))
-        monkeypatch.setattr(config, "DB_PATH", db)
-        monkeypatch.setattr(database, "DB_PATH", db)
-        monkeypatch.setattr(events, "DB_PATH", db)
         database.close_connection()
-        yield db
-        database.close_connection(db)
+        database.init_db()
+        yield isolated_db
+        database.close_connection()
 
 
 def test_emit_run_event_noop_without_env(temp_db):
     from applypilot.database import init_db
     from applypilot.orchestration.events import emit_run_event, list_run_events
 
-    init_db(temp_db)
+    init_db()
     assert emit_run_event("stage_start", stage="discover") is None
     assert list_run_events("fake-id") == []
 
 
 def test_emit_run_event_with_run_id(temp_db, monkeypatch):
-    from applypilot.config import DB_PATH
     from applypilot.database import close_connection, get_connection, init_db
     from applypilot.orchestration.events import emit_run_event, init_run_schema, list_run_events
 
@@ -60,12 +55,36 @@ def test_emit_run_event_with_run_id(temp_db, monkeypatch):
     event = emit_run_event("stage_start", stage="discover", message="starting discover")
     assert event is not None
     assert event["event_type"] == "stage_start"
-    rows = list_run_events("run-1", db_path=str(DB_PATH))
+    rows = list_run_events("run-1")
     assert len(rows) == 1
     assert rows[0]["stage"] == "discover"
 
 
+def test_emit_run_event_log_inherits_current_stage(temp_db, monkeypatch):
+    from applypilot.database import close_connection, get_connection, init_db
+    from applypilot.orchestration.events import emit_run_event, init_run_schema, list_run_events
+
+    close_connection()
+    init_db()
+    conn = get_connection()
+    init_run_schema(conn)
+    conn.execute(
+        """
+        INSERT INTO runs (id, run_type, status, started_at, current_stage)
+        VALUES ('run-stage', 'pipeline', 'running', '2026-05-18T00:00:00+00:00', 'score')
+        """
+    )
+    conn.commit()
+
+    monkeypatch.setenv("APPLYPILOT_RUN_ID", "run-stage")
+    emit_run_event("log", message="[1/3] score=8 | Example @ LinkedIn | https://jobs.test/1")
+    rows = list_run_events("run-stage")
+    assert len(rows) == 1
+    assert rows[0]["stage"] == "score"
+
+
 def test_api_stats_and_stages(temp_db):
+    from applypilot.discovery.site_priority import PRIORITY_SITE_NAMES
     from applypilot.server.app import create_app
 
     client = TestClient(create_app())
@@ -81,7 +100,7 @@ def test_api_stats_and_stages(temp_db):
     assert "pipeline" in stats
     assert isinstance(stats["by_site"], list)
     assert len(stats["by_site"]) <= 5
-    assert stats["priority_boards"] == ["LinkedIn", "Wellfound"]
+    assert stats["priority_boards"] == list(PRIORITY_SITE_NAMES)
     assert "Direct apply" in stats["apply_queue_order"]
     assert "scored" in stats["pipeline"]
     assert "triage_counts" in stats
@@ -317,14 +336,14 @@ def test_api_jobs_pagination(temp_db):
         conn.execute(
             """
             INSERT INTO jobs (url, title, site, fit_score, discovered_at)
-            VALUES (?, ?, 'Board', 7, '2026-05-18T10:00:00+00:00')
+            VALUES (?, ?, 'Board', 7, ?)
             """,
-            (f"https://paginate.example/j{i}", f"Role {i}"),
+            (f"https://paginate.example/j{i}", f"Role {i}", f"2026-05-18T10:0{i}:00+00:00"),
         )
     conn.commit()
 
     client = TestClient(create_app())
-    page1 = client.get("/api/jobs", params={"limit": 2, "page": 1})
+    page1 = client.get("/api/jobs", params={"limit": 2, "page": 1, "sort": "discovered_at_asc"})
     assert page1.status_code == 200
     body1 = page1.json()
     assert body1["total"] == 5
@@ -335,19 +354,19 @@ def test_api_jobs_pagination(temp_db):
     assert len(body1["jobs"]) == 2
     assert body1["jobs"][0]["title"] == "Role 0"
 
-    page2 = client.get("/api/jobs", params={"limit": 2, "page": 2})
+    page2 = client.get("/api/jobs", params={"limit": 2, "page": 2, "sort": "discovered_at_asc"})
     body2 = page2.json()
     assert body2["offset"] == 2
     assert body2["page"] == 2
     assert len(body2["jobs"]) == 2
     assert body2["jobs"][0]["title"] == "Role 2"
 
-    page3 = client.get("/api/jobs", params={"limit": 2, "page": 3})
+    page3 = client.get("/api/jobs", params={"limit": 2, "page": 3, "sort": "discovered_at_asc"})
     body3 = page3.json()
     assert len(body3["jobs"]) == 1
     assert body3["jobs"][0]["title"] == "Role 4"
 
-    beyond = client.get("/api/jobs", params={"limit": 2, "page": 99})
+    beyond = client.get("/api/jobs", params={"limit": 2, "page": 99, "sort": "discovered_at_asc"})
     beyond_body = beyond.json()
     assert beyond_body["page"] == 3
     assert beyond_body["offset"] == 4
@@ -894,6 +913,108 @@ def test_applications_list_status_filter_and_include_failed(temp_db):
     assert failed_only.json()["applications"][0]["apply_status"] == "failed"
 
 
+def test_applications_prepare_review_and_staged_filters(temp_db):
+    from applypilot.database import close_connection, get_connection, init_db
+    from applypilot.server.app import create_app
+
+    close_connection()
+    init_db()
+    conn = get_connection()
+    conn.execute(
+        """
+        INSERT INTO jobs (url, title, site, tailored_resume_path, apply_status)
+        VALUES
+          ('https://jobs.example.com/prep', 'Prep', 'Example', '/tmp/r.pdf', 'prepare_review'),
+          ('https://jobs.example.com/staged', 'Staged', 'Example', '/tmp/r.pdf', 'staged'),
+          ('https://jobs.example.com/applied', 'Done', 'Example', '/tmp/r.pdf', 'applied')
+        """
+    )
+    conn.commit()
+
+    client = TestClient(create_app())
+    prep = client.get("/api/applications", params={"status": "prepare_review"})
+    assert prep.status_code == 200
+    assert prep.json()["total"] == 1
+    assert prep.json()["applications"][0]["apply_status"] == "prepare_review"
+
+    staged = client.get("/api/applications", params={"status": "staged"})
+    assert staged.status_code == 200
+    assert staged.json()["total"] == 1
+    assert staged.json()["applications"][0]["apply_status"] == "staged"
+
+
+def test_applications_bulk_stage_api(temp_db):
+    from applypilot.database import close_connection, get_connection, init_db
+    from applypilot.server.app import create_app
+
+    close_connection()
+    init_db()
+    conn = get_connection()
+    urls = ["https://jobs.example.com/a", "https://jobs.example.com/b"]
+    for u in urls:
+        conn.execute(
+            """
+            INSERT INTO jobs (url, title, site, tailored_resume_path, apply_status)
+            VALUES (?, 'Role', 'Example', '/tmp/r.pdf', 'prepare_review')
+            """,
+            (u,),
+        )
+    conn.commit()
+
+    client = TestClient(create_app())
+    resp = client.post(
+        "/api/applications/bulk-stage",
+        json={"urls": urls, "action": "stage"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["updated"] == 2
+    assert body["action"] == "stage"
+
+    staged = client.get("/api/applications", params={"status": "staged"})
+    assert staged.json()["total"] == 2
+
+
+def test_start_apply_run_prepare_and_staged_flags(temp_db, monkeypatch):
+    from applypilot.orchestration import run_controller
+
+    captured: list[list[str]] = []
+
+    class FakeProc:
+        pid = 12345
+        returncode = None
+        stdout = None
+        stderr = None
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            self.returncode = 0
+
+        def kill(self):
+            self.returncode = -9
+
+        def wait(self, timeout=None):
+            return 0
+
+    def fake_popen(cmd, **kwargs):
+        captured.append(list(cmd))
+        return FakeProc()
+
+    monkeypatch.setattr(run_controller.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(run_controller, "_read_stream", lambda *a, **k: None)
+    monkeypatch.setattr(run_controller, "_wait_process", lambda *a, **k: None)
+
+    run_controller.start_apply_run(prepare=True, watch=True, force=True)
+    assert "--prepare" in captured[-1]
+    assert "--engine" not in " ".join(captured[-1])
+
+    run_controller.start_apply_run(staged_only=True, watch=True, force=True)
+    assert "--staged-only" in captured[-1]
+    assert "--engine" not in " ".join(captured[-1])
+
+
 def test_applications_claude_escalated_filter(temp_db):
     from applypilot.database import close_connection, get_connection, init_db
     from applypilot.server.app import create_app
@@ -1085,7 +1206,7 @@ def test_application_detail_backfills_form_filled_from_log(temp_db):
     row = conn.execute(
         "SELECT apply_form_filled FROM jobs WHERE url = ?", (job_url,)
     ).fetchone()
-    assert row[0] is not None
+    assert row["apply_form_filled"] is not None
 
 
 def test_api_llm_usage_anthropic_rollup(temp_db):
@@ -1094,7 +1215,7 @@ def test_api_llm_usage_anthropic_rollup(temp_db):
     from applypilot.database import init_db, record_llm_usage
     from applypilot.server.app import create_app
 
-    init_db(temp_db)
+    init_db()
     now = datetime.now(timezone.utc).isoformat()
     record_llm_usage(
         provider="anthropic",

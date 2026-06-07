@@ -13,14 +13,10 @@ from applypilot.apply.direct import qa_bank as qb
 @pytest.fixture
 def qa_conn(tmp_path: Path, monkeypatch):
     from applypilot import config, database
-
-    db_path = tmp_path / "applypilot.db"
-    monkeypatch.setattr(config, "DB_PATH", db_path)
-    monkeypatch.setattr(database, "DB_PATH", db_path)
-    database.close_connection(db_path)
-    conn = database.init_db(db_path)
+    database.close_connection()
+    conn = database.init_db()
     yield conn
-    database.close_connection(db_path)
+    database.close_connection()
 
 
 def test_normalize_text():

@@ -16,7 +16,6 @@ import json
 import logging
 import os
 import re
-import sqlite3
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -28,6 +27,8 @@ from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 
 from applypilot import config
+from applypilot.db.connection import Connection
+from applypilot.db.dialect import is_unique_violation
 from applypilot.discovery.site_priority import (
     is_priority_site_name,
     prioritize_site_dicts,
@@ -112,7 +113,7 @@ def partition_sites_by_mode(sites: list[dict] | None = None) -> tuple[list[dict]
 
 
 def _store_jobs_filtered(
-    conn: sqlite3.Connection,
+    conn: Connection,
     jobs: list[dict],
     site: str,
     strategy: str,
@@ -145,7 +146,9 @@ def _store_jobs_filtered(
                  job.get("location"), site, strategy, now),
             )
             new += 1
-        except sqlite3.IntegrityError:
+        except Exception as exc:
+            if not is_unique_violation(exc):
+                raise
             existing += 1
 
     if filtered:

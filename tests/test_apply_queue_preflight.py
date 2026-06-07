@@ -13,19 +13,15 @@ def apply_db(tmp_path: Path, monkeypatch):
     from applypilot import config
     from applypilot import database
     from applypilot.apply import launcher
-
-    db_path = tmp_path / "applypilot.db"
     monkeypatch.setattr(config, "APP_DIR", tmp_path)
     monkeypatch.setattr(config, "LOG_DIR", tmp_path / "logs")
-    monkeypatch.setattr(config, "DB_PATH", db_path)
-    monkeypatch.setattr(database, "DB_PATH", db_path)
     monkeypatch.setattr(launcher, "_load_blocked", lambda: (set(), []))
     monkeypatch.setattr(config, "load_profile", lambda: {})
-    database.close_connection(db_path)
-    conn = database.init_db(db_path)
+    database.close_connection()
+    conn = database.init_db()
     config.LOG_DIR.mkdir(parents=True, exist_ok=True)
     yield conn
-    database.close_connection(db_path)
+    database.close_connection()
 
 
 def _insert_ready(conn, url: str, *, attempts: int = 0, status: str | None = None) -> None:

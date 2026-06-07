@@ -11,7 +11,7 @@ import re
 import time
 from datetime import datetime, timezone
 
-from applypilot import config
+from applypilot.job_log import format_job_line
 from applypilot.config import COVER_LETTER_DIR, RESUME_PATH, get_target_roles, load_profile
 from applypilot.role_resumes import resolve_job_resume_text
 from applypilot.scoring.templates import (
@@ -356,7 +356,7 @@ def run_cover_letters(
             pdf_path = None
             try:
                 from applypilot.scoring.pdf import convert_to_pdf
-                pdf_path = str(convert_to_pdf(cl_path))
+                pdf_path = str(convert_to_pdf(cl_path, job=job))
             except Exception:
                 log.debug("PDF generation failed for %s", cl_path, exc_info=True)
 
@@ -373,7 +373,10 @@ def run_cover_letters(
             rate = completed / elapsed if elapsed > 0 else 0
             log.info(
                 "%d/%d [OK] | %.1f jobs/min | %s",
-                completed, len(jobs), rate * 60, result["title"][:40],
+                completed,
+                len(jobs),
+                rate * 60,
+                format_job_line(job),
             )
         except Exception as e:
             result = {
@@ -382,7 +385,13 @@ def run_cover_letters(
             }
             error_count += 1
             results.append(result)
-            log.error("%d/%d [ERROR] %s -- %s", completed, len(jobs), job["title"][:40], e)
+            log.error(
+                "%d/%d [ERROR] %s -- %s",
+                completed,
+                len(jobs),
+                format_job_line(job),
+                e,
+            )
 
     # Persist to DB: increment attempt counter for ALL, save path only for successes
     now = datetime.now(timezone.utc).isoformat()

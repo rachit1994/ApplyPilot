@@ -1,12 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { RunEvent } from "../api";
-import { effectiveLogLevel } from "../utils/logLevel";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { fetchApplications, fetchOverview, fetchStats, stopRun } from "../api";
 import { useHomeRuns } from "../hooks/useHomeRuns";
 import { needsHumanIntervention } from "../utils/applicationAudit";
+import {
+  buildDevlogRowsFromRunEvents,
+  devlogRowFromActivity,
+  formatDevlogLocalTime,
+  type DevlogRow,
+} from "../utils/devlog";
 import { parseScoreGe8Subtitle } from "../utils/jobTriage";
 import { PageCanvas } from "./layout/PageCanvas";
+import { PipelineRunPlanModal } from "./PipelineRunPlanModal";
 
 type Props = {
   onOpenJobs: (params?: Record<string, string>) => void;
@@ -19,36 +24,6 @@ function displayCount(value: number): string {
 }
 
 type DevlogFilter = "all" | "errors" | "discover" | "score" | "apply" | "outreach";
-
-type DevlogRow = {
-  id: string | number;
-  ts: string;
-  stage: string;
-  message: string;
-  level: string;
-};
-
-function runEventToDevlogRow(event: RunEvent): DevlogRow | null {
-  if (
-    event.event_type !== "log" &&
-    event.event_type !== "stage_error" &&
-    event.event_type !== "run_started" &&
-    event.event_type !== "run_finished" &&
-    event.event_type !== "stage_start" &&
-    event.event_type !== "stage_end"
-  ) {
-    return null;
-  }
-  const message = event.message?.trim();
-  if (!message) return null;
-  return {
-    id: event.id ?? `${event.created_at ?? ""}-${event.event_type}-${message.slice(0, 40)}`,
-    ts: event.created_at ?? "",
-    stage: event.stage ?? event.event_type ?? "—",
-    message,
-    level: effectiveLogLevel(event),
-  };
-}
 
 function matchesDevlogFilter(row: DevlogRow, filter: DevlogFilter): boolean {
   if (filter === "all") return true;
@@ -75,6 +50,7 @@ export function HomePage({ onOpenJobs, onOpenApplications, onOpenOutreach }: Pro
   const runControl = useHomeRuns();
   const [devlogOpen, setDevlogOpen] = useState(false);
   const [devlogFilter, setDevlogFilter] = useState<DevlogFilter>("all");
+  const [pipelinePlanOpen, setPipelinePlanOpen] = useState(false);
   const devlogListRef = useRef<HTMLDivElement>(null);
   const devlogStickRef = useRef(true);
 
@@ -87,7 +63,8 @@ export function HomePage({ onOpenJobs, onOpenApplications, onOpenOutreach }: Pro
   const { data: stats } = useQuery({
     queryKey: ["stats"],
     queryFn: fetchStats,
-    refetchInterval: 10_000,
+    refetchInterval: false,
+    staleTime: 15_000,
   });
 
   const { data: manualApps } = useQuery({
@@ -98,6 +75,8 @@ export function HomePage({ onOpenJobs, onOpenApplications, onOpenOutreach }: Pro
         include_failed: true,
         status: undefined,
       }),
+    refetchInterval: false,
+    staleTime: 60_000,
   });
 
   const pipeline = stats?.pipeline ?? {};
@@ -153,21 +132,11 @@ export function HomePage({ onOpenJobs, onOpenApplications, onOpenOutreach }: Pro
   const caps = overview?.caps;
 
   const devlogSource = useMemo(() => {
-    const fromRun: DevlogRow[] = [];
-    for (const event of runControl.events) {
-      const row = runEventToDevlogRow(event);
-      if (row) fromRun.push(row);
-    }
+    const fromRun = buildDevlogRowsFromRunEvents(runControl.events);
     if (fromRun.length > 0) {
       return fromRun.slice(-500);
     }
-    return activity.map((ev) => ({
-      id: ev.id,
-      ts: ev.ts,
-      stage: ev.stage ?? "—",
-      message: ev.message ?? "—",
-      level: ev.level ?? "info",
-    }));
+    return activity.map(devlogRowFromActivity);
   }, [runControl.events, activity]);
 
   const devlogRows = useMemo(
@@ -356,7 +325,7 @@ export function HomePage({ onOpenJobs, onOpenApplications, onOpenOutreach }: Pro
                 type="button"
                 className="btn btn--accent btn--sm"
                 disabled={runControl.starting}
-                onClick={() => void runControl.handleStartPipeline()}
+                onClick={() => setPipelinePlanOpen(true)}
               >
                 {runControl.starting ? "Starting…" : "New run"}
               </button>
@@ -508,6 +477,7 @@ export function HomePage({ onOpenJobs, onOpenApplications, onOpenOutreach }: Pro
                   <div className="devlog__row">
                     <span className="devlog__time">—</span>
                     <span className="devlog__stage">—</span>
+                    <span className="devlog__link">—</span>
                     <span className="devlog__msg">
                       {isRunning
                         ? "Waiting for log lines from the active run…"
@@ -526,8 +496,17 @@ export function HomePage({ onOpenJobs, onOpenApplications, onOpenOutreach }: Pro
                             : "devlog__row"
                       }
                     >
-                      <span className="devlog__time">{ev.ts?.slice(11, 19) ?? "—"}</span>
+                      <span className="devlog__time">{formatDevlogLocalTime(ev.ts)}</span>
                       <span className="devlog__stage">{ev.stage}</span>
+                      <span className="devlog__link">
+                        {ev.jobUrl ? (
+                          <a href={ev.jobUrl} target="_blank" rel="noopener noreferrer">
+                            link
+                          </a>
+                        ) : (
+                          "—"
+                        )}
+                      </span>
                       <span className="devlog__msg">{ev.message}</span>
                     </div>
                   ))
@@ -537,6 +516,30 @@ export function HomePage({ onOpenJobs, onOpenApplications, onOpenOutreach }: Pro
           ) : null}
         </div>
       </div>
+
+      <PipelineRunPlanModal
+        open={pipelinePlanOpen}
+        settings={{
+          stageOrder: runControl.stageOrder,
+          selectedStages: runControl.selectedStages,
+          toggleStage: runControl.toggleStage,
+          setSelectedStages: runControl.setSelectedStages,
+          stream: runControl.stream,
+          setStream: runControl.setStream,
+          dryRun: runControl.dryRun,
+          setDryRun: runControl.setDryRun,
+          pipelineMinScore: runControl.pipelineMinScore,
+          setPipelineMinScore: runControl.setPipelineMinScore,
+          workers: runControl.workers,
+          setWorkers: runControl.setWorkers,
+          isRunning: runControl.isRunning,
+        }}
+        onCancel={() => setPipelinePlanOpen(false)}
+        onConfirm={() => {
+          setPipelinePlanOpen(false);
+          void runControl.handleStartPipeline();
+        }}
+      />
     </PageCanvas>
   );
 }

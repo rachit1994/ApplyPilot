@@ -46,6 +46,7 @@ from applypilot.server.schemas import (
     AgentSettingsPayload,
     AgentSettingsResponse,
     AgentSettingsPatch,
+    BulkStageRequest,
 )
 from applypilot.orchestration.run_controller import reconcile_orphaned_runs
 from applypilot.server.overview import build_overview
@@ -249,6 +250,21 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="Application not found")
         return ApplicationDetailResponse(application=row)
 
+    @api.get("/artifacts/file")
+    def api_artifact_file(path: str):
+        from fastapi import HTTPException
+        from fastapi.responses import RedirectResponse
+
+        from applypilot.server import artifacts as artifacts_module
+
+        try:
+            target = artifacts_module.resolve_artifact_path(path)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return RedirectResponse(url=target.as_uri(), status_code=302)
+
     @api.get("/field-overrides")
     def api_list_field_overrides() -> dict[str, object]:
         from applypilot.database import list_field_overrides
@@ -304,6 +320,32 @@ def create_app() -> FastAPI:
         if not applications_module.requeue_application(url):
             raise HTTPException(status_code=404, detail="Application not found")
         return {"ok": True, "url": url}
+
+    @api.post("/applications/stage")
+    def api_stage_application(url: str) -> dict[str, object]:
+        from fastapi import HTTPException
+
+        if not applications_module.stage_application(url):
+            raise HTTPException(status_code=404, detail="Job not in prepare review")
+        return {"ok": True, "url": url}
+
+    @api.post("/applications/unstage")
+    def api_unstage_application(url: str) -> dict[str, object]:
+        from fastapi import HTTPException
+
+        if not applications_module.unstage_application(url):
+            raise HTTPException(status_code=404, detail="Job not staged")
+        return {"ok": True, "url": url}
+
+    @api.post("/applications/bulk-stage")
+    def api_bulk_stage(body: BulkStageRequest) -> dict[str, object]:
+        from fastapi import HTTPException
+
+        try:
+            result = applications_module.bulk_stage_applications(body.urls, body.action)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return result
 
     @api.get("/referrals", response_model=ReferralsResponse)
     def api_referrals(
@@ -378,7 +420,18 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     def health():
-        return {"status": "ok", "app_dir": str(APP_DIR)}
+        from applypilot.config import DATABASE_URL
+        from applypilot.db.status import database_status, redact_database_url
+
+        payload = {"status": "ok", "app_dir": str(APP_DIR), "database": redact_database_url(DATABASE_URL)}
+        try:
+            info = database_status()
+            payload["jobs"] = info.get("table_counts", {}).get("jobs", 0)
+            payload["total_rows"] = info.get("total_rows", 0)
+        except ConnectionError as exc:
+            payload["status"] = "degraded"
+            payload["database_error"] = str(exc)
+        return payload
 
     if _DASHBOARD_DIST.is_dir():
         assets = _DASHBOARD_DIST / "assets"

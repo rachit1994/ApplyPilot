@@ -2,25 +2,20 @@
 
 from __future__ import annotations
 
-import sqlite3
-
 import pytest
 
 from applypilot import database
+from applypilot.db.connection import Connection
 from applypilot.pipeline import _emit_stage_progress, _stage_progress_snapshot
 
 
-@pytest.fixture
-def temp_db(monkeypatch, tmp_path):
-    db_path = tmp_path / "progress.db"
-    monkeypatch.setattr(database, "DB_PATH", db_path)
-    database.init_db()
-    yield db_path
-    database.close_connection()
+@pytest.fixture(autouse=True)
+def _reset_stats_cache():
+    yield
     database.invalidate_stats_cache()
 
 
-def _insert_job(conn: sqlite3.Connection, url: str, **fields) -> None:
+def _insert_job(conn: Connection, url: str, **fields) -> None:
     cols = ["url", "title", "site"]
     vals = [url, fields.pop("title", "Engineer"), fields.pop("site", "test")]
     for k, v in fields.items():
@@ -34,7 +29,7 @@ def _insert_job(conn: sqlite3.Connection, url: str, **fields) -> None:
     conn.commit()
 
 
-def test_stage_progress_snapshot_enrich(temp_db):
+def test_stage_progress_snapshot_enrich():
     conn = database.get_connection()
     _insert_job(
         conn,
@@ -51,7 +46,7 @@ def test_stage_progress_snapshot_enrich(temp_db):
     assert "1/2" in snap["detail"]
 
 
-def test_stage_progress_snapshot_filter(temp_db):
+def test_stage_progress_snapshot_filter():
     conn = database.get_connection()
     _insert_job(
         conn,
@@ -82,7 +77,7 @@ def test_stage_progress_snapshot_filter(temp_db):
     assert "1 rejected" in snap["detail"]
 
 
-def test_stage_progress_snapshot_score(temp_db):
+def test_stage_progress_snapshot_score():
     conn = database.get_connection()
     _insert_job(conn, "https://a.example/j1", full_description="x", fit_score=8)
     _insert_job(conn, "https://a.example/j2", full_description="y")
@@ -93,7 +88,7 @@ def test_stage_progress_snapshot_score(temp_db):
     assert snap["percent"] == 50
 
 
-def test_emit_stage_progress_with_run(monkeypatch, temp_db):
+def test_emit_stage_progress_with_run(monkeypatch):
     from applypilot.orchestration import events
 
     conn = database.get_connection()

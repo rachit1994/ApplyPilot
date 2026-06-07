@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
 import threading
 
 import pytest
@@ -11,13 +10,15 @@ from applypilot.apply.direct import review_log as rl
 
 
 @pytest.fixture
-def conn():
-    c = sqlite3.connect(":memory:", check_same_thread=False)
-    c.row_factory = sqlite3.Row
+def conn(isolated_db):
+    from applypilot import database as db
+
+    db.close_connection()
+    c = db.init_db()
     rl.ensure_review_log_table(c)
     yield c
     rl.stop_writer()
-    c.close()
+    db.close_connection()
 
 
 def test_concurrent_writer_flushes_all_rows(conn):

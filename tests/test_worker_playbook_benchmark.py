@@ -17,7 +17,7 @@ GREENHOUSE_URL = "https://boards.greenhouse.io/acme/jobs/123"
 
 def _write_benchmark_doc(legacy_len: int, playbook_len: int) -> None:
     repo_root = Path(__file__).resolve().parents[1]
-    out = repo_root / "docs/superpowers/specs/2026-05-29-worker-apply-playbook-benchmark.md"
+    out = repo_root / "docs/worker-apply-playbook-benchmark.md"
     delta_pct = (1.0 - playbook_len / legacy_len) * 100.0 if legacy_len else 0.0
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(

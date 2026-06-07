@@ -175,17 +175,13 @@ def quota_e2e_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Isolated dirs + DB + dashboard stubs for quota E2E."""
     from applypilot import database
     from applypilot.apply import dashboard
-
-    db_path = tmp_path / "applypilot.db"
     monkeypatch.setattr(config, "APP_DIR", tmp_path)
     monkeypatch.setattr(config, "APPLY_WORKER_DIR", tmp_path / "apply-workers")
     monkeypatch.setattr(config, "LOG_DIR", tmp_path / "logs")
-    monkeypatch.setattr(config, "DB_PATH", db_path)
-    monkeypatch.setattr(database, "DB_PATH", db_path)
     config.LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-    database.close_connection(db_path)
-    database.init_db(db_path)
+    database.close_connection()
+    database.init_db()
 
     worker_dir = tmp_path / "worker-0"
     worker_dir.mkdir(parents=True, exist_ok=True)
@@ -620,7 +616,7 @@ def test_e2e_success_records_quota_telemetry_in_db(
     )
     assert status == "applied"
 
-    conn = database.get_connection(quota_e2e_env["db_path"])
+    conn = database.get_connection()
     row = conn.execute(
         """
         SELECT model, operation, metadata_json, cache_read_tokens

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -69,9 +70,10 @@ def _subprocess_env(run_id: str) -> dict[str, str]:
 
 
 def _resolve_cli() -> list[str]:
-    """Command prefix to invoke applypilot in the current environment."""
-    if shutil.which("applypilot"):
-        return ["applypilot"]
+    """Command prefix to invoke applypilot in the same interpreter as the dashboard."""
+    override = os.environ.get("APPLYPILOT_CLI", "").strip()
+    if override:
+        return shlex.split(override)
     return [sys.executable, "-m", "applypilot"]
 
 
@@ -523,6 +525,8 @@ def start_apply_run(
     headless: bool = False,
     continuous: bool = False,
     dry_run: bool = False,
+    prepare: bool = False,
+    staged_only: bool = False,
     force: bool = False,
 ) -> dict[str, Any]:
     """Spawn applypilot apply as a subprocess tracked by run_id."""
@@ -547,11 +551,15 @@ def start_apply_run(
         INSERT INTO runs (id, run_type, status, stages_json, stream, dry_run, started_at, current_stage)
         VALUES (?, 'apply', 'running', '[]', 0, ?, ?, 'apply')
         """,
-        (run_id, int(dry_run), started),
+        (run_id, int(dry_run or prepare), started),
     )
     conn.commit()
 
-    cmd = _resolve_cli() + ["apply", "--engine", "direct", "--include-untailored"]
+    cmd = _resolve_cli() + ["apply", "--include-untailored"]
+    if prepare:
+        cmd.append("--prepare")
+    elif staged_only:
+        cmd.append("--staged-only")
     if limit is not None and limit > 0:
         cmd.extend(["--limit", str(limit)])
         if not continuous:
@@ -565,7 +573,7 @@ def start_apply_run(
         cmd.extend(["--pace", "2"])
     if headless:
         cmd.append("--headless")
-    if dry_run:
+    if dry_run and not prepare:
         cmd.append("--dry-run")
 
     env = _subprocess_env(run_id)
@@ -746,6 +754,8 @@ def start_typed_run(
             headless=bool(kwargs.get("headless", False)),
             continuous=bool(kwargs.get("continuous", False)),
             dry_run=dry_run,
+            prepare=bool(kwargs.get("prepare", False)),
+            staged_only=bool(kwargs.get("staged_only", False)),
             force=force,
         )
     if run_type == "inbox":

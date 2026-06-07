@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 _NAV_TIMEOUT_MS = 45_000
 _FILL_DELAY = (0.15, 0.5)        # pause between fields
 _SUBMIT_SETTLE_S = 6.0           # wait after submit click before reading result
-_RESUME_LABEL_HINTS = ("resume", "cv", "résumé", "curriculum")
+_RESUME_LABEL_HINTS = ("resume", "cv", "résumé", "curriculum", "replace file")
 _COVER_LABEL_HINTS = ("cover letter", "cover_letter", "coverletter")
 _PHOTO_LABEL_HINTS = (
     "photo",
@@ -1174,8 +1174,91 @@ def _audit_file_uploads(page) -> list[dict]:
         return []
 
 
+def _page_shows_filename(page, basename: str) -> bool:
+    """Greenhouse clears ``input.files`` after S3 upload; filename stays in page text."""
+    name = str(basename or "").strip()
+    if not name or len(name) < 4:
+        return False
+    try:
+        body = (page.inner_text("body") or "").lower()
+    except Exception:  # noqa: BLE001
+        return False
+    return name.lower() in body
+
+
+def _enrich_audit_file_rows(
+    audit_rows: list[dict],
+    form,
+    uploads: list[dict],
+    *,
+    resume_pdf: str,
+    cover_pdf: str | None,
+    page,
+    family: str,
+) -> None:
+    """File inputs report empty DOM values; merge upload audit + intended paths."""
+    field_by_label = {f.label: f for f in form.fillable()}
+    accept_map = _file_accept_map(page)
+    upload_by_name = {u.get("name", ""): u for u in uploads if u.get("name")}
+    resume_basename = Path(resume_pdf).name if resume_pdf else ""
+    cover_basename = Path(cover_pdf).name if cover_pdf else ""
+    resume_on_page = _page_shows_filename(page, resume_basename)
+    cover_on_page = _page_shows_filename(page, cover_basename) if cover_basename else False
+
+    for row in audit_rows:
+        if row.get("type") != "file":
+            continue
+        field = field_by_label.get(row.get("label") or "")
+        name = (field.name_attr if field else "") or ""
+        up = upload_by_name.get(name) or {}
+        pseudo = {
+            "label": row.get("label", ""),
+            "name": name,
+            "accept": accept_map.get(name, ""),
+        }
+        value = str(row.get("value") or "").strip()
+        if not value and up.get("file_name"):
+            value = str(up["file_name"])
+        if _is_cover_file_upload(pseudo, family=family):
+            if not value and cover_on_page and cover_basename:
+                value = cover_basename
+            elif not value and cover_pdf:
+                value = str(cover_pdf)
+        elif _is_resume_file_upload(pseudo, family=family):
+            if not value and resume_on_page and resume_basename:
+                value = resume_basename
+            elif not value and resume_pdf:
+                value = str(resume_pdf)
+        row["value"] = value
+        row["empty"] = not value
+
+    has_resume_value = False
+    for row in audit_rows:
+        if row.get("type") != "file" or row.get("empty"):
+            continue
+        field = field_by_label.get(row.get("label") or "")
+        name = (field.name_attr if field else "") or ""
+        if _is_resume_file_upload(
+            {"label": row.get("label", ""), "name": name, "accept": ""},
+            family=family,
+        ):
+            has_resume_value = True
+            break
+    if resume_pdf and not has_resume_value:
+        shown = str(resume_pdf)
+        if resume_basename and resume_on_page:
+            shown = f"{resume_basename} · {resume_pdf}"
+        audit_rows.insert(
+            0,
+            _record_row("Resume (PDF)", shown, ftype="file", via="apply"),
+        )
+
+
 def _file_hint_is_cover(hint: str) -> bool:
     h = hint.lower()
+    # Workable photo + resume slots use opaque input_files_* ids — not cover.
+    if "input_files" in h:
+        return False
     return any(token in h for token in _COVER_LABEL_HINTS)
 
 
@@ -1187,6 +1270,59 @@ def _file_hint_is_photo(hint: str) -> bool:
 def _file_hint_is_resume(hint: str) -> bool:
     h = hint.lower()
     return any(token in h for token in _RESUME_LABEL_HINTS)
+
+
+def _upload_accepts_images_only(accept: str) -> bool:
+    a = (accept or "").lower().replace(" ", "")
+    if not a:
+        return False
+    if "pdf" in a or ".doc" in a:
+        return False
+    image_markers = (
+        "image/",
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".gif",
+        ".webp",
+        "image/jpeg",
+        "image/png",
+    )
+    return any(m in a for m in image_markers)
+
+
+def _upload_accepts_documents(accept: str) -> bool:
+    a = (accept or "").lower()
+    return any(
+        m in a
+        for m in (".pdf", "pdf", ".doc", "doc", "application/pdf", "msword")
+    )
+
+
+def _is_cover_file_upload(pseudo: dict, *, family: str = "") -> bool:
+    hint = f"{pseudo.get('label', '')} {pseudo.get('name', '')}".lower()
+    if _file_hint_is_photo(hint) or _upload_accepts_images_only(
+        pseudo.get("accept") or ""
+    ):
+        return False
+    return _file_hint_is_cover(hint)
+
+
+def _is_resume_file_upload(pseudo: dict, *, family: str = "") -> bool:
+    hint = f"{pseudo.get('label', '')} {pseudo.get('name', '')}".lower()
+    if _file_hint_is_photo(hint) or _upload_accepts_images_only(
+        pseudo.get("accept") or ""
+    ):
+        return False
+    if _is_cover_file_upload(pseudo, family=family):
+        return False
+    if _file_hint_is_resume(hint):
+        return True
+    if _upload_accepts_documents(pseudo.get("accept") or ""):
+        return True
+    if family == "workable" and "input_files" in hint:
+        return True
+    return True
 
 
 def _pre_submit_audit(
@@ -1235,6 +1371,15 @@ def _pre_submit_audit(
         )
 
     uploads = _audit_file_uploads(page)
+    _enrich_audit_file_rows(
+        audit_rows,
+        form,
+        uploads,
+        resume_pdf=resume_pdf or "",
+        cover_pdf=cover_pdf,
+        page=page,
+        family=family,
+    )
     resume_name = Path(resume_pdf).name if resume_pdf else ""
     cover_name = Path(cover_pdf).name if cover_pdf else ""
     logger.info(
@@ -1268,11 +1413,20 @@ def _pre_submit_audit(
         )
         return audit_rows, uploads, "not_eligible_location"
 
-    body = _body_text_lower(page)
-    resume_attached = resume_name.lower() in body if resume_name else False
+    accept_map = _file_accept_map(page)
+    resume_attached = False
+    cover_file_slots: list[dict] = []
+    resume_inputs: list[dict] = []
+
     for up in uploads:
         hint = f"{up.get('label', '')} {up.get('name', '')}"
-        if _file_hint_is_photo(hint):
+        pseudo = {
+            "label": up.get("label", ""),
+            "name": up.get("name", ""),
+            "accept": accept_map.get(up.get("name", "") or "", ""),
+            "required": up.get("required"),
+        }
+        if _file_hint_is_photo(hint) or _upload_accepts_images_only(pseudo["accept"]):
             continue
         logger.info(
             "[W%d]   upload %r required=%s has_file=%s file=%r",
@@ -1282,24 +1436,35 @@ def _pre_submit_audit(
             up.get("has_file"),
             up.get("file_name"),
         )
-        is_cover = _file_hint_is_cover(hint)
-        is_resume = _file_hint_is_resume(hint) or (
-            not is_cover and family not in {"lever"}
-        )
-        if is_resume and (up.get("has_file") or up.get("file_name")):
-            resume_attached = True
-        if is_cover and cover_pdf and (up.get("has_file") or up.get("file_name")):
-            logger.info("[W%d]   cover letter file attached on form", worker_id)
+        if _is_cover_file_upload(pseudo, family=family):
+            cover_file_slots.append(up)
+            fn = (up.get("file_name") or "").lower()
+            if cover_name and cover_name.lower() in fn:
+                logger.info("[W%d]   cover letter file attached on form", worker_id)
+            continue
+        if _is_resume_file_upload(pseudo, family=family):
+            resume_inputs.append(up)
+            fn = (up.get("file_name") or "").lower()
+            if resume_name and resume_name.lower() in fn:
+                resume_attached = True
 
-    resume_inputs = [
-        up for up in uploads
-        if not _file_hint_is_photo(f"{up.get('label', '')} {up.get('name', '')}")
-        and not _file_hint_is_cover(f"{up.get('label', '')} {up.get('name', '')}")
-    ]
+    if resume_pdf and not resume_attached and resume_name:
+        if _page_shows_filename(page, resume_name):
+            resume_attached = True
+
     if resume_inputs and resume_pdf and not resume_attached:
         required_resume = any(up.get("required") for up in resume_inputs)
         if required_resume or len(resume_inputs) == 1:
             return audit_rows, uploads, "resume_not_uploaded"
+
+    if cover_file_slots and cover_pdf and cover_name:
+        cover_attached = any(
+            cover_name.lower() in (up.get("file_name") or "").lower()
+            for up in cover_file_slots
+            if up.get("has_file")
+        )
+        if not cover_attached:
+            return audit_rows, uploads, "cover_letter_not_uploaded"
 
     if still_empty:
         if profile_binding.remaining_gaps_are_location_traps(still_empty):
@@ -1317,10 +1482,22 @@ def _persist_form_filled(url: str, record: dict) -> None:
 
         from applypilot.database import get_connection
         conn = get_connection()
-        conn.execute(
-            "UPDATE jobs SET apply_form_filled = ? WHERE url = ?",
-            (_json.dumps(record, ensure_ascii=False), url),
-        )
+        payload = _json.dumps(record, ensure_ascii=False)
+        resume_path = str(record.get("resume_pdf") or "").strip()
+        if resume_path:
+            conn.execute(
+                """
+                UPDATE jobs
+                SET apply_form_filled = ?, tailored_resume_path = ?
+                WHERE url = ?
+                """,
+                (payload, resume_path, url),
+            )
+        else:
+            conn.execute(
+                "UPDATE jobs SET apply_form_filled = ? WHERE url = ?",
+                (payload, url),
+            )
         conn.commit()
     except Exception:  # noqa: BLE001
         logger.debug("persist form_filled failed for %s", url[:80], exc_info=True)
@@ -1952,6 +2129,160 @@ def _upload_ashby_resume(page, resume_pdf: str) -> bool:
     return False
 
 
+def _field_uploaded_name(page, field) -> str:
+    try:
+        loc = _file_input_locator(page, field)
+        if loc.count() == 0:
+            return ""
+        return str(
+            loc.evaluate(
+                "el => (el.files && el.files[0] && el.files[0].name) || ''"
+            )
+            or ""
+        )
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _file_accept_map(page) -> dict[str, str]:
+    try:
+        raw = page.evaluate(
+            """() => {
+              const m = {};
+              document.querySelectorAll('input[type=file]').forEach((el) => {
+                const k = el.name || el.id || '';
+                if (k) m[k] = el.accept || '';
+              });
+              return m;
+            }"""
+        )
+        return raw if isinstance(raw, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _fill_cover_prose_fallback(
+    page,
+    *,
+    cover_text: str,
+    filled_rows: list[dict],
+    family: str,
+) -> None:
+    """When no cover-letter file slot exists, paste cover text into prose fields."""
+    text = str(cover_text or "").strip()
+    if not text:
+        return
+    form = extractor.extract_fields(page)
+    accept_map = _file_accept_map(page)
+    has_cover_file = any(
+        _is_cover_file_upload(
+            {
+                "label": f.label,
+                "name": f.name_attr,
+                "accept": accept_map.get(f.name_attr or "", ""),
+                "required": f.required,
+            },
+            family=family,
+        )
+        for f in form.fields
+        if f.type == "file"
+    )
+    if has_cover_file:
+        return
+    markers = (
+        "cover letter",
+        "coverletter",
+        "motivation",
+        "letter of interest",
+        "why do you want",
+        "why are you interested",
+        "additional information",
+        "anything else",
+    )
+    for f in form.fillable():
+        if f.empty is False or f.type == "file":
+            continue
+        blob = f"{f.section_header} {f.label}".lower()
+        if not any(m in blob for m in markers):
+            continue
+        if f.tag != "textarea" and f.type not in {"", "text"}:
+            continue
+        snippet = text[:4000]
+        if _fill_field(page, f, snippet, family=family):
+            filled_rows.append(
+                _record_row(f.label, snippet[:200], ftype=f.type or f.tag, via="cover_prose")
+            )
+            _sleep_fill()
+            return
+
+
+def _fill_optional_gaps(
+    page,
+    *,
+    tokens: dict,
+    job: dict,
+    gemini_enabled: bool,
+    filled_rows: list[dict],
+    outcome,
+    family: str,
+) -> None:
+    """Fill optional controls still empty after the required path."""
+    from applypilot.apply.direct import profile_binding
+
+    form = extractor.extract_fields(page)
+    filled_labels = {_normalize_audit_label(r.get("label", "")) for r in filled_rows}
+
+    optional_combos = [
+        f for f in form.fillable()
+        if f.combobox and not f.required and f.empty
+    ]
+    for f in optional_combos:
+        status, sub = _fill_combobox(
+            page, f, tokens, gemini_enabled=gemini_enabled, family=family,
+        )
+        if sub is not None and outcome is not None:
+            outcome.tier_max = max(outcome.tier_max, sub.tier_max)
+            outcome.llm_field_count += sub.llm_field_count
+        if status == "filled" and sub is not None:
+            filled_rows.append(
+                _record_row(
+                    f.label,
+                    sub.answers.get(f.key, ""),
+                    ftype="select",
+                    via=sub.via.get(f.key, ""),
+                )
+            )
+
+    form = extractor.extract_fields(page)
+    gaps = [
+        f for f in form.fillable()
+        if not f.required
+        and f.empty
+        and f.type not in {"file", "hidden", "submit", "button"}
+        and not f.combobox
+        and _normalize_audit_label(f.label) not in filled_labels
+        and not profile_binding.is_phantom_technology_select(f)
+    ]
+    if not gaps:
+        return
+
+    sub = resolver.resolve(gaps, tokens, job=job, gemini_enabled=gemini_enabled)
+    if outcome is not None:
+        outcome.tier_max = max(outcome.tier_max, sub.tier_max)
+        outcome.llm_field_count += sub.llm_field_count
+    for f in gaps:
+        ans = sub.answers.get(f.key)
+        if not ans:
+            continue
+        if _fill_field(page, f, ans, family=family):
+            filled_rows.append(
+                _record_row(
+                    f.label, ans, ftype=f.type or f.tag, via=sub.via.get(f.key, ""),
+                )
+            )
+            _sleep_fill()
+
+
 def _upload_files(
     page,
     form,
@@ -1961,40 +2292,60 @@ def _upload_files(
     family: str = "",
 ) -> None:
     uploaded_resume = False
-    lever_resume_uploaded = False
     if family == "ashby":
         uploaded_resume = _upload_ashby_required_resume_input(page, resume_pdf)
-    for f in form.fields:
-        if f.type != "file":
-            continue
+
+    file_fields = [f for f in form.fields if f.type == "file"]
+    cover_fields: list = []
+    resume_fields: list = []
+    accept_map = _file_accept_map(page)
+
+    for f in file_fields:
         if family == "ashby" and _is_ashby_autofill_file(f):
             continue
-        # Use label + name + section so the resume/cover inputs (both labelled
-        # "Attach" on modern Greenhouse) are told apart by their name/id.
         hint = f"{f.label} {f.name_attr} {f.section_header}".lower()
-        if any(h in hint for h in _PHOTO_LABEL_HINTS):
+        accept = accept_map.get(f.name_attr or "", "")
+        if _file_hint_is_photo(hint) or _upload_accepts_images_only(accept):
             continue
-        is_cover = any(h in hint for h in _COVER_LABEL_HINTS)
-        if family == "lever" and is_cover:
+        pseudo = {
+            "label": f.label,
+            "name": f.name_attr,
+            "accept": accept,
+            "required": f.required,
+        }
+        if _is_resume_file_upload(pseudo, family=family):
+            resume_fields.append(f)
+        elif _is_cover_file_upload(pseudo, family=family):
+            cover_fields.append(f)
+        elif family == "lever":
+            resume_fields.append(f)
+
+    cover_path = cover_pdf if cover_pdf and Path(cover_pdf).exists() else None
+
+    for f in resume_fields:
+        existing = _field_uploaded_name(page, f)
+        if existing and resume_pdf and Path(resume_pdf).name.lower() in existing.lower():
+            uploaded_resume = True
             continue
-        if family == "lever" and not is_cover and lever_resume_uploaded:
-            continue
-        if is_cover:
-            if not cover_pdf or not Path(cover_pdf).exists():
-                continue
-            target = cover_pdf
-        else:
-            # Any non-cover file input defaults to the resume.
-            target = resume_pdf
         try:
-            _file_input_locator(page, f).set_input_files(target, timeout=8_000)
-            if not is_cover:
-                uploaded_resume = True
-                if family == "lever":
-                    lever_resume_uploaded = True
+            _file_input_locator(page, f).set_input_files(resume_pdf, timeout=8_000)
+            uploaded_resume = True
             _wait_upload_complete(page)
         except Exception:  # noqa: BLE001
-            logger.debug("file upload failed for %r", f.label, exc_info=True)
+            logger.debug("resume upload failed for %r", f.label, exc_info=True)
+
+    for f in cover_fields:
+        if not cover_path:
+            continue
+        existing = _field_uploaded_name(page, f) or ""
+        if resume_pdf and Path(resume_pdf).name.lower() in existing.lower():
+            continue
+        try:
+            _file_input_locator(page, f).set_input_files(cover_path, timeout=8_000)
+            _wait_upload_complete(page)
+        except Exception:  # noqa: BLE001
+            logger.debug("cover upload failed for %r", f.label, exc_info=True)
+
     if not uploaded_resume and family == "ashby":
         _upload_ashby_resume(page, resume_pdf)
 
@@ -2982,6 +3333,7 @@ def apply_via_direct(
         unresolved_state: dict[str, int] = {"count": 0}
         cover_upload: str | None = None
         cover_resolved = False
+        _cl_text = ""
         max_pages = _multistep_max_pages()
 
         def _form_record(extra_errors=None) -> dict:
@@ -3423,6 +3775,35 @@ def apply_via_direct(
                 worker_id=worker_id,
             )
             _workday_final_refill(page, tokens=tokens, filled_rows=filled_rows)
+
+        if not cover_resolved:
+            _cl_text, _cl_txt, cover_pdf = resolve_apply_cover_letter(job)
+            cover_upload = cover_pdf or None
+            cover_resolved = True
+        final_form = extractor.extract_fields(page)
+        if any(f.type == "file" for f in final_form.fields):
+            _upload_files(
+                page,
+                final_form,
+                resume_pdf,
+                cover_upload,
+                family=family,
+            )
+        _fill_optional_gaps(
+            page,
+            tokens=tokens,
+            job=job,
+            gemini_enabled=gemini_enabled,
+            filled_rows=filled_rows,
+            outcome=outcome,
+            family=family,
+        )
+        _fill_cover_prose_fallback(
+            page,
+            cover_text=str(tokens.get("cover_letter_text") or _cl_text or ""),
+            filled_rows=filled_rows,
+            family=family,
+        )
 
         audit_rows, upload_rows, audit_block = _pre_submit_audit(
             page,

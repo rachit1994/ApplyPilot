@@ -26,6 +26,7 @@ from rich.table import Table
 from applypilot import config
 from applypilot.config import load_env, ensure_dirs
 from applypilot.database import init_db, get_connection, get_stats, refresh_source_stats_tailored
+from applypilot.db.dialect import scalar
 from applypilot.orchestration.events import emit_run_event
 
 log = logging.getLogger(__name__)
@@ -390,7 +391,7 @@ _PENDING_SQL: dict[str, str] = {
     ),
     "refer": (
         "SELECT COUNT(*) FROM jobs WHERE fit_score >= ? "
-        "AND discovered_at >= datetime('now', '-72 hours') "
+        "AND discovered_at::timestamptz >= NOW() - INTERVAL '72 hours' "
         "AND ("
         "  (recruiter_public_id IS NULL OR recruiter_public_id = '') "
         "  OR (referral_message IS NULL OR referral_message = '') "
@@ -429,17 +430,22 @@ def _count_pending(stage: str, min_score: int = 7) -> int:
         from applypilot.enrichment.pending import detail_pending_clause
 
         conn = get_connection()
-        return conn.execute(
-            f"SELECT COUNT(*) FROM jobs WHERE {detail_pending_clause()}"
-        ).fetchone()[0]
+        return int(
+            scalar(
+                conn.execute(
+                    f"SELECT COUNT(*) AS c FROM jobs WHERE {detail_pending_clause()}"
+                ).fetchone()
+            )
+            or 0
+        )
 
     sql = _PENDING_SQL.get(stage)
     if sql is None:
         return 0
     conn = get_connection()
     if "?" in sql:
-        return conn.execute(sql, (min_score,)).fetchone()[0]
-    return conn.execute(sql).fetchone()[0]
+        return int(scalar(conn.execute(sql, (min_score,)).fetchone()) or 0)
+    return int(scalar(conn.execute(sql).fetchone()) or 0)
 
 
 def _progress_percent(done: int, denom: int) -> int | None:

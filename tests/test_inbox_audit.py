@@ -3,18 +3,15 @@
 from pathlib import Path
 
 import applypilot.config as ap_config
-import applypilot.database as ap_database
 from applypilot.database import close_connection, get_connection, init_db
 from applypilot.inbox.audit import list_audit_events, log_event
 
 
-def test_log_and_list_audit_events(tmp_path, monkeypatch):
+def test_log_and_list_audit_events(tmp_path, monkeypatch, isolated_db):
     monkeypatch.setenv("APPLYPILOT_DIR", str(tmp_path))
     ap_config.APP_DIR = Path(tmp_path)
-    ap_config.DB_PATH = ap_config.APP_DIR / "applypilot.db"
-    ap_database.DB_PATH = ap_config.DB_PATH
     close_connection()
-    init_db(ap_config.DB_PATH)
+    init_db()
 
     conn = get_connection()
     conn.execute(
@@ -28,7 +25,7 @@ def test_log_and_list_audit_events(tmp_path, monkeypatch):
     log_event("urn:li:msg:thread:audit-test", "classified", {"intent": "apply_request", "confidence": 0.9})
     log_event("urn:li:msg:thread:audit-test", "gated", {"skip_reason": "outbound_is_latest"})
 
-    events = list_audit_events(limit=10, participant_public_id="alice")
-    assert len(events) >= 2
-    assert events[0]["event_type"] in ("classified", "gated")
-    assert events[0]["payload"]
+    events = list_audit_events(conversation_urn="urn:li:msg:thread:audit-test")
+    assert len(events) == 2
+    assert events[0]["event_type"] == "gated"
+    assert events[1]["event_type"] == "classified"

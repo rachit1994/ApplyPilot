@@ -6,7 +6,6 @@ without migration ordering issues.
 """
 
 import json
-import sqlite3
 import threading
 import time
 from datetime import datetime, timezone
@@ -14,230 +13,67 @@ from hashlib import md5
 from pathlib import Path
 
 from applypilot import config
-from applypilot.config import DB_PATH
-
-# Thread-local connection storage — each thread gets its own connection
-# (required for SQLite thread safety with parallel workers)
-_local = threading.local()
+from applypilot.db.connection import Connection, close_connection, get_connection
+from applypilot.db.dialect import is_unique_violation, scalar, sql_created_at_since_param, table_columns
 
 
-def get_connection(db_path: Path | str | None = None) -> sqlite3.Connection:
-    """Get a thread-local cached SQLite connection with WAL mode enabled.
-
-    Each thread gets its own connection (required for SQLite thread safety).
-    Connections are cached and reused within the same thread.
+def init_db(db_path: Path | str | None = None) -> Connection:
+    """Create the full schema on Postgres (idempotent).
 
     Args:
-        db_path: Override the default DB_PATH. Useful for testing.
+        db_path: Deprecated. Pass a ``postgresql://`` URL to override the DSN.
 
     Returns:
-        sqlite3.Connection configured with WAL mode and row factory.
+        Connection with the schema initialized.
     """
-    path = str(db_path or DB_PATH)
+    database_url: str | None = None
+    if db_path is not None:
+        text = str(db_path)
+        if text.startswith("postgresql://") or text.startswith("postgres://"):
+            database_url = text
 
-    if not hasattr(_local, 'connections'):
-        _local.connections = {}
+    from applypilot.db.schema import init_schema
 
-    conn = _local.connections.get(path)
-    if conn is not None:
-        try:
-            conn.execute("SELECT 1")
-            return conn
-        except sqlite3.ProgrammingError:
-            pass
-
-    conn = sqlite3.connect(path, timeout=30)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=10000")
-    conn.row_factory = sqlite3.Row
-    _local.connections[path] = conn
-    return conn
-
-
-def close_connection(db_path: Path | str | None = None) -> None:
-    """Close the cached connection for the current thread."""
-    path = str(db_path or DB_PATH)
-    if hasattr(_local, 'connections'):
-        conn = _local.connections.pop(path, None)
-        if conn is not None:
-            conn.close()
-
-
-def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
-    """Create the full jobs table with all columns from every pipeline stage.
-
-    This is idempotent -- safe to call on every startup. Uses CREATE TABLE IF NOT EXISTS
-    so it won't destroy existing data.
-
-    Schema columns by stage:
-      - Discovery:  url, title, salary, description, location, site, strategy, discovered_at
-      - Enrichment: full_description, application_url, detail_scraped_at, detail_error
-      - Scoring:    fit_score, score_reasoning, scored_at
-      - Tailoring:  tailored_resume_path, tailored_at, tailor_attempts
-      - Cover:      cover_letter_path, cover_letter_at, cover_attempts
-      - Apply:      applied_at, apply_status, apply_error, apply_attempts,
-                   agent_id, last_attempted_at, apply_duration_ms, apply_task_id,
-                   verification_confidence
-
-    Apply statuses are free-form text for forward compatibility. Known values:
-    in_progress, applied, submitted_unverified, failed, manual, expired,
-    captcha, login_issue, already_applied, account_required.
-
-    Args:
-        db_path: Override the default DB_PATH.
-
-    Returns:
-        sqlite3.Connection with the schema initialized.
-    """
-    path = db_path or DB_PATH
-
-    # Ensure parent directory exists
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-
-    conn = get_connection(path)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS jobs (
-            -- Discovery stage (smart_extract / job_search)
-            url                   TEXT PRIMARY KEY,
-            title                 TEXT,
-            salary                TEXT,
-            description           TEXT,
-            location              TEXT,
-            site                  TEXT,
-            content_hash          TEXT,
-            sources               TEXT,
-            strategy              TEXT,
-            discovered_at         TEXT,
-
-            -- Enrichment stage (detail_scraper)
-            full_description      TEXT,
-            application_url       TEXT,
-            detail_scraped_at     TEXT,
-            detail_error          TEXT,
-
-            -- Scoring stage (job_scorer)
-            pre_fit_score        INTEGER,
-            pre_filter_reason    TEXT,
-            pre_filter_rejected_at TEXT,
-            fit_score             INTEGER,
-            score_reasoning       TEXT,
-            scored_at             TEXT,
-
-            -- Tailoring stage (resume tailor)
-            tailored_resume_path  TEXT,
-            tailored_at           TEXT,
-            tailor_attempts       INTEGER DEFAULT 0,
-
-            -- Cover letter stage
-            cover_letter_path     TEXT,
-            cover_letter_at       TEXT,
-            cover_attempts        INTEGER DEFAULT 0,
-
-            -- Application stage
-            applied_at            TEXT,
-            apply_status          TEXT,
-            apply_error           TEXT,
-            apply_attempts        INTEGER DEFAULT 0,
-            agent_id              TEXT,
-            last_attempted_at     TEXT,
-            apply_duration_ms     INTEGER,
-            apply_task_id         TEXT,
-            verification_confidence TEXT
-        )
-    """)
-    ensure_source_stats_table(conn)
-    ensure_llm_usage_table(conn)
-    ensure_dashboard_activity_table(conn)
-    ensure_qa_bank_table(conn)
-    ensure_apply_outcomes_table(conn)
-    ensure_field_overrides_table(conn)
-    from applypilot.apply.direct.playbook import ensure_playbook_tables
-    from applypilot.apply.direct.review_log import ensure_review_log_table
-
-    ensure_playbook_tables(conn)
-    ensure_review_log_table(conn)
-    conn.commit()
-
-    # Run migrations for any columns added after initial schema
+    conn = get_connection(database_url)
+    init_schema(conn)
     ensure_columns(conn)
-
-    from applypilot.inbox.db import init_inbox_schema
-    from applypilot.orchestration.events import init_run_schema
-
-    init_inbox_schema(conn)
-    init_run_schema(conn)
-
     return conn
 
 
-def ensure_source_stats_table(conn: sqlite3.Connection | None = None) -> None:
+def wipe_all_data(conn: Connection | None = None) -> None:
+    """TRUNCATE all ApplyPilot tables on Postgres (destructive)."""
+    from applypilot.db.dialect import table_exists
+    from applypilot.db.schema import TABLES_MIGRATION_ORDER
+
+    if conn is None:
+        conn = get_connection()
+    tables = [t for t in TABLES_MIGRATION_ORDER if table_exists(conn, t)]
+    if not tables:
+        return
+    conn.execute(f"TRUNCATE TABLE {', '.join(tables)} RESTART IDENTITY CASCADE")
+    conn.commit()
+    invalidate_stats_cache()
+
+
+def ensure_source_stats_table(conn: Connection | None = None) -> None:
     """Create discover source telemetry table."""
     if conn is None:
         conn = get_connection()
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS discover_source_stats (
-            source TEXT NOT NULL,
-            run_id TEXT NOT NULL,
-            discovered INTEGER DEFAULT 0,
-            passed_filter INTEGER DEFAULT 0,
-            scored_ge7 INTEGER DEFAULT 0,
-            tailored INTEGER DEFAULT 0,
-            created_at TEXT NOT NULL
-        )
-        """
-    )
+    from applypilot.db.schema import _create_discover_source_stats
+
+    _create_discover_source_stats(conn)
 
 
-def ensure_llm_usage_table(conn: sqlite3.Connection | None = None) -> None:
+def ensure_llm_usage_table(conn: Connection | None = None) -> None:
     """Create a durable LLM usage/cost ledger."""
     if conn is None:
         conn = get_connection()
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS llm_usage_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            provider TEXT NOT NULL,
-            model TEXT NOT NULL,
-            operation TEXT NOT NULL,
-            input_tokens INTEGER DEFAULT 0,
-            output_tokens INTEGER DEFAULT 0,
-            cache_read_tokens INTEGER DEFAULT 0,
-            cache_create_tokens INTEGER DEFAULT 0,
-            estimated INTEGER DEFAULT 1,
-            cost_usd REAL DEFAULT 0,
-            created_at TEXT NOT NULL,
-            metadata_json TEXT
-        )
-        """
-    )
+    from applypilot.db.schema import _create_llm_usage_events
+
+    _create_llm_usage_events(conn)
 
 
-def ensure_dashboard_activity_table(conn: sqlite3.Connection | None = None) -> None:
-    """Persist dashboard-wide activity rows for /api/activity and SSE."""
-    if conn is None:
-        conn = get_connection()
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS dashboard_activity_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ts TEXT NOT NULL,
-            level TEXT NOT NULL DEFAULT 'info',
-            stage TEXT,
-            message TEXT NOT NULL,
-            run_id TEXT,
-            job_url TEXT,
-            meta_json TEXT
-        )
-        """
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_dashboard_activity_id "
-        "ON dashboard_activity_events(id)"
-    )
-
-
-def ensure_qa_bank_table(conn: sqlite3.Connection | None = None) -> None:
+def ensure_qa_bank_table(conn: Connection | None = None) -> None:
     """Create the Resolver Tier-1 Q&A answer cache.
 
     A normalized question key maps to a stored answer so the deterministic
@@ -261,30 +97,12 @@ def ensure_qa_bank_table(conn: sqlite3.Connection | None = None) -> None:
     """
     if conn is None:
         conn = get_connection()
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS qa_bank (
-            question_key   TEXT PRIMARY KEY,
-            question_text  TEXT,
-            answer         TEXT,
-            answer_type    TEXT,
-            section_header TEXT,
-            name_attr      TEXT,
-            scope          TEXT DEFAULT 'generic',
-            source         TEXT DEFAULT 'gemini',
-            hit_count      INTEGER DEFAULT 0,
-            created_at     TEXT,
-            updated_at     TEXT
-        )
-        """
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_qa_bank_hit_count "
-        "ON qa_bank(hit_count)"
-    )
+    from applypilot.db.schema import _create_qa_bank
+
+    _create_qa_bank(conn)
 
 
-def ensure_apply_outcomes_table(conn: sqlite3.Connection | None = None) -> None:
+def ensure_apply_outcomes_table(conn: Connection | None = None) -> None:
     """Create the per-apply observability/training-signal ledger.
 
     One row per Driver apply attempt. Powers the success-metric dashboard
@@ -305,46 +123,14 @@ def ensure_apply_outcomes_table(conn: sqlite3.Connection | None = None) -> None:
     """
     if conn is None:
         conn = get_connection()
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS apply_outcomes (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            url             TEXT NOT NULL,
-            ats_family      TEXT,
-            fingerprint     TEXT,
-            result          TEXT,
-            tier_resolved   INTEGER,
-            escalated       INTEGER DEFAULT 0,
-            escalate_reason TEXT,
-            fields_total    INTEGER DEFAULT 0,
-            fields_llm      INTEGER DEFAULT 0,
-            elapsed_ms      INTEGER,
-            created_at      TEXT NOT NULL
-        )
-        """
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_apply_outcomes_created "
-        "ON apply_outcomes(created_at)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_apply_outcomes_fingerprint "
-        "ON apply_outcomes(fingerprint)"
-    )
-    cols = {
-        row[1]
-        for row in conn.execute("PRAGMA table_info(apply_outcomes)").fetchall()
-    }
-    if "canonical_url" not in cols:
-        conn.execute("ALTER TABLE apply_outcomes ADD COLUMN canonical_url TEXT")
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_apply_outcomes_canonical_created "
-        "ON apply_outcomes(canonical_url, created_at)"
-    )
+    from applypilot.db.schema import _create_apply_outcomes, ensure_apply_outcomes_columns
+
+    _create_apply_outcomes(conn)
+    ensure_apply_outcomes_columns(conn)
 
 
 def record_apply_outcome(
-    conn: sqlite3.Connection | None = None,
+    conn: Connection | None = None,
     *,
     url: str,
     ats_family: str | None = None,
@@ -405,7 +191,7 @@ def _override_key(label: str | None) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def ensure_field_overrides_table(conn: sqlite3.Connection | None = None) -> None:
+def ensure_field_overrides_table(conn: Connection | None = None) -> None:
     """Create the user-correction store.
 
     One row per normalized field label. The Resolver consults this FIRST (ahead
@@ -415,20 +201,12 @@ def ensure_field_overrides_table(conn: sqlite3.Connection | None = None) -> None
     """
     if conn is None:
         conn = get_connection()
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS field_overrides (
-            label_key  TEXT PRIMARY KEY,
-            label      TEXT,
-            value      TEXT,
-            created_at TEXT,
-            updated_at TEXT
-        )
-        """
-    )
+    from applypilot.db.schema import _create_field_overrides
+
+    _create_field_overrides(conn)
 
 
-def get_field_override(label: str | None, conn: sqlite3.Connection | None = None) -> str | None:
+def get_field_override(label: str | None, conn: Connection | None = None) -> str | None:
     """Return the user-corrected value for a field label, or None."""
     key = _override_key(label)
     if not key:
@@ -443,7 +221,7 @@ def get_field_override(label: str | None, conn: sqlite3.Connection | None = None
 
 
 def set_field_override(
-    label: str, value: str, conn: sqlite3.Connection | None = None
+    label: str, value: str, conn: Connection | None = None
 ) -> str:
     """Upsert a user correction for a field label. Returns the label_key."""
     key = _override_key(label)
@@ -468,7 +246,7 @@ def set_field_override(
     return key
 
 
-def list_field_overrides(conn: sqlite3.Connection | None = None) -> list[dict]:
+def list_field_overrides(conn: Connection | None = None) -> list[dict]:
     if conn is None:
         conn = get_connection()
     ensure_field_overrides_table(conn)
@@ -478,7 +256,7 @@ def list_field_overrides(conn: sqlite3.Connection | None = None) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def delete_field_override(label: str, conn: sqlite3.Connection | None = None) -> bool:
+def delete_field_override(label: str, conn: Connection | None = None) -> bool:
     key = _override_key(label)
     if conn is None:
         conn = get_connection()
@@ -489,7 +267,7 @@ def delete_field_override(label: str, conn: sqlite3.Connection | None = None) ->
 
 
 def record_llm_usage(
-    conn: sqlite3.Connection | None = None,
+    conn: Connection | None = None,
     *,
     provider: str,
     model: str,
@@ -534,7 +312,7 @@ def record_llm_usage(
 
 
 def get_llm_usage_monthly(
-    conn: sqlite3.Connection | None = None,
+    conn: Connection | None = None,
     *,
     month: str | None = None,
 ) -> list[dict]:
@@ -556,7 +334,7 @@ def get_llm_usage_monthly(
             SUM(cache_read_tokens) AS cache_read_tokens,
             SUM(cache_create_tokens) AS cache_create_tokens,
             SUM(cost_usd) AS cost_usd,
-            SUM(CASE WHEN estimated THEN 1 ELSE 0 END) AS estimated_calls
+            SUM(CASE WHEN estimated IS NOT NULL AND estimated != 0 THEN 1 ELSE 0 END) AS estimated_calls
         FROM llm_usage_events
         WHERE substr(created_at, 1, 7) = ?
         GROUP BY provider, model, operation
@@ -654,10 +432,10 @@ _ALL_COLUMNS: dict[str, str] = {
 }
 
 
-def ensure_columns(conn: sqlite3.Connection | None = None) -> list[str]:
+def ensure_columns(conn: Connection | None = None) -> list[str]:
     """Add any missing columns to the jobs table (forward migration).
 
-    Reads the current table schema via PRAGMA table_info and compares against
+    Reads the current ``jobs`` table columns via ``information_schema`` and compares against
     the full column registry. Any missing columns are added with ALTER TABLE.
 
     This makes it safe to upgrade the database from any previous version --
@@ -672,16 +450,14 @@ def ensure_columns(conn: sqlite3.Connection | None = None) -> list[str]:
     if conn is None:
         conn = get_connection()
 
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+    existing = table_columns(conn, "jobs")
     added = []
 
     for col, dtype in _ALL_COLUMNS.items():
         if col not in existing:
-            # PRIMARY KEY columns can't be added via ALTER TABLE, but url
-            # is always created with the table itself so this is safe
             if "PRIMARY KEY" in dtype:
                 continue
-            conn.execute(f"ALTER TABLE jobs ADD COLUMN {col} {dtype}")
+            conn.execute(f"ALTER TABLE jobs ADD COLUMN IF NOT EXISTS {col} {dtype}")
             added.append(col)
 
     if added:
@@ -708,7 +484,7 @@ def invalidate_stats_cache() -> None:
         pass
 
 
-def get_stats(conn: sqlite3.Connection | None = None, *, use_cache: bool = True) -> dict:
+def get_stats(conn: Connection | None = None, *, use_cache: bool = True) -> dict:
     """Return job counts by pipeline stage.
 
     Provides a snapshot of how many jobs are at each stage, useful for
@@ -743,7 +519,7 @@ def get_stats(conn: sqlite3.Connection | None = None, *, use_cache: bool = True)
     return stats
 
 
-def _compute_job_stats(conn: sqlite3.Connection | None = None) -> dict:
+def _compute_job_stats(conn: Connection | None = None) -> dict:
     """Uncached job counts for dashboard and pipeline progress."""
     if conn is None:
         conn = get_connection()
@@ -774,6 +550,8 @@ def _compute_job_stats(conn: sqlite3.Connection | None = None) -> dict:
           SUM(CASE WHEN apply_status = 'submitted_unverified' THEN 1 ELSE 0 END) AS submitted_unverified,
           SUM(CASE WHEN apply_error IS NOT NULL THEN 1 ELSE 0 END) AS apply_errors,
           SUM(CASE WHEN apply_status = 'manual' THEN 1 ELSE 0 END) AS apply_manual,
+          SUM(CASE WHEN apply_status = 'prepare_review' THEN 1 ELSE 0 END) AS prepare_review,
+          SUM(CASE WHEN apply_status = 'staged' THEN 1 ELSE 0 END) AS staged,
           SUM(CASE WHEN recruiter_public_id IS NOT NULL THEN 1 ELSE 0 END) AS referral_recruiter_scraped,
           SUM(CASE WHEN referral_status = 'pending_connect' THEN 1 ELSE 0 END) AS referral_pending_connect,
           SUM(CASE WHEN referral_status = 'connect_sent' THEN 1 ELSE 0 END) AS referral_connect_sent,
@@ -781,7 +559,7 @@ def _compute_job_stats(conn: sqlite3.Connection | None = None) -> dict:
           SUM(CASE WHEN referral_status = 'failed' THEN 1 ELSE 0 END) AS referral_failed,
           SUM(CASE WHEN referral_status = 'skipped' THEN 1 ELSE 0 END) AS referral_skipped,
           SUM(CASE WHEN referral_connect_at IS NOT NULL
-                    AND referral_connect_at >= datetime('now', '-7 days') THEN 1 ELSE 0 END) AS referral_connects_this_week
+                    AND referral_connect_at::timestamptz >= NOW() - INTERVAL '7 days' THEN 1 ELSE 0 END) AS referral_connects_this_week
         FROM jobs
         """
     ).fetchone()
@@ -791,14 +569,14 @@ def _compute_job_stats(conn: sqlite3.Connection | None = None) -> dict:
     site_rows = conn.execute(
         "SELECT site, COUNT(*) as cnt FROM jobs GROUP BY site ORDER BY cnt DESC"
     ).fetchall()
-    stats["by_site"] = [(site_row[0], site_row[1]) for site_row in site_rows]
+    stats["by_site"] = [(site_row["site"], site_row["cnt"]) for site_row in site_rows]
 
     dist_rows = conn.execute(
         "SELECT fit_score, COUNT(*) as cnt FROM jobs "
         "WHERE fit_score IS NOT NULL "
         "GROUP BY fit_score ORDER BY fit_score DESC"
     ).fetchall()
-    stats["score_distribution"] = [(dist_row[0], dist_row[1]) for dist_row in dist_rows]
+    stats["score_distribution"] = [(dist_row["fit_score"], dist_row["cnt"]) for dist_row in dist_rows]
 
     from applypilot.role_resumes import count_jobs_needing_tailor
 
@@ -813,7 +591,7 @@ def _compute_job_stats(conn: sqlite3.Connection | None = None) -> dict:
     return stats
 
 
-def count_claude_escalated_jobs(conn: sqlite3.Connection | None = None) -> int:
+def count_claude_escalated_jobs(conn: Connection | None = None) -> int:
     """Jobs in the apply ledger deferred to or handled by Claude rescue."""
     if conn is None:
         conn = get_connection()
@@ -831,7 +609,7 @@ def count_claude_escalated_jobs(conn: sqlite3.Connection | None = None) -> int:
         )
         """
     ).fetchone()
-    return int(row[0] or 0)
+    return int(scalar(row) or 0)
 
 
 def _content_hash_for_job(job: dict, site: str = "") -> str:
@@ -842,7 +620,7 @@ def _content_hash_for_job(job: dict, site: str = "") -> str:
     return md5(f"{title}|{company}|{location}".encode("utf-8")).hexdigest()
 
 
-def _append_job_source(conn: sqlite3.Connection, url: str, site: str) -> None:
+def _append_job_source(conn: Connection, url: str, site: str) -> None:
     row = conn.execute(
         "SELECT site, sources FROM jobs WHERE url = ?",
         (url,),
@@ -850,8 +628,8 @@ def _append_job_source(conn: sqlite3.Connection, url: str, site: str) -> None:
     if row is None:
         return
 
-    existing_site = row["site"] if isinstance(row, sqlite3.Row) else row[0]
-    existing_sources = row["sources"] if isinstance(row, sqlite3.Row) else row[1]
+    existing_site = row["site"]
+    existing_sources = row["sources"]
     parts = []
     for value in (existing_sources, existing_site, site):
         for part in str(value or "").split(","):
@@ -865,7 +643,7 @@ def _append_job_source(conn: sqlite3.Connection, url: str, site: str) -> None:
     )
 
 
-def store_jobs(conn: sqlite3.Connection, jobs: list[dict],
+def store_jobs(conn: Connection, jobs: list[dict],
                site: str, strategy: str) -> tuple[int, int]:
     """Store discovered jobs, skipping duplicates by content hash before URL.
 
@@ -926,9 +704,7 @@ def store_jobs(conn: sqlite3.Connection, jobs: list[dict],
             (content_hash,),
         ).fetchone()
         if duplicate is not None:
-            duplicate_url = (
-                duplicate["url"] if isinstance(duplicate, sqlite3.Row) else duplicate[0]
-            )
+            duplicate_url = duplicate["url"]
             _append_job_source(conn, duplicate_url, site)
             _backfill_detail_columns(duplicate_url, job)
             existing += 1
@@ -948,7 +724,10 @@ def store_jobs(conn: sqlite3.Connection, jobs: list[dict],
                  application_url, full_description, detail_scraped_at),
             )
             new += 1
-        except sqlite3.IntegrityError:
+        except Exception as exc:
+            if not is_unique_violation(exc):
+                raise
+            conn.rollback()
             _append_job_source(conn, url, site)
             _backfill_detail_columns(url, job)
             existing += 1
@@ -958,7 +737,7 @@ def store_jobs(conn: sqlite3.Connection, jobs: list[dict],
 
 
 def record_discover_source_stats(
-    conn: sqlite3.Connection | None,
+    conn: Connection | None,
     *,
     source: str,
     run_id: str = "",
@@ -1001,26 +780,29 @@ _DISCOVER_SOURCE_KEY_SQL = """
 
 
 def _live_scored_ge7_by_source(
-    conn: sqlite3.Connection,
+    conn: Connection,
     *,
     days: int = 7,
 ) -> dict[str, int]:
     """Count score≥7 jobs in the window, grouped by discover source key (site prefix)."""
     rows = conn.execute(
         f"""
-        SELECT {_DISCOVER_SOURCE_KEY_SQL} AS source_key, COUNT(*) AS n
-        FROM jobs
-        WHERE fit_score >= 7
-          AND discovered_at >= datetime('now', ?)
+        SELECT source_key, COUNT(*) AS n
+        FROM (
+            SELECT {_DISCOVER_SOURCE_KEY_SQL} AS source_key
+            FROM jobs
+            WHERE fit_score >= 7
+              AND {sql_created_at_since_param('discovered_at')}
+        ) scored
+        WHERE source_key IS NOT NULL
         GROUP BY source_key
-        HAVING source_key IS NOT NULL
         """,
         (f"-{max(1, int(days))} days",),
     ).fetchall()
     return {str(row["source_key"]): int(row["n"] or 0) for row in rows}
 
 
-def refresh_source_stats_scores(conn: sqlite3.Connection | None = None, *, run_id: str = "") -> None:
+def refresh_source_stats_scores(conn: Connection | None = None, *, run_id: str = "") -> None:
     """Refresh per-source score counts for source telemetry rows."""
     from applypilot.discovery.site_priority import sql_site_matches_discover_source
 
@@ -1051,7 +833,7 @@ def refresh_source_stats_scores(conn: sqlite3.Connection | None = None, *, run_i
     conn.commit()
 
 
-def refresh_source_stats_tailored(conn: sqlite3.Connection | None = None, *, run_id: str = "") -> None:
+def refresh_source_stats_tailored(conn: Connection | None = None, *, run_id: str = "") -> None:
     """Refresh per-source tailored counts for source telemetry rows."""
     from applypilot.discovery.site_priority import sql_site_matches_discover_source
 
@@ -1082,7 +864,7 @@ def refresh_source_stats_tailored(conn: sqlite3.Connection | None = None, *, run
 
 
 def get_source_stats_rollup(
-    conn: sqlite3.Connection | None = None,
+    conn: Connection | None = None,
     *,
     days: int = 7,
 ) -> list[dict]:
@@ -1092,7 +874,7 @@ def get_source_stats_rollup(
     ensure_source_stats_table(conn)
     window = f"-{max(1, int(days))} days"
     rows = conn.execute(
-        """
+        f"""
         SELECT
             source,
             SUM(discovered) AS discovered,
@@ -1100,7 +882,7 @@ def get_source_stats_rollup(
             SUM(scored_ge7) AS scored_ge7,
             SUM(tailored) AS tailored
         FROM discover_source_stats
-        WHERE created_at >= datetime('now', ?)
+        WHERE {sql_created_at_since_param('created_at')}
         GROUP BY source
         ORDER BY SUM(discovered) DESC
         """,
@@ -1130,7 +912,7 @@ def get_source_stats_rollup(
     return out
 
 
-def get_jobs_by_stage(conn: sqlite3.Connection | None = None,
+def get_jobs_by_stage(conn: Connection | None = None,
                       stage: str = "discovered",
                       min_score: int | None = None,
                       limit: int = 100) -> list[dict]:
@@ -1193,9 +975,4 @@ def get_jobs_by_stage(conn: sqlite3.Connection | None = None,
         params.append(limit)
 
     rows = conn.execute(query, params).fetchall()
-
-    # Convert sqlite3.Row objects to dicts
-    if rows:
-        columns = rows[0].keys()
-        return [dict(zip(columns, row)) for row in rows]
-    return []
+    return [dict(row) for row in rows]

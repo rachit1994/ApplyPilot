@@ -20,33 +20,33 @@
 
 ## Database safety (non-negotiable)
 
-Agents must **never wipe or replace** the user's ApplyPilot SQLite data unless the user explicitly asks for that destructive action in the current message.
+Agents must **never wipe or replace** the user's ApplyPilot Postgres data unless the user explicitly asks for that destructive action in the current message.
 
-Forbidden on the default database (`~/.applypilot/applypilot.db`, or any path when `APPLYPILOT_DIR` is unset):
+Forbidden on the user's live Postgres database (default `postgresql://127.0.0.1:5432/applypilot`, or whatever `APPLYPILOT_DATABASE_URL` points at):
 
-- `DELETE FROM jobs` (or any table) without a temp `APPLYPILOT_DIR`
-- `TRUNCATE`, `DROP TABLE`, replacing the `.db` file, or `rm` on `applypilot.db` / WAL files
+- `DELETE FROM jobs` (or any table) without an isolated test database
+- `TRUNCATE`, `DROP TABLE`, or destructive migration against production DSN
 - Debug or verification scripts that clear rows then insert test fixtures
 
-For pytest, manual experiments, or API debugging, **always** point at an isolated directory first:
+For pytest, manual experiments, or API debugging, **always** use an isolated database:
 
 ```bash
 export APPLYPILOT_DIR=$(mktemp -d)
-# then init_db / inserts / uv run python ...
+# pytest creates ephemeral applypilot_test_* databases automatically via conftest.py
 ```
 
-If you need sample rows, use the `temp_db` pytest fixture pattern in `tests/test_dashboard.py`, not the user's live DB. A pre-wipe backup may exist as `~/.applypilot/applypilot.db.pre-clean-*.bak` — do not overwrite it.
+If you need sample rows in tests, rely on the autouse `isolated_db` fixture in `tests/conftest.py`, not the user's live Postgres.
 
 ## Learned Workspace Facts
 - ApplyPilot is a local-first, single-user Python CLI for automated job discovery, scoring, tailoring, and application workflows.
 - `applypilot run` follows six stages: `discover`, `enrich`, `score`, `tailor`, `cover`, and `pdf`.
 - `applypilot apply` is a separate browser automation flow under `src/applypilot/apply/` (not in `STAGE_ORDER`); it launches visible Chrome by default (`--headless` to hide).
-- The primary local data directory is `~/.applypilot`, including the main SQLite DB at `~/.applypilot/applypilot.db` unless `APPLYPILOT_DIR` overrides it.
-- Primary DB path: `~/.applypilot/applypilot.db` (see **Database safety** above — never mutate it for debugging).
+- The primary local data directory is `~/.applypilot` (profile, resumes, templates, `.env`).
+- Primary database is **Postgres** at `APPLYPILOT_DATABASE_URL` (default `postgresql://127.0.0.1:5432/applypilot`); init with `applypilot db init`, status via `applypilot db status`.
 - `LLM_URL` takes precedence over Gemini or OpenAI keys for scoring and tailoring flows, while auto-apply uses Claude Code plus browser automation.
 - Tailor/cover use hybrid routing: B-grade jobs use archetype templates under `~/.applypilot/templates/` when present (`applypilot tailor-archetype`, `render-templates`); A-grade (`profile.json` → `tailor.a_grade`: `min_score`, `target_companies`) or missing/low-density templates fall back to full LLM tailor.
 - The `discover` stage runs JobSpy, Workday employer APIs, and Smart extract in parallel; boards/queries are in `~/.applypilot/searches.yaml`, Workday companies in `config/employers.yaml`, and direct sites in `config/sites.yaml`.
-- `docs/teach/` is the repo's onboarding track and is intended to align with `docs/rules.md`.
+- Worker apply docs live under `docs/worker-deterministic-apply-handbook.md` (deterministic engine) and `docs/worker-apply-playbook.md` (form-filler); see handbook intro for the full kept doc set.
 - `applypilot serve` (default `127.0.0.1:9477`) serves the React dashboard via FastAPI REST and SSE; v1 can start and monitor `applypilot run` only—apply, refer, and inbox still require the CLI.
 - `applypilot run` emits `stage_progress` run events (per-stage pending/total counts) for the dashboard pipeline progress UI.
 - Dashboard Live logs and Jobs lists virtualize rows with `@tanstack/react-virtual` to keep the DOM small on long runs.

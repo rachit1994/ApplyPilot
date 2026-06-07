@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import sqlite3
-
 from applypilot import config
+from applypilot.db.connection import Connection
+from applypilot.db.dialect import scalar
 from applypilot.server.job_pipeline_stage import (
     STAGE_APPLIED,
     STAGE_APPLYING,
@@ -91,17 +91,17 @@ def triage_filter_clause(slug: str) -> str:
     raise ValueError(f"unhandled triage slug: {normalized!r}")
 
 
-def count_for_triage(conn: sqlite3.Connection, slug: str) -> int:
+def count_for_triage(conn: Connection, slug: str) -> int:
     """Count jobs matching the same predicate as query_jobs for this triage slug."""
     normalized = normalize_triage_slug(slug)
     if normalized is None:
         return 0
     clause = triage_filter_clause(normalized)
-    row = conn.execute(f"SELECT COUNT(*) FROM jobs WHERE {clause}").fetchone()
-    return int(row[0] if row else 0)
+    row = conn.execute(f"SELECT COUNT(*) AS c FROM jobs WHERE {clause}").fetchone()
+    return int(scalar(row) or 0)
 
 
-def fetch_triage_counts(conn: sqlite3.Connection | None = None) -> dict[str, int]:
+def fetch_triage_counts(conn: Connection | None = None) -> dict[str, int]:
     """Counts keyed by triage slug; must stay in sync with triage_filter_clause."""
     from applypilot.database import get_connection
 

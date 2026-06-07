@@ -7,7 +7,9 @@ export type ApplyStatusFilter =
   | "applied"
   | "submitted_unverified"
   | "failed"
-  | "manual";
+  | "manual"
+  | "prepare_review"
+  | "staged";
 
 export function applyStatusFilterFromUrl(filter: string | null): ApplyStatusFilter {
   if (filter === "needs" || filter === "needs_action") return "needs_action";
@@ -16,6 +18,8 @@ export function applyStatusFilterFromUrl(filter: string | null): ApplyStatusFilt
   if (filter === "failed") return "failed";
   if (filter === "manual") return "manual";
   if (filter === "claude" || filter === "claude_escalated") return "claude_escalated";
+  if (filter === "prep" || filter === "prepare" || filter === "prepare_review") return "prepare_review";
+  if (filter === "staged") return "staged";
   return "all";
 }
 
@@ -31,7 +35,14 @@ export function apiNeedsAttentionForFilter(filter: ApplyStatusFilter): boolean {
 }
 
 export function applicationsIncludeFailedForFilter(filter: ApplyStatusFilter): boolean {
-  if (filter === "applied" || filter === "submitted_unverified") return false;
+  if (
+    filter === "applied" ||
+    filter === "submitted_unverified" ||
+    filter === "prepare_review" ||
+    filter === "staged"
+  ) {
+    return false;
+  }
   return true;
 }
 

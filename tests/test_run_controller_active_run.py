@@ -19,8 +19,6 @@ def temp_db(monkeypatch, tmp_path):
 
     config.load_env()
     monkeypatch.setattr(config, "APP_DIR", tmp_path)
-    monkeypatch.setattr(config, "DB_PATH", db_path)
-    monkeypatch.setattr(database, "DB_PATH", db_path)
     database.close_connection()
     database.init_db()
     yield db_path

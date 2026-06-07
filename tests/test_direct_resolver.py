@@ -30,14 +30,10 @@ TOKENS = {
 @pytest.fixture
 def conn(tmp_path: Path, monkeypatch):
     from applypilot import config, database
-
-    db_path = tmp_path / "applypilot.db"
-    monkeypatch.setattr(config, "DB_PATH", db_path)
-    monkeypatch.setattr(database, "DB_PATH", db_path)
-    database.close_connection(db_path)
-    c = database.init_db(db_path)
+    database.close_connection()
+    c = database.init_db()
     yield c
-    database.close_connection(db_path)
+    database.close_connection()
 
 
 def test_tier0_covers_standard_fields(conn):
@@ -69,7 +65,13 @@ def test_tier1_cache_hit(conn):
 
 def test_unresolved_required_tracked_when_gemini_off(conn):
     fields = [
-        Field(label="What is your management philosophy?", tag="textarea", required=True, key="kq"),
+        Field(
+            label="What is your employee referral code?",
+            tag="input",
+            type="text",
+            required=True,
+            key="kq",
+        ),
     ]
     out = rz.resolve(fields, TOKENS, conn=conn, gemini_enabled=False)
     assert "kq" in out.unresolved
@@ -109,7 +111,15 @@ def test_tier2_gemini_batch_and_writeback(conn, monkeypatch):
         "applypilot.llm.get_client", lambda: FakeClient(), raising=False
     )
 
-    fields = [Field(label="Management philosophy?", tag="textarea", required=True, key="kq")]
+    fields = [
+        Field(
+            label="Employee referral code?",
+            tag="input",
+            type="text",
+            required=True,
+            key="kq",
+        ),
+    ]
     out = rz.resolve(fields, TOKENS, conn=conn, gemini_enabled=True)
     assert out.answers["kq"].startswith("I value autonomy")
     assert out.tier_max == 2
@@ -126,15 +136,15 @@ def test_tier2_answers_optional_leftovers(conn, monkeypatch):
 
         def ask(self, prompt):
             assert '"required": false' in prompt
-            return '{"opt": "I prefer distributed teams with clear ownership."}'
+            return '{"opt": "he/him"}'
 
     monkeypatch.setattr(
         "applypilot.llm.get_client", lambda: FakeClient(), raising=False
     )
 
-    fields = [Field(label="Anything else?", tag="textarea", required=False, key="opt")]
+    fields = [Field(label="Preferred pronouns", tag="input", required=False, key="opt")]
     out = rz.resolve(fields, TOKENS, conn=conn, gemini_enabled=True)
-    assert out.answers["opt"].startswith("I prefer distributed")
+    assert out.answers["opt"] == "he/him"
     assert out.unresolved == []
     assert out.unresolved_required == []
     assert out.llm_field_count == 1

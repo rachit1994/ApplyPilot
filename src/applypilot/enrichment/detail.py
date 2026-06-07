@@ -13,7 +13,6 @@ Three-tier extraction cascade (cheapest first):
 import json
 import logging
 import re
-import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -23,7 +22,9 @@ from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 
 from applypilot import config
-from applypilot.config import DB_PATH
+from applypilot.db.connection import Connection
+from applypilot.db.dialect import is_unique_violation, scalar
+from applypilot.job_log import format_job_line
 from applypilot.database import get_connection, init_db
 from applypilot.enrichment.pending import (
     DETAIL_GOTO_ATTEMPTS,
@@ -86,7 +87,7 @@ def resolve_url(raw_url: str, site: str) -> str | None:
     return urljoin(base, raw_url)
 
 
-def resolve_all_urls(conn: sqlite3.Connection) -> dict:
+def resolve_all_urls(conn: Connection) -> dict:
     """Resolve all relative URLs in the database. Returns stats."""
     rows = conn.execute("SELECT url, site FROM jobs").fetchall()
     resolved = 0
@@ -94,7 +95,7 @@ def resolve_all_urls(conn: sqlite3.Connection) -> dict:
     already_absolute = 0
 
     for row in rows:
-        url, site = row[0], row[1]
+        url, site = row["url"], row["site"]
         if url.startswith("http://") or url.startswith("https://"):
             already_absolute += 1
             continue
@@ -104,7 +105,9 @@ def resolve_all_urls(conn: sqlite3.Connection) -> dict:
             try:
                 conn.execute("UPDATE jobs SET url = ? WHERE url = ?", (new_url, url))
                 resolved += 1
-            except sqlite3.IntegrityError:
+            except Exception as exc:
+                if not is_unique_violation(exc):
+                    raise
                 conn.execute("DELETE FROM jobs WHERE url = ?", (url,))
                 resolved += 1
         else:
@@ -118,7 +121,7 @@ def resolve_all_urls(conn: sqlite3.Connection) -> dict:
         "AND application_url NOT LIKE 'http%'"
     ).fetchall()
     for row in rows:
-        url, site, app_url = row[0], row[1], row[2]
+        url, site, app_url = row["url"], row["site"], row["application_url"]
         new_app = resolve_url(app_url, site)
         if (
             not new_app
@@ -143,7 +146,7 @@ def resolve_all_urls(conn: sqlite3.Connection) -> dict:
     }
 
 
-def backfill_application_urls_from_descriptions(conn: sqlite3.Connection) -> int:
+def backfill_application_urls_from_descriptions(conn: Connection) -> int:
     """Set application_url from ATS links embedded in full_description when missing."""
     from applypilot.apply.apply_url_extract import (
         coerce_application_url,
@@ -170,7 +173,7 @@ def backfill_application_urls_from_descriptions(conn: sqlite3.Connection) -> int
 
 
 def backfill_linkedin_company_website_apply_urls(
-    conn: sqlite3.Connection,
+    conn: Connection,
     *,
     limit: int = 200,
 ) -> int:
@@ -223,7 +226,7 @@ def backfill_linkedin_company_website_apply_urls(
     return updated
 
 
-def resolve_wttj_urls(conn: sqlite3.Connection) -> int:
+def resolve_wttj_urls(conn: Connection) -> int:
     """Re-fetch WTTJ Algolia API to get proper detail URLs and fix slug-as-title.
     Returns count of URLs updated."""
     wttj_jobs = conn.execute(
@@ -271,7 +274,7 @@ def resolve_wttj_urls(conn: sqlite3.Connection) -> int:
 
     updated = 0
     for row in wttj_jobs:
-        old_url, old_title = row[0], row[1]
+        old_url, old_title = row["url"], row["title"]
         slug = old_url.split("_DFNS_")[0] if "_DFNS_" in old_url else old_url
         match = slug_map.get(slug) or slug_map.get(old_url)
         if match:
@@ -281,7 +284,9 @@ def resolve_wttj_urls(conn: sqlite3.Connection) -> int:
                     (match["url"], match["name"] or old_title, old_url),
                 )
                 updated += 1
-            except sqlite3.IntegrityError:
+            except Exception as exc:
+                if not is_unique_violation(exc):
+                    raise
                 conn.execute("DELETE FROM jobs WHERE url = ?", (old_url,))
                 updated += 1
         else:
@@ -293,7 +298,9 @@ def resolve_wttj_urls(conn: sqlite3.Connection) -> int:
                             (data["url"], data["name"] or old_title, old_url),
                         )
                         updated += 1
-                    except sqlite3.IntegrityError:
+                    except Exception as exc:
+                        if not is_unique_violation(exc):
+                            raise
                         conn.execute("DELETE FROM jobs WHERE url = ?", (old_url,))
                         updated += 1
                     break
@@ -804,7 +811,7 @@ def scrape_detail_page(page, url: str) -> dict:
 
 
 def scrape_site_batch(
-    conn: sqlite3.Connection | None,
+    conn: Connection | None,
     site: str,
     jobs: list[tuple],
     delay: float = 2.0,
@@ -838,7 +845,12 @@ def scrape_site_batch(
             page = context.new_page()
 
             for i, (url, title) in enumerate(jobs):
-                log.info("[%d/%d] %s", i + 1, len(jobs), title[:50] if title else url[:50])
+                log.info(
+                    "[%d/%d] %s",
+                    i + 1,
+                    len(jobs),
+                    format_job_line(title=title, url=url),
+                )
 
                 result = scrape_detail_page(page, url)
                 stats["processed"] += 1
@@ -877,7 +889,7 @@ def scrape_site_batch(
 
 
 def _run_detail_scraper(
-    conn: sqlite3.Connection,
+    conn: Connection,
     sites: list[str] | None = None,
     max_per_site: int | None = None,
     workers: int = 1,
@@ -907,7 +919,7 @@ def _run_detail_scraper(
 
     site_jobs: dict[str, list[tuple]] = {}
     for row in rows:
-        url, title, site = row[0], row[1], row[2]
+        url, title, site = row["url"], row["title"], row["site"]
         if sites and site not in sites:
             continue
         site_jobs.setdefault(site, []).append((url, title))
@@ -1023,7 +1035,7 @@ def stream_detail(
             if rows:
                 site_jobs: dict[str, list[tuple]] = {}
                 for row in rows:
-                    url, title, site = row[0], row[1], row[2]
+                    url, title, site = row["url"], row["title"], row["site"]
                     site_jobs.setdefault(site, []).append((url, title))
 
                 for site, jobs in site_jobs.items():
@@ -1076,14 +1088,19 @@ def run_enrichment(limit: int = 100, workers: int = 1) -> dict:
              url_stats["resolved"], url_stats["already_absolute"], url_stats["failed"])
 
     # WTTJ special handling
-    wttj_count = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE site = 'WelcomeToTheJungle'"
-    ).fetchone()[0]
+    wttj_count = int(
+        scalar(
+            conn.execute(
+                "SELECT COUNT(*) AS c FROM jobs WHERE site = 'WelcomeToTheJungle'"
+            ).fetchone()
+        )
+        or 0
+    )
     if wttj_count > 0:
         sample = conn.execute(
             "SELECT url FROM jobs WHERE site = 'WelcomeToTheJungle' LIMIT 1"
         ).fetchone()
-        if sample and not sample[0].startswith("http"):
+        if sample and not str(sample["url"]).startswith("http"):
             updated = resolve_wttj_urls(conn)
             log.info("WTTJ: %d URLs updated", updated)
 

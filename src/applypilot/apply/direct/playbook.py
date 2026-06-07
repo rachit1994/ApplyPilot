@@ -9,7 +9,7 @@ never replayed from cache.
 from __future__ import annotations
 
 import json
-import sqlite3
+from applypilot.db.connection import Connection
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha1
@@ -164,48 +164,12 @@ def field_sig(
     )
 
 
-def ensure_playbook_tables(conn: sqlite3.Connection | None = None) -> None:
+def ensure_playbook_tables(conn: Connection | None = None) -> None:
     if conn is None:
         conn = get_connection()
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS nav_playbook (
-            state_sig        TEXT NOT NULL,
-            sig_version      INTEGER NOT NULL DEFAULT 1,
-            scope            TEXT NOT NULL DEFAULT 'host',
-            ats_family       TEXT,
-            apex_host        TEXT,
-            step_name        TEXT,
-            preconditions    TEXT,
-            action_type      TEXT,
-            action_args      TEXT,
-            side_effecting   INTEGER NOT NULL DEFAULT 0,
-            goto_allowlist   TEXT,
-            status           TEXT NOT NULL DEFAULT 'trial',
-            promote_score    REAL NOT NULL DEFAULT 0.0,
-            success_weak     INTEGER NOT NULL DEFAULT 0,
-            success_receipt  INTEGER NOT NULL DEFAULT 0,
-            distinct_hosts   INTEGER NOT NULL DEFAULT 0,
-            fail_count       INTEGER NOT NULL DEFAULT 0,
-            source           TEXT,
-            created_at       TEXT,
-            last_used_at     TEXT,
-            last_verified_at TEXT,
-            PRIMARY KEY (state_sig, scope)
-        );
+    from applypilot.db.schema import _create_playbook
 
-        CREATE TABLE IF NOT EXISTS field_strategy (
-            field_sig      TEXT NOT NULL,
-            ats_family     TEXT NOT NULL,
-            fill_method    TEXT NOT NULL,
-            match_rule     TEXT,
-            status         TEXT NOT NULL DEFAULT 'trial',
-            success_count  INTEGER NOT NULL DEFAULT 0,
-            fail_count     INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY (field_sig, ats_family)
-        );
-        """
-    )
+    _create_playbook(conn)
     conn.commit()
 
 
@@ -252,7 +216,7 @@ class FieldStrategyEntry:
     fail_count: int
 
 
-def _row_to_nav_entry(row: sqlite3.Row) -> NavEntry:
+def _row_to_nav_entry(row: dict) -> NavEntry:
     return NavEntry(
         state_sig=row["state_sig"],
         sig_version=int(row["sig_version"]),
@@ -282,7 +246,7 @@ def lookup_nav(
     state_sig: str,
     scope: str = "host",
     *,
-    conn: sqlite3.Connection | None = None,
+    conn: Connection | None = None,
 ) -> NavEntry | None:
     if conn is None:
         conn = get_connection()
@@ -310,7 +274,7 @@ def record_nav(
     source: str = "gemini",
     status: str = "trial",
     force_update: bool = False,
-    conn: sqlite3.Connection | None = None,
+    conn: Connection | None = None,
 ) -> NavEntry:
     """Insert or upsert a nav recipe.
 
@@ -386,7 +350,7 @@ def bump_success(
     scope: str = "host",
     weak: bool = True,
     receipt: bool = False,
-    conn: sqlite3.Connection | None = None,
+    conn: Connection | None = None,
 ) -> NavEntry | None:
     if conn is None:
         conn = get_connection()
@@ -422,7 +386,7 @@ def bump_fail(
     state_sig: str,
     *,
     scope: str = "host",
-    conn: sqlite3.Connection | None = None,
+    conn: Connection | None = None,
 ) -> NavEntry | None:
     if conn is None:
         conn = get_connection()
@@ -452,7 +416,7 @@ def promote(
     *,
     scope: str = "host",
     status: str = "trusted",
-    conn: sqlite3.Connection | None = None,
+    conn: Connection | None = None,
 ) -> NavEntry | None:
     if conn is None:
         conn = get_connection()
@@ -475,7 +439,7 @@ def retire(
     state_sig: str,
     *,
     scope: str = "host",
-    conn: sqlite3.Connection | None = None,
+    conn: Connection | None = None,
 ) -> NavEntry | None:
     return promote(state_sig, scope=scope, status="retired", conn=conn)
 
@@ -484,7 +448,7 @@ def maybe_promote(
     state_sig: str,
     *,
     scope: str = "host",
-    conn: sqlite3.Connection | None = None,
+    conn: Connection | None = None,
 ) -> NavEntry | None:
     entry = lookup_nav(state_sig, scope=scope, conn=conn)
     if entry is None or entry.status in {"trusted", "pinned", "retired", "banned"}:
@@ -502,7 +466,7 @@ def stamp_verified(
     state_sigs: list[str],
     *,
     scope: str = "host",
-    conn: sqlite3.Connection | None = None,
+    conn: Connection | None = None,
 ) -> None:
     if not state_sigs:
         return
@@ -529,7 +493,7 @@ def lookup_field_strategy(
     field_sig: str,
     ats_family: str,
     *,
-    conn: sqlite3.Connection | None = None,
+    conn: Connection | None = None,
 ) -> str | None:
     if conn is None:
         conn = get_connection()
@@ -556,7 +520,7 @@ def record_field_strategy(
     *,
     match_rule: dict[str, Any] | None = None,
     status: str = "trial",
-    conn: sqlite3.Connection | None = None,
+    conn: Connection | None = None,
 ) -> FieldStrategyEntry:
     if conn is None:
         conn = get_connection()
@@ -592,7 +556,7 @@ def bump_field_fail(
     field_sig: str,
     ats_family: str,
     *,
-    conn: sqlite3.Connection | None = None,
+    conn: Connection | None = None,
 ) -> FieldStrategyEntry | None:
     if conn is None:
         conn = get_connection()
@@ -632,7 +596,7 @@ def get_field_strategy(
     field_sig: str,
     ats_family: str,
     *,
-    conn: sqlite3.Connection | None = None,
+    conn: Connection | None = None,
 ) -> FieldStrategyEntry | None:
     if conn is None:
         conn = get_connection()

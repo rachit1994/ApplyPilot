@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
-from applypilot import config
-from applypilot.database import close_connection, get_connection, init_db
+from applypilot.database import get_connection
 from applypilot.inbox.intents import (
     INTENT_INTERVIEW_INVITE,
     INTENT_STATUS_UPDATE,
@@ -22,21 +20,6 @@ from applypilot.inbox.job_match import (
 )
 from applypilot.inbox.reply_report import build_reply_rate_report
 from applypilot.inbox.store import save_gmail_classification, upsert_gmail_message
-
-
-@pytest.fixture
-def inbox_db(monkeypatch, tmp_path):
-    db = Path(tmp_path) / "applypilot.db"
-    monkeypatch.setenv("APPLYPILOT_DIR", str(tmp_path))
-    monkeypatch.setattr(config, "APP_DIR", Path(tmp_path))
-    monkeypatch.setattr(config, "DB_PATH", db)
-    import applypilot.database as database
-
-    monkeypatch.setattr(database, "DB_PATH", db)
-    close_connection()
-    init_db()
-    yield db
-    close_connection()
 
 
 def test_interview_invite_keyword_precision():
@@ -75,7 +58,7 @@ def test_score_job_match_company_and_title():
     assert score >= 0.6
 
 
-def test_record_job_reply_updates_job(inbox_db):
+def test_record_job_reply_updates_job():
     conn = get_connection()
     conn.execute(
         """
@@ -102,7 +85,7 @@ def test_record_job_reply_updates_job(inbox_db):
     assert row["reply_source_id"] == "msg-1"
 
 
-def test_pick_best_job_match_prefers_company(inbox_db):
+def test_pick_best_job_match_prefers_company():
     conn = get_connection()
     conn.executemany(
         """
@@ -131,7 +114,7 @@ def test_pick_best_job_match_prefers_company(inbox_db):
     assert match["url"] == "https://a.com/1"
 
 
-def test_reply_rate_report_by_source(inbox_db):
+def test_reply_rate_report_by_source():
     conn = get_connection()
     conn.executemany(
         """
@@ -180,7 +163,7 @@ def test_reply_rate_report_by_source(inbox_db):
     assert report["totals"]["replies"] == 2
 
 
-def test_reply_rate_never_exceeds_one_for_unverified_replies(inbox_db):
+def test_reply_rate_never_exceeds_one_for_unverified_replies():
     """Replies to submitted_unverified applies must not push the rate above 100%."""
     conn = get_connection()
     conn.executemany(
@@ -213,7 +196,7 @@ def test_reply_rate_never_exceeds_one_for_unverified_replies(inbox_db):
     assert report["totals"]["reply_rate"] <= 1.0
 
 
-def test_gmail_store_and_classify_fields(inbox_db):
+def test_gmail_store_and_classify_fields():
     upsert_gmail_message(
         message_id="gmsg-1",
         thread_id="t1",
@@ -261,7 +244,7 @@ def test_auto_ack_and_other_are_not_human_replies():
     assert not looks_like_auto_acknowledgement("Are you available next week?")
 
 
-def test_gmail_classify_overrides_ats_auto_ack(inbox_db, monkeypatch):
+def test_gmail_classify_overrides_ats_auto_ack(monkeypatch):
     """An ATS auto-ack the LLM calls apply_request is downgraded to auto_ack."""
     from applypilot.inbox import gmail_scanner
     from applypilot.inbox.intents import INTENT_AUTO_ACK

@@ -12,35 +12,17 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_REVIEW_LOG_DDL = """
-CREATE TABLE IF NOT EXISTS review_log (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  ts TEXT,
-  job_url TEXT,
-  ats_family TEXT,
-  apex_host TEXT,
-  state_sig TEXT,
-  scope TEXT,
-  step_index INTEGER,
-  url_before TEXT,
-  url_after TEXT,
-  frame_info TEXT,
-  tier TEXT,
-  action_type TEXT,
-  action_args TEXT,
-  locator TEXT,
-  llm_suggestion TEXT,
-  outcome TEXT,
-  postcondition_met INTEGER,
-  receipt_status TEXT,
-  screenshot_path TEXT,
-  failure_reason TEXT,
-  cost_usd REAL
-);
-"""
 
-_BATCH_SIZE = 50
+def ensure_review_log_table(conn) -> None:
+    """Create ``review_log`` if missing (idempotent)."""
+    from applypilot.db.schema import _create_review_log
+
+    _create_review_log(conn)
+    conn.commit()
+
+
 _FLUSH_INTERVAL_S = 1.0
+_BATCH_SIZE = 32
 
 _writer_lock = threading.Lock()
 _event_queue: queue.Queue[dict[str, Any] | None] = queue.Queue()
@@ -52,12 +34,6 @@ _flush_requested = threading.Event()
 _flush_done = threading.Event()
 _pending_count = 0
 _pending_lock = threading.Lock()
-
-
-def ensure_review_log_table(conn) -> None:
-    """Create ``review_log`` if missing (idempotent)."""
-    conn.executescript(_REVIEW_LOG_DDL)
-    conn.commit()
 
 
 def _serialize_event(
@@ -280,8 +256,9 @@ def _writer_running() -> bool:
 
 
 def _db_path_from_conn(conn) -> str:
-    row = conn.execute("PRAGMA database_list").fetchone()
-    return row[2] if row else ""
+    from applypilot.config import DATABASE_URL
+
+    return DATABASE_URL
 
 
 def start_writer(conn=None) -> None:
@@ -293,18 +270,13 @@ def start_writer(conn=None) -> None:
             return
 
         if conn is not None:
-            db_path = _db_path_from_conn(conn)
-            if db_path in ("", ":memory:"):
-                _writer_conn = conn
-                _writer_db_path = None
-            else:
-                _writer_conn = None
-                _writer_db_path = db_path
+            _writer_conn = None
+            _writer_db_path = _db_path_from_conn(conn)
         else:
             from applypilot import config
 
             _writer_conn = None
-            _writer_db_path = str(config.DB_PATH)
+            _writer_db_path = config.DATABASE_URL
 
         _stop_writer_event.clear()
         _flush_requested.clear()

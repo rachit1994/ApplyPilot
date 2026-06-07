@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-import sqlite3
 from datetime import datetime, timezone
+
+from applypilot.db.connection import Connection
+from applypilot.db.dialect import scalar
 
 # Per-run Playwright goto retries inside scrape_detail_page.
 DETAIL_GOTO_ATTEMPTS = 3
@@ -43,15 +45,15 @@ def detail_pending_clause() -> str:
     )"""
 
 
-def count_pending_detail(conn: sqlite3.Connection) -> int:
+def count_pending_detail(conn: Connection) -> int:
     row = conn.execute(
-        f"SELECT COUNT(*) FROM jobs WHERE {detail_pending_clause()}"
+        f"SELECT COUNT(*) AS c FROM jobs WHERE {detail_pending_clause()}"
     ).fetchone()
-    return int(row[0]) if row else 0
+    return int(scalar(row) or 0)
 
 
 def persist_detail_scrape_result(
-    conn: sqlite3.Connection,
+    conn: Connection,
     url: str,
     result: dict,
     *,
@@ -85,10 +87,10 @@ def persist_detail_scrape_result(
 
     error_text = err or "unknown"
     row = conn.execute(
-        "SELECT COALESCE(detail_enrich_attempts, 0) FROM jobs WHERE url = ?",
+        "SELECT COALESCE(detail_enrich_attempts, 0) AS detail_enrich_attempts FROM jobs WHERE url = ?",
         (url,),
     ).fetchone()
-    attempts = int(row[0]) + 1 if row else 1
+    attempts = int(row["detail_enrich_attempts"] or 0) + 1 if row else 1
 
     if is_retryable_detail_error(error_text) and attempts < MAX_DETAIL_ENRICH_ATTEMPTS:
         conn.execute(

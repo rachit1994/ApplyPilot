@@ -14,7 +14,7 @@ export type ApplyListActionInfo = {
 
 type Props = {
   app: Application;
-  layout?: "row" | "inline";
+  layout?: "row" | "inline" | "links";
   onApplyListAction?: (info: ApplyListActionInfo) => void;
 };
 
@@ -57,7 +57,12 @@ export function ApplicationRowActions({ app, layout = "row", onApplyListAction }
     e.stopPropagation();
   };
 
-  const className = layout === "row" ? "app-row__actions" : "app-detail__toolbar-group";
+  const className =
+    layout === "row"
+      ? "app-row__actions"
+      : layout === "links"
+        ? "app-detail__links-actions"
+        : "app-detail__toolbar-group";
 
   return (
     <div className={className} onClick={stopRowClick} onKeyDown={(e) => e.stopPropagation()}>

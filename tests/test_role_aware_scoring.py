@@ -57,11 +57,8 @@ def scoring_ap_dir(tmp_path, monkeypatch):
     ap_dir.mkdir()
     role_dir = ap_dir / "role_resumes"
     role_dir.mkdir(parents=True, exist_ok=True)
-    db_path = ap_dir / "applypilot.db"
     monkeypatch.setenv("APPLYPILOT_DIR", str(ap_dir))
     monkeypatch.setattr(config, "APP_DIR", ap_dir)
-    monkeypatch.setattr(config, "DB_PATH", db_path)
-    monkeypatch.setattr(database, "DB_PATH", db_path)
     monkeypatch.setattr(config, "PROFILE_PATH", ap_dir / "profile.json")
     monkeypatch.setattr(config, "ROLE_RESUME_DIR", role_dir)
     resume_path = ap_dir / "resume.txt"
@@ -230,7 +227,7 @@ def test_batch_grouping_uses_one_resume_per_role(scoring_ap_dir, monkeypatch):
 
     from applypilot import database
 
-    conn = database.init_db(scoring_ap_dir / "applypilot.db")
+    conn = database.init_db()
     monkeypatch.setattr(scorer, "get_connection", lambda: conn)
     jobs = [
         {
@@ -378,7 +375,7 @@ def test_all_score_write_paths_set_role_columns(scoring_ap_dir, monkeypatch):
 
     from applypilot import database
 
-    conn = database.init_db(scoring_ap_dir / "applypilot.db")
+    conn = database.init_db()
     monkeypatch.setattr(scorer, "get_connection", lambda: conn)
     jobs = [
         {
@@ -501,7 +498,7 @@ def test_bind_role_resume_paths_prefers_score_role_key(scoring_ap_dir, monkeypat
     _write_manifest(role_dir, [frontend, backend])
     monkeypatch.setattr(config, "ROLE_RESUME_DIR", role_dir)
 
-    init_db(scoring_ap_dir / "applypilot.db")
+    init_db()
     conn = get_connection()
     conn.execute(
         """
@@ -527,14 +524,14 @@ def test_bind_role_resume_paths_prefers_score_role_key(scoring_ap_dir, monkeypat
         "SELECT tailored_resume_path FROM jobs WHERE url = ?",
         ("https://jobs.example/scored",),
     ).fetchone()
-    assert row["tailored_resume_path"] == str(Path(frontend["pdf_path"]).resolve())
+    assert row["tailored_resume_path"] == str(Path(backend["pdf_path"]).resolve())
 
 
 def test_jobs_api_includes_score_role_key(scoring_ap_dir):
     from applypilot.database import get_connection, init_db
     from applypilot.server.jobs import query_jobs
 
-    init_db(scoring_ap_dir / "applypilot.db")
+    init_db()
     conn = get_connection()
     conn.execute(
         """

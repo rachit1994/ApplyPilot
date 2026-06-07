@@ -3,9 +3,13 @@ import type { ReactNode } from "react";
 type Props = {
   open: boolean;
   title: string;
+  subtitle?: string;
   cliCommand: string;
   summaryLines: string[];
   children?: ReactNode;
+  confirmDisabled?: boolean;
+  confirmLabel?: string;
+  wide?: boolean;
   onCancel: () => void;
   onConfirm: () => void;
 };
@@ -13,9 +17,13 @@ type Props = {
 export function RunPlanModal({
   open,
   title,
+  subtitle = "Review what will run before starting.",
   cliCommand,
   summaryLines,
   children,
+  confirmDisabled,
+  confirmLabel = "Confirm & start",
+  wide,
   onCancel,
   onConfirm,
 }: Props) {
@@ -23,46 +31,75 @@ export function RunPlanModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      className="run-plan-modal"
       role="dialog"
       aria-modal="true"
       aria-labelledby="run-plan-title"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onCancel();
+      }}
     >
-      <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-card border border-panel-border bg-panel p-5 shadow-xl">
-        <h2 id="run-plan-title" className="font-display text-lg text-ink">
-          {title}
-        </h2>
-        <p className="mt-2 text-sm text-ink-3">Review what will run before starting.</p>
-
-        <ul className="mt-4 space-y-1 text-sm text-ink-2">
-          {summaryLines.map((line) => (
-            <li key={line}>· {line}</li>
-          ))}
-        </ul>
-
-        <p className="mt-4 text-[10px] font-medium uppercase tracking-wide text-ink-4">CLI equivalent</p>
-        <pre className="mt-1 overflow-x-auto rounded border border-panel-border bg-canvas p-2 font-mono text-xs text-ink-2">
-          {cliCommand}
-        </pre>
-
-        {children ? <div className="mt-4">{children}</div> : null}
-
-        <div className="mt-6 flex justify-end gap-2">
+      <div
+        className={
+          wide
+            ? "run-plan-modal__sheet run-plan-modal__sheet--wide"
+            : "run-plan-modal__sheet run-plan-modal__sheet--default"
+        }
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className="panel__head panel__head--inset run-plan-modal__head">
+          <div>
+            <h2 id="run-plan-title" className="panel__title">
+              {title}
+            </h2>
+            <p className="panel__sub">{subtitle}</p>
+          </div>
           <button
             type="button"
+            className="icon-btn"
+            aria-label="Close"
             onClick={onCancel}
-            className="rounded-btn border border-panel-border px-4 py-2 text-sm text-ink-2 hover:bg-panel-elevated"
           >
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" aria-hidden>
+              <path d="M4 4l8 8M12 4l-8 8" strokeLinecap="round" />
+            </svg>
+          </button>
+        </header>
+
+        <div className="run-plan-modal__body">
+          {summaryLines.length > 0 ? (
+            <div className="run-plan-modal__summary">
+              <ul className="run-plan-modal__summary-list">
+                {summaryLines.map((line) => (
+                  <li key={line} className="run-plan-modal__summary-item">
+                    {line}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          {children ? <div className="run-plan-modal__sections">{children}</div> : null}
+
+          <div className="run-plan-modal__cli-block">
+            <div className="set-section-title">CLI equivalent</div>
+            <pre className="run-plan-modal__cli">{cliCommand}</pre>
+          </div>
+        </div>
+
+        <footer className="run-plan-modal__foot">
+          <button type="button" className="btn btn--ghost" onClick={onCancel}>
             Cancel
           </button>
           <button
             type="button"
+            className="btn btn--accent btn--lg"
             onClick={onConfirm}
-            className="rounded-btn bg-accent px-4 py-2 text-sm font-medium text-accent-foreground hover:bg-accent/90"
+            disabled={confirmDisabled}
           >
-            Confirm & start
+            {confirmLabel}
           </button>
-        </div>
+        </footer>
       </div>
     </div>
   );

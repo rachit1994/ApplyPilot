@@ -1,17 +1,18 @@
-"""Structured run events for the live dashboard (SQLite + in-memory subscribers)."""
+"""Structured run events for the live dashboard (Postgres + in-memory subscribers)."""
 
 from __future__ import annotations
 
 import json
 import os
-import sqlite3
+from applypilot.db.connection import Connection
+from applypilot.db.dialect import scalar
 import threading
 from datetime import datetime, timezone
 from typing import Any, Callable
 
 import logging
 
-from applypilot.config import DB_PATH, RUN_LOG_DIR, ensure_dirs
+from applypilot.config import RUN_LOG_DIR, ensure_dirs
 from applypilot.database import get_connection
 
 _RUN_ID_ENV = "APPLYPILOT_RUN_ID"
@@ -85,41 +86,13 @@ def get_active_run_id() -> str | None:
     return value or None
 
 
-def init_run_schema(conn: sqlite3.Connection | None = None) -> None:
-    """Create runs and run_events tables (idempotent)."""
+def init_run_schema(conn: Connection | None = None) -> None:
+    """Ensure runs/run_events exist (created by ``init_schema``)."""
     if conn is None:
         conn = get_connection()
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS runs (
-            id              TEXT PRIMARY KEY,
-            run_type        TEXT NOT NULL DEFAULT 'pipeline',
-            status          TEXT NOT NULL DEFAULT 'starting',
-            stages_json     TEXT,
-            stream          INTEGER NOT NULL DEFAULT 0,
-            dry_run         INTEGER NOT NULL DEFAULT 0,
-            current_stage   TEXT,
-            exit_code       INTEGER,
-            error_message   TEXT,
-            started_at      TEXT NOT NULL,
-            finished_at     TEXT
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS run_events (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            run_id          TEXT NOT NULL,
-            event_type      TEXT NOT NULL,
-            stage           TEXT,
-            level           TEXT,
-            message         TEXT,
-            payload_json    TEXT,
-            created_at      TEXT NOT NULL,
-            FOREIGN KEY (run_id) REFERENCES runs(id)
-        )
-    """)
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_run_events_run_id ON run_events(run_id, id)"
-    )
+    from applypilot.db.schema import _create_runs
+
+    _create_runs(conn)
     conn.commit()
 
 
@@ -165,6 +138,16 @@ def emit_run_event(
     if not rid:
         return None
 
+    conn = get_connection()
+    init_run_schema(conn)
+    if stage is None and event_type == "log":
+        row = conn.execute(
+            "SELECT current_stage FROM runs WHERE id = ?",
+            (rid,),
+        ).fetchone()
+        if row and row["current_stage"]:
+            stage = str(row["current_stage"])
+
     now = datetime.now(timezone.utc).isoformat()
     event: dict[str, Any] = {
         "run_id": rid,
@@ -175,12 +158,11 @@ def emit_run_event(
         "payload": payload or {},
         "created_at": now,
     }
-
-    conn = get_connection()
-    init_run_schema(conn)
-    count = conn.execute(
-        "SELECT COUNT(*) FROM run_events WHERE run_id = ?", (rid,)
-    ).fetchone()[0]
+    count = scalar(
+        conn.execute(
+            "SELECT COUNT(*) AS c FROM run_events WHERE run_id = ?", (rid,)
+        ).fetchone()
+    )
     if count >= _MAX_EVENTS_PER_RUN:
         return event
 
@@ -207,11 +189,14 @@ def emit_run_event(
         try:
             from applypilot.server.activity import emit_dashboard_activity
 
+            from applypilot.job_log import extract_job_url_from_message
+
             emit_dashboard_activity(
                 message,
                 level=level,
                 stage=stage,
                 run_id=rid,
+                job_url=extract_job_url_from_message(message),
             )
         except Exception:
             pass
@@ -226,7 +211,7 @@ def list_run_events(
     db_path: str | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch events for SSE catch-up or polling."""
-    conn = get_connection(db_path or DB_PATH)
+    conn = get_connection(db_path)
     init_run_schema(conn)
     rows = conn.execute(
         """

@@ -1,4 +1,4 @@
-"""Resolver Tier-1: SQLite Q&A answer cache.
+"""Resolver Tier-1: Q&A answer cache.
 
 Maps a normalized question key -> stored answer so the Driver fills standard
 screening fields with zero LLM calls after warm-up. Schema lives in
@@ -27,11 +27,12 @@ answer_type contract (enforced by lookup):
 from __future__ import annotations
 
 import re
-import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha1
 
+from applypilot.db.connection import Connection
+from applypilot.db.dialect import scalar
 from applypilot.database import ensure_qa_bank_table, get_connection
 
 # answer_types whose stored answer is safe to serve verbatim from cache.
@@ -95,7 +96,7 @@ def lookup(
     section_header: str | None = None,
     name_attr: str | None = None,
     answer_type: str = "text",
-    conn: sqlite3.Connection | None = None,
+    conn: Connection | None = None,
     bump_hit: bool = True,
 ) -> str | None:
     """Return a cached answer string, or None to fall through to Tier 2.
@@ -141,7 +142,7 @@ def store(
     name_attr: str | None = None,
     scope: str = "generic",
     source: str = "gemini",
-    conn: sqlite3.Connection | None = None,
+    conn: Connection | None = None,
 ) -> str:
     """Upsert a Q&A row. Returns the question_key written.
 
@@ -194,9 +195,9 @@ def store(
     return key
 
 
-def count(conn: sqlite3.Connection | None = None) -> int:
+def count(conn: Connection | None = None) -> int:
     """Number of rows in the Q&A bank (telemetry / seed verification)."""
     if conn is None:
         conn = get_connection()
     ensure_qa_bank_table(conn)
-    return int(conn.execute("SELECT COUNT(*) FROM qa_bank").fetchone()[0])
+    return int(scalar(conn.execute("SELECT COUNT(*) AS c FROM qa_bank").fetchone()) or 0)

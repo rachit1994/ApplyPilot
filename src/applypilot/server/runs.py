@@ -74,6 +74,8 @@ def api_start_run(
             pace=body.pace,
             headless=body.headless,
             continuous=body.continuous,
+            prepare=body.prepare,
+            staged_only=body.staged_only,
             inbox_action=body.inbox_action,
         )
     except RuntimeError as e:

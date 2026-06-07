@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 from applypilot.config import get_chrome_path
 from applypilot.database import get_connection
+from applypilot.db.dialect import sql_discovered_hours_param
 from applypilot.outreach.config import OutreachSettings, load_outreach_config
 from applypilot.outreach.public_id import is_linkedin_job_url, job_linkedin_url, public_id_from_url
 
@@ -94,12 +95,12 @@ def _eligible_scrape_rows(
     *,
     urls: list[str] | None = None,
 ) -> list[dict]:
-    query = """
+    query = f"""
         SELECT * FROM jobs
         WHERE fit_score >= ?
           AND (recruiter_public_id IS NULL OR recruiter_public_id = '')
           AND (referral_status IS NULL OR referral_status = '')
-          AND discovered_at >= datetime('now', ? || ' hours')
+          AND {sql_discovered_hours_param("discovered_at")}
           AND (
             LOWER(COALESCE(site, '')) LIKE '%linkedin%'
             OR LOWER(COALESCE(url, '')) LIKE '%linkedin.com/jobs%'
@@ -113,8 +114,7 @@ def _eligible_scrape_rows(
         query += f" AND url IN ({placeholders})"
         params.extend(urls)
     rows = conn.execute(query, params).fetchall()
-    columns = rows[0].keys() if rows else []
-    jobs = [dict(zip(columns, row)) for row in rows]
+    jobs = [dict(row) for row in rows]
     return [j for j in jobs if job_linkedin_url(j)]
 
 

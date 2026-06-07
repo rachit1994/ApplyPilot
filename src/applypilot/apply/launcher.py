@@ -28,6 +28,7 @@ from rich.live import Live
 from applypilot import config
 from applypilot.config import load_profile
 from applypilot.database import get_connection
+from applypilot.db.dialect import scalar, sql_apply_not_before_due
 from applypilot.role_resumes import (
     resolve_job_resume,
     resolve_job_resume_path,
@@ -204,8 +205,24 @@ def _acquirable_jobs_where(
     ats_only: bool = False,
     priority_boards_only: bool = False,
     include_untailored: bool = False,
+    queue_mode: str = "default",
 ) -> tuple[str, list]:
-    """SQL WHERE fragment matching acquire_job queue selection (before eligibility loop)."""
+    """SQL WHERE fragment matching acquire_job queue selection (before eligibility loop).
+
+    queue_mode:
+        default / prepare — ready tailored jobs (excludes prepare_review and staged).
+        staged_only — jobs the user promoted for submit.
+    """
+    if queue_mode == "staged_only":
+        return (
+            """
+        WHERE apply_status = 'staged'
+          AND applied_at IS NULL
+          AND {sql_apply_not_before_due()}
+        """,
+            [],
+        )
+
     blocked_sites, blocked_patterns = _load_blocked()
     max_attempts = config.DEFAULTS["max_apply_attempts"]
     if min_score is None:
@@ -250,10 +267,7 @@ def _acquirable_jobs_where(
             OR apply_status = 'failed'
             OR apply_status = 'needs_adapter'
           )
-          AND (
-            apply_not_before IS NULL
-            OR datetime(apply_not_before) <= datetime('now')
-          )
+          AND {sql_apply_not_before_due()}
           AND (apply_attempts IS NULL OR apply_attempts < ?)
           {score_clause}
           {site_clause}
@@ -449,7 +463,7 @@ def _resolve_job_apply_url(job: dict, *, persist: bool = False) -> str:
 
 
 def _job_row_url(job: dict) -> str:
-    """SQLite primary key for jobs — always job['url'], not application_url."""
+    """Postgres primary key for jobs — always job['url'], not application_url."""
     return (job.get("url") or _job_apply_url(job) or "").strip()
 
 
@@ -575,6 +589,7 @@ def count_acquirable_direct_adapter_jobs(
     ats_only: bool = False,
     priority_boards_only: bool = False,
     include_untailored: bool = False,
+    queue_mode: str = "default",
 ) -> int:
     """Acquirable jobs that still need a direct Playwright attempt (not parked for Claude)."""
     direct_tier = direct_adapter_priority_sql()
@@ -583,18 +598,19 @@ def count_acquirable_direct_adapter_jobs(
         ats_only=ats_only,
         priority_boards_only=priority_boards_only,
         include_untailored=include_untailored,
+        queue_mode=queue_mode,
     )
     conn = get_connection()
     row = conn.execute(
         f"""
-        SELECT COUNT(*) FROM jobs
+        SELECT COUNT(*) AS c FROM jobs
         {where}
           AND ({direct_tier}) = 0
           AND COALESCE(apply_error, '') NOT LIKE 'pending_claude_rescue%'
         """,
         params,
     ).fetchone()
-    return int(row[0] or 0)
+    return int(scalar(row) or 0)
 
 
 def count_acquirable_jobs(
@@ -603,6 +619,7 @@ def count_acquirable_jobs(
     ats_only: bool = False,
     priority_boards_only: bool = False,
     include_untailored: bool = False,
+    queue_mode: str = "default",
 ) -> int:
     """Count jobs matching acquire_job SQL filters (eligibility may skip more at runtime)."""
     where, params = _acquirable_jobs_where(
@@ -610,9 +627,10 @@ def count_acquirable_jobs(
         ats_only=ats_only,
         priority_boards_only=priority_boards_only,
         include_untailored=include_untailored,
+        queue_mode=queue_mode,
     )
     conn = get_connection()
-    return int(conn.execute(f"SELECT COUNT(*) FROM jobs {where}", params).fetchone()[0])
+    return int(scalar(conn.execute(f"SELECT COUNT(*) AS c FROM jobs {where}", params).fetchone()) or 0)
 
 
 def apply_queue_snapshot() -> dict[str, int]:
@@ -623,31 +641,35 @@ def apply_queue_snapshot() -> dict[str, int]:
         """
         SELECT
           SUM(CASE WHEN tailored_resume_path IS NOT NULL AND applied_at IS NULL
-                    THEN 1 ELSE 0 END),
-          SUM(CASE WHEN apply_status = 'in_progress' THEN 1 ELSE 0 END),
+                    THEN 1 ELSE 0 END) AS tailored_pending,
+          SUM(CASE WHEN apply_status = 'in_progress' THEN 1 ELSE 0 END) AS in_progress,
           SUM(CASE WHEN apply_status = 'failed'
                     AND COALESCE(apply_attempts, 0) >= ?
-                    AND COALESCE(apply_attempts, 0) < 99 THEN 1 ELSE 0 END),
+                    AND COALESCE(apply_attempts, 0) < 99 THEN 1 ELSE 0 END) AS failed_exhausted,
           SUM(CASE WHEN apply_status = 'failed'
-                    AND COALESCE(apply_attempts, 0) < 99 THEN 1 ELSE 0 END),
+                    AND COALESCE(apply_attempts, 0) < 99 THEN 1 ELSE 0 END) AS failed_resettable,
           SUM(CASE WHEN apply_status = 'failed'
-                    AND COALESCE(apply_attempts, 0) >= 99 THEN 1 ELSE 0 END),
-          SUM(CASE WHEN apply_status = 'submitted_unverified' THEN 1 ELSE 0 END),
-          SUM(CASE WHEN apply_status = 'manual' THEN 1 ELSE 0 END),
-          SUM(CASE WHEN apply_status = 'needs_adapter' THEN 1 ELSE 0 END)
+                    AND COALESCE(apply_attempts, 0) >= 99 THEN 1 ELSE 0 END) AS failed_permanent,
+          SUM(CASE WHEN apply_status = 'submitted_unverified' THEN 1 ELSE 0 END) AS submitted_unverified,
+          SUM(CASE WHEN apply_status = 'manual' THEN 1 ELSE 0 END) AS manual,
+          SUM(CASE WHEN apply_status = 'needs_adapter' THEN 1 ELSE 0 END) AS needs_adapter,
+          SUM(CASE WHEN apply_status = 'prepare_review' THEN 1 ELSE 0 END) AS prepare_review,
+          SUM(CASE WHEN apply_status = 'staged' THEN 1 ELSE 0 END) AS staged
         FROM jobs
         """,
         (max_attempts,),
     ).fetchone()
     return {
-        "tailored_pending": int(row[0] or 0),
-        "in_progress": int(row[1] or 0),
-        "failed_exhausted": int(row[2] or 0),
-        "failed_resettable": int(row[3] or 0),
-        "failed_permanent": int(row[4] or 0),
-        "submitted_unverified": int(row[5] or 0),
-        "manual": int(row[6] or 0),
-        "needs_adapter": int(row[7] or 0),
+        "tailored_pending": int(row["tailored_pending"] or 0),
+        "in_progress": int(row["in_progress"] or 0),
+        "failed_exhausted": int(row["failed_exhausted"] or 0),
+        "failed_resettable": int(row["failed_resettable"] or 0),
+        "failed_permanent": int(row["failed_permanent"] or 0),
+        "submitted_unverified": int(row["submitted_unverified"] or 0),
+        "manual": int(row["manual"] or 0),
+        "needs_adapter": int(row["needs_adapter"] or 0),
+        "prepare_review": int(row["prepare_review"] or 0),
+        "staged": int(row["staged"] or 0),
     }
 
 
@@ -709,6 +731,7 @@ def acquire_job(
     priority_boards_only: bool = False,
     min_experience_years: int | None = None,
     include_untailored: bool = False,
+    queue_mode: str = "default",
 ) -> dict | None:
     """Atomically acquire the next job to apply to.
 
@@ -728,7 +751,7 @@ def acquire_job(
             apply_profile = {}
         if min_score is None:
             min_score = int(config.DEFAULTS.get("apply_min_score", 0))
-        conn.execute("BEGIN IMMEDIATE")
+        conn.begin_immediate()
 
         while True:
             if target_url:
@@ -755,6 +778,7 @@ def acquire_job(
                       AND (
                         apply_status IS NULL
                         OR apply_status NOT IN ('in_progress', 'applied', 'submitted_unverified')
+                        OR apply_status = 'staged'
                       )
                     LIMIT 1
                 """.format(tailored_clause=tailored_clause),
@@ -765,6 +789,7 @@ def acquire_job(
                     ats_only=ats_only,
                     priority_boards_only=priority_boards_only,
                     include_untailored=include_untailored,
+                    queue_mode=queue_mode,
                 )
                 use_direct = apply_settings.apply_engine() == "direct"
                 if use_direct:
@@ -812,10 +837,14 @@ def acquire_job(
                         apply_probe = _resolve_job_apply_url(
                             candidate_row, persist=False
                         )
+                        visit_force = bool(target_url) or queue_mode in {
+                            "prepare",
+                            "staged_only",
+                        }
                         skip_visit, visit_reason, _last_visit = (
                             visit_ledger.visit_should_skip(
                                 apply_probe,
-                                force=bool(target_url),
+                                force=visit_force,
                                 conn=conn,
                             )
                         )
@@ -1069,7 +1098,87 @@ def mark_result(url: str, status: str, error: str | None = None,
                            apply_form_filled = COALESCE(?, apply_form_filled)
             WHERE url = ?
         """, (status, error or "unknown", not_before, duration_ms, task_id, log_value, form_json, url))
+    if status in ("applied", "submitted_unverified"):
+        try:
+            from applypilot.scoring.tailored_cleanup import cleanup_tailored_resume_after_use
+
+            cleanup_tailored_resume_after_use(url, conn=conn)
+        except Exception:  # noqa: BLE001
+            logger.debug("tailored resume cleanup failed for %s", url[:80], exc_info=True)
     conn.commit()
+
+
+def _prepare_error_from_result(result: str) -> str | None:
+    """Short error snippet for prepare_review rows (None when fill-only success)."""
+    if result in ("skipped", "applied"):
+        return None
+    if result.startswith(("skipped:", "parked:", "deferred:", "failed:", "submitted_unverified:")):
+        return result.split(":", 1)[-1].strip()[:200] or None
+    return (result or "").strip()[:200] or None
+
+
+def mark_prepare_review(
+    url: str,
+    *,
+    error: str | None = None,
+    duration_ms: int | None = None,
+    log_path: str | Path | None = None,
+) -> None:
+    """Land a prepare-run job in the dashboard review queue (fill-only, no submit)."""
+    import json
+
+    from applypilot.apply.apply_log_parser import (
+        extract_first_external_apply_url_from_log,
+        extract_result_json,
+        form_filled_from_log_text,
+    )
+    from applypilot.database import invalidate_stats_cache
+
+    conn = get_connection()
+    now = datetime.now(timezone.utc).isoformat()
+    log_value = str(log_path) if log_path else None
+    form_json: str | None = None
+    company_apply_url: str | None = None
+    if log_path:
+        path = Path(log_path)
+        if path.is_file():
+            try:
+                log_text = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                log_text = ""
+            if log_text:
+                result_json = extract_result_json(log_text) or {}
+                raw_company = str(result_json.get("company_apply_url") or "").strip()
+                if raw_company.startswith(("http://", "https://")):
+                    company_apply_url = raw_company
+                if not company_apply_url:
+                    company_apply_url = extract_first_external_apply_url_from_log(log_text)
+                record = form_filled_from_log_text(log_text)
+                if record:
+                    form_json = json.dumps(record, ensure_ascii=False)
+
+    if company_apply_url:
+        conn.execute(
+            "UPDATE jobs SET application_url = COALESCE(?, application_url) WHERE url = ?",
+            (company_apply_url, url),
+        )
+
+    conn.execute(
+        """
+        UPDATE jobs SET apply_status = 'prepare_review',
+                       apply_error = ?,
+                       agent_id = NULL,
+                       last_attempted_at = ?,
+                       apply_duration_ms = ?,
+                       apply_log_path = COALESCE(?, apply_log_path),
+                       apply_form_filled = COALESCE(?, apply_form_filled),
+                       apply_not_before = NULL
+        WHERE url = ?
+        """,
+        (error, now, duration_ms, log_value, form_json, url),
+    )
+    conn.commit()
+    invalidate_stats_cache()
 
 
 def release_lock(url: str) -> None:
@@ -1091,7 +1200,7 @@ def release_stale_locks(max_age_minutes: int = 45) -> int:
         SET apply_status = NULL, agent_id = NULL
         WHERE apply_status = 'in_progress'
           AND last_attempted_at IS NOT NULL
-          AND datetime(last_attempted_at) < datetime('now', ?)
+          AND last_attempted_at::timestamptz < NOW() + ?::interval
         """,
         (f"-{max_age_minutes} minutes",),
     )
@@ -2340,7 +2449,7 @@ def _defer_job_for_claude_rescue(url: str, reason: str) -> None:
 
 
 def repair_invalid_quota_retry_windows() -> int:
-    """Release quota retry rows whose not-before timestamp is not SQLite-parseable."""
+    """Release quota retry rows whose not-before timestamp is not parseable."""
     conn = get_connection()
     cur = conn.execute(
         """
@@ -2349,7 +2458,8 @@ def repair_invalid_quota_retry_windows() -> int:
             apply_error = COALESCE(apply_error, 'claude_quota_exhausted') || ' (retry window repaired)'
         WHERE apply_status = 'failed'
           AND apply_not_before IS NOT NULL
-          AND datetime(apply_not_before) IS NULL
+          AND btrim(apply_not_before) <> ''
+          AND apply_not_before !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
           AND COALESCE(apply_error, '') LIKE '%claude_quota_exhausted%'
         """
     )
@@ -2413,7 +2523,9 @@ def _try_direct_apply(
     apply_url = _resolve_job_apply_url(job, persist=True)
     from applypilot.apply import visit_ledger
 
-    skip_visit, visit_reason, _last_visit = visit_ledger.visit_should_skip(apply_url)
+    skip_visit, visit_reason, _last_visit = visit_ledger.visit_should_skip(
+        apply_url, force=dry_run,
+    )
     if skip_visit:
         visit_ledger.persist_visit_skip(row_url, visit_reason or "blocked")
         logger.info(
@@ -2701,6 +2813,8 @@ def worker_loop(
     priority_boards_only: bool = False,
     min_experience_years: int | None = None,
     include_untailored: bool = False,
+    prepare: bool = False,
+    staged_only: bool = False,
 ) -> tuple[int, int]:
     """Run jobs sequentially until limit is reached or queue is empty.
 
@@ -2727,6 +2841,7 @@ def worker_loop(
     quota_retry_until: str | None = None
     port = BASE_CDP_PORT + worker_id
     primary_model = apply_settings.apply_model_default(model)
+    queue_mode = "staged_only" if staged_only else ("prepare" if prepare else "default")
 
     while not _stop_event.is_set():
         if not continuous and jobs_done >= limit:
@@ -2743,6 +2858,7 @@ def worker_loop(
             priority_boards_only=priority_boards_only,
             min_experience_years=min_experience_years,
             include_untailored=include_untailored,
+            queue_mode=queue_mode,
         )
         if not job:
             if target_url and empty_polls == 0:
@@ -2779,6 +2895,7 @@ def worker_loop(
                 ats_only=ats_only,
                 priority_boards_only=priority_boards_only,
                 include_untailored=include_untailored,
+                queue_mode=queue_mode,
             )
             should_poll = continuous or remaining > 0
             if not should_poll:
@@ -2860,6 +2977,27 @@ def worker_loop(
                         )
                         _pause_worker_for_quota(worker_id, not_before=not_before)
                         continue
+
+            if prepare:
+                if result.startswith("skipped:apply_visit"):
+                    release_lock(job["url"])
+                    detail = result.split(":", 1)[-1] if ":" in result else result
+                    add_event(f"[W{worker_id}] Visit skip: {detail[:50]}")
+                    jobs_done += 1
+                    continue
+                err = _prepare_error_from_result(result)
+                mark_prepare_review(
+                    job["url"],
+                    error=err,
+                    duration_ms=duration_ms,
+                    log_path=session_log,
+                )
+                add_event(
+                    f"[W{worker_id}] Prepare review: {job['title'][:30]}"
+                    + (f" ({err[:30]})" if err else "")
+                )
+                jobs_done += 1
+                continue
 
             if result.startswith("skipped:apply_visit"):
                 release_lock(job["url"])
@@ -3039,6 +3177,8 @@ def main(
     priority_boards_only: bool = False,
     min_experience_years: int | None = None,
     include_untailored: bool = False,
+    prepare: bool = False,
+    staged_only: bool = False,
 ) -> None:
     """Launch the apply pipeline.
 
@@ -3060,6 +3200,15 @@ def main(
     global POLL_INTERVAL
     POLL_INTERVAL = poll_interval
     _stop_event.clear()
+
+    if prepare:
+        dry_run = True
+    if prepare and staged_only:
+        console = Console()
+        console.print("[red bold]Cannot use --prepare with --staged-only[/red bold]")
+        sys.exit(1)
+
+    queue_mode = "staged_only" if staged_only else ("prepare" if prepare else "default")
 
     from applypilot.apply.direct import review_log as _review_log
 
@@ -3097,9 +3246,18 @@ def main(
             ats_only=ats_only,
             priority_boards_only=priority_boards_only,
             include_untailored=include_untailored,
+            queue_mode=queue_mode,
         )
         if acquirable == 0:
-            console.print("[red bold]No jobs available to apply.[/red bold]")
+            if staged_only:
+                console.print("[red bold]No staged jobs to submit.[/red bold]")
+                console.print(
+                    "[dim]Stage jobs from Prepare review in the dashboard, then run Submit staged.[/dim]"
+                )
+            elif prepare:
+                console.print("[red bold]No jobs available to prepare.[/red bold]")
+            else:
+                console.print("[red bold]No jobs available to apply.[/red bold]")
             console.print(
                 format_apply_queue_hint(
                     min_score=min_score,
@@ -3122,6 +3280,7 @@ def main(
             ats_only=ats_only,
             priority_boards_only=priority_boards_only,
             include_untailored=include_untailored,
+            queue_mode=queue_mode if not target_url else "default",
         )
         mode_label = f"{effective_limit} jobs (queue)"
 
@@ -3195,6 +3354,8 @@ def main(
                 priority_boards_only=priority_boards_only,
                 min_experience_years=min_experience_years,
                 include_untailored=include_untailored,
+                prepare=prepare,
+                staged_only=staged_only,
             )
 
         if effective_limit:
@@ -3224,6 +3385,8 @@ def main(
                     priority_boards_only=priority_boards_only,
                     min_experience_years=min_experience_years,
                     include_untailored=include_untailored,
+                    prepare=prepare,
+                    staged_only=staged_only,
                 ): i
                 for i in range(workers)
             }

@@ -3,7 +3,6 @@
 from pathlib import Path
 
 import applypilot.config as ap_config
-import applypilot.database as ap_database
 from applypilot.database import close_connection, get_connection, init_db
 from applypilot.inbox.store import approve_threads, list_send_candidates, save_classification, save_draft
 
@@ -11,10 +10,8 @@ from applypilot.inbox.store import approve_threads, list_send_candidates, save_c
 def _init_test_db(tmp_path, monkeypatch):
     monkeypatch.setenv("APPLYPILOT_DIR", str(tmp_path))
     ap_config.APP_DIR = Path(tmp_path)
-    ap_config.DB_PATH = ap_config.APP_DIR / "applypilot.db"
-    ap_database.DB_PATH = ap_config.DB_PATH
     close_connection()
-    return init_db(ap_config.DB_PATH)
+    return init_db()
 
 
 def _seed_thread(urn: str, public_id: str) -> None:

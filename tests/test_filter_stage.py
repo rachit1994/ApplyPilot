@@ -10,10 +10,9 @@ def temp_db(tmp_path, monkeypatch):
     from applypilot import database
 
     db_path = tmp_path / "filter.db"
-    monkeypatch.setattr(database, "DB_PATH", db_path)
-    database.init_db(db_path)
-    yield db_path
-    database.close_connection(db_path)
+    database.init_db()
+    yield
+    database.close_connection()
 
 
 def test_run_filter_rejects_and_keeps_jobs(temp_db, monkeypatch):

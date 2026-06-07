@@ -26,8 +26,10 @@ def load_title_filters() -> tuple[list[str], list[str]]:
 
 def clear_filter_cache() -> None:
     """Reset cached search config (for tests)."""
-    load_title_filters.cache_clear()
-    _cached_location_patterns.cache_clear()
+    if hasattr(load_title_filters, "cache_clear"):
+        load_title_filters.cache_clear()
+    if hasattr(_cached_location_patterns, "cache_clear"):
+        _cached_location_patterns.cache_clear()
 
 
 @lru_cache(maxsize=1)

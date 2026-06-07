@@ -21,6 +21,8 @@ class StartRunRequest(BaseModel):
     pace: bool = False
     headless: bool = False
     continuous: bool = False
+    prepare: bool = False
+    staged_only: bool = False
     inbox_action: str = "pipeline"
 
 
@@ -116,6 +118,11 @@ class ApplyErrorSummaryResponse(BaseModel):
 
 class ApplicationDetailResponse(BaseModel):
     application: dict[str, Any]
+
+
+class BulkStageRequest(BaseModel):
+    urls: list[str] = Field(default_factory=list)
+    action: str = Field(description="stage | unstage | dismiss")
 
 
 class JobsResponse(BaseModel):

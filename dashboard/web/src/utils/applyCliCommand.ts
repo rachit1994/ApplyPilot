@@ -9,11 +9,17 @@ export type ApplyCliOptions = {
   headless: boolean;
   continuous: boolean;
   dryRun: boolean;
-  engine?: "direct" | "claude";
+  prepare?: boolean;
+  stagedOnly?: boolean;
 };
 
 export function buildApplyCliCommand(opts: ApplyCliOptions): string {
-  const parts = ["applypilot", "apply", "--engine", opts.engine ?? "direct", "--include-untailored"];
+  const parts = ["applypilot", "apply", "--include-untailored"];
+  if (opts.prepare) {
+    parts.push("--prepare");
+  } else if (opts.stagedOnly) {
+    parts.push("--staged-only");
+  }
   const limit = opts.limit === "" ? null : Number(opts.limit);
   if (limit != null && limit > 0) {
     parts.push("--limit", String(limit));
@@ -25,7 +31,7 @@ export function buildApplyCliCommand(opts: ApplyCliOptions): string {
   if (opts.watch) parts.push("--watch");
   else if (opts.pace) parts.push("--pace", "2");
   if (opts.headless) parts.push("--headless");
-  if (opts.dryRun) parts.push("--dry-run");
+  if (opts.dryRun && !opts.prepare) parts.push("--dry-run");
   return parts.join(" ");
 }
 
@@ -36,7 +42,7 @@ export function applyRunSummaryLines(
   const limit = opts.limit === "" ? null : Number(opts.limit);
   const lines = [
     readyCount != null ? `Ready queue: ${readyCount} (min score ≥${opts.minScore})` : `Min score ≥${opts.minScore}`,
-    `${opts.workers} worker(s) · direct apply first · includes discovered jobs`,
+    `${opts.workers} worker(s) · direct first, Claude fallback · includes discovered jobs`,
     opts.watch
       ? "Visible Chrome (--watch, slow pacing)"
       : opts.headless
@@ -48,7 +54,9 @@ export function applyRunSummaryLines(
         : `Stop after ${limit} job(s)`
       : "Drain the queue (--continuous)",
   ];
-  if (opts.dryRun) lines.push("Dry run only (no submissions)");
+  if (opts.dryRun && !opts.prepare) lines.push("Dry run only (no submissions)");
+  if (opts.prepare) lines.push("Prepare only (fill forms, no submit)");
+  if (opts.stagedOnly) lines.push("Submit staged jobs only");
   return lines;
 }
 

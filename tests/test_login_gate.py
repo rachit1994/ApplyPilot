@@ -116,19 +116,12 @@ def test_generic_adapter_enabled_by_default(monkeypatch):
 # --- launcher resume/requeue ---------------------------------------------
 
 @pytest.fixture
-def apply_db(monkeypatch, tmp_path):
-    from applypilot import config, database
+def apply_db(gate_dir):
+    from applypilot.apply import login_gate as lg
 
-    db = Path(tmp_path) / "applypilot.db"
-    monkeypatch.setattr(config, "APP_DIR", Path(tmp_path))
-    monkeypatch.setattr(config, "DB_PATH", db)
-    monkeypatch.setattr(database, "DB_PATH", db)
-    database.close_connection()
-    database.init_db()
-    login_gate.clear()
-    yield db
-    database.close_connection()
-    login_gate.clear()
+    lg.clear()
+    yield gate_dir
+    lg.clear()
 
 
 def test_resume_login_requeues_awaiting_jobs(apply_db):
@@ -150,7 +143,7 @@ def test_resume_login_requeues_awaiting_jobs(apply_db):
 
     status = get_connection().execute(
         "SELECT apply_status FROM jobs WHERE url = 'https://careers.acme.in/1'"
-    ).fetchone()[0]
+    ).fetchone()["apply_status"]
     assert status is None  # back in the queue
 
 
@@ -178,5 +171,5 @@ def test_resume_login_requeues_no_google_login_jobs(apply_db):
 
     status = get_connection().execute(
         "SELECT apply_status FROM jobs WHERE url = 'https://careers.cutshort.io/1'"
-    ).fetchone()[0]
+    ).fetchone()["apply_status"]
     assert status is None

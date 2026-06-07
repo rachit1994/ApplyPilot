@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import sqlite3
 import time
 import urllib.error
 import urllib.parse
@@ -15,6 +14,8 @@ from typing import Any
 import yaml
 
 from applypilot.config import CONFIG_DIR
+from applypilot.db.connection import Connection
+from applypilot.db.dialect import is_unique_violation
 from applypilot.database import get_connection, init_db
 from applypilot.discovery._filters import discover_job_passes
 
@@ -122,7 +123,7 @@ def _fetch_description(portal: dict[str, Any], req_id: str) -> str:
 
 
 def _store_jobs(
-    conn: sqlite3.Connection,
+    conn: Connection,
     jobs: list[dict[str, Any]],
     *,
     site_name: str,
@@ -160,7 +161,9 @@ def _store_jobs(
                 ),
             )
             new += 1
-        except sqlite3.IntegrityError:
+        except Exception as exc:
+            if not is_unique_violation(exc):
+                raise
             conn.execute(
                 "UPDATE jobs SET title = ?, location = ?, site = ?, strategy = ?, "
                 "description = COALESCE(?, description), "

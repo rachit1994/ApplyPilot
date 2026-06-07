@@ -77,6 +77,7 @@ export type Application = {
   apply_attempts: number | null;
   apply_log_path: string | null;
   verification_confidence: string | null;
+  tailored_resume_path?: string | null;
   form_filled?: ApplyFormFilled | null;
 };
 
@@ -96,6 +97,15 @@ export type ApplyFormFilled = {
   visible_errors?: string[];
   empty_required?: unknown;
   field_count?: number;
+  resume_pdf?: string | null;
+  cover_pdf?: string | null;
+  uploads?: Array<{
+    label?: string;
+    name?: string;
+    required?: boolean;
+    has_file?: boolean;
+    file_name?: string;
+  }>;
 };
 
 export type ApplyVerificationSummary = {
@@ -1019,6 +1029,55 @@ export async function postInboxRun(opts: {
   return res.json();
 }
 
+export type FieldOverrideRow = {
+  label: string;
+  value: string;
+  updated_at?: string | null;
+};
+
+export async function fetchFieldOverrides(): Promise<{ overrides: FieldOverrideRow[] }> {
+  const res = await fetch(`${API}/field-overrides`);
+  if (!res.ok) throw new Error("Failed to load field overrides");
+  return res.json();
+}
+
+export async function setFieldOverride(label: string, value: string): Promise<void> {
+  const q = new URLSearchParams({ label, value });
+  const res = await fetch(`${API}/field-overrides?${q}`, {
+    method: "POST",
+    headers: dashboardAuthHeaders(),
+  });
+  if (!res.ok) throw new Error("Failed to save field override");
+}
+
+export async function deleteFieldOverride(label: string): Promise<void> {
+  const q = new URLSearchParams({ label });
+  const res = await fetch(`${API}/field-overrides?${q}`, {
+    method: "DELETE",
+    headers: dashboardAuthHeaders(),
+  });
+  if (!res.ok) throw new Error("Failed to delete field override");
+}
+
+export async function bulkStageApplications(body: {
+  urls: string[];
+  action: "stage" | "unstage" | "dismiss";
+}): Promise<{ updated: number; skipped: string[]; action: string }> {
+  const res = await fetch(`${API}/applications/bulk-stage`, {
+    method: "POST",
+    headers: mergeHeaders(
+      { "Content-Type": "application/json" },
+      dashboardAuthHeaders(),
+    ),
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { detail?: string }).detail ?? "Bulk stage failed");
+  }
+  return res.json();
+}
+
 export async function startRun(body: {
   run_type?: string;
   stages?: string[] | null;
@@ -1031,6 +1090,8 @@ export async function startRun(body: {
   pace?: boolean;
   headless?: boolean;
   continuous?: boolean;
+  prepare?: boolean;
+  staged_only?: boolean;
   inbox_action?: string;
 }): Promise<Run> {
   const res = await fetch(`${API}/runs`, {
@@ -1051,6 +1112,8 @@ export async function startRun(body: {
       pace: body.pace,
       headless: body.headless,
       continuous: body.continuous,
+      prepare: body.prepare,
+      staged_only: body.staged_only,
       inbox_action: body.inbox_action,
     }),
   });

@@ -50,7 +50,7 @@ def infer_remote_policy(location: str | None) -> str | None:
 
 
 def present_job_row(row: dict[str, Any]) -> dict[str, Any]:
-    """Coerce SQLite row dict for JobRow: trim blanks, add derived remote."""
+    """Coerce job row dict for JobRow: trim blanks, add derived remote."""
     job = dict(row)
     for key in _TEXT_FIELDS:
         if key in job:

@@ -6,10 +6,11 @@ import json
 import statistics
 import time
 from datetime import datetime, timezone
-from sqlite3 import Connection
 from typing import Any
 
 from applypilot import __version__
+from applypilot.db.connection import Connection
+from applypilot.db.dialect import scalar, table_exists
 from applypilot.database import get_connection, get_stats, init_db
 from applypilot.orchestration.events import init_run_schema
 from applypilot.orchestration.run_controller import get_active_run
@@ -46,39 +47,36 @@ def _jobs_discovered_today(conn: Connection) -> int:
         "SELECT COUNT(*) FROM jobs WHERE discovered_at IS NOT NULL AND substr(discovered_at, 1, 10) = ?",
         (today,),
     ).fetchone()
-    return int(row[0] or 0)
+    return int(scalar(row) or 0)
 
 
 def _count_score_ge(conn: Connection, threshold: int) -> int:
     row = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE fit_score IS NOT NULL AND fit_score >= ?",
+        "SELECT COUNT(*) AS c FROM jobs WHERE fit_score IS NOT NULL AND fit_score >= ?",
         (threshold,),
     ).fetchone()
-    return int(row[0] or 0)
+    return int(scalar(row) or 0)
 
 
 def _count_tailored(conn: Connection) -> int:
-    row = conn.execute("SELECT COUNT(*) FROM jobs WHERE tailored_resume_path IS NOT NULL").fetchone()
-    return int(row[0] or 0)
+    row = conn.execute("SELECT COUNT(*) AS c FROM jobs WHERE tailored_resume_path IS NOT NULL").fetchone()
+    return int(scalar(row) or 0)
 
 
 def _count_applied_30d(conn) -> int:
     row = conn.execute(
         """
-        SELECT COUNT(*) FROM jobs
+        SELECT COUNT(*) AS c FROM jobs
         WHERE apply_status = 'applied'
           AND applied_at IS NOT NULL
-          AND date(substr(applied_at, 1, 10)) >= date('now', '-30 days')
+          AND applied_at::timestamptz >= NOW() - INTERVAL '30 days'
         """
     ).fetchone()
-    return int(row[0] or 0)
+    return int(scalar(row) or 0)
 
 
 def _llm_spend_today(conn) -> float:
-    ensure = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='llm_usage_events'"
-    ).fetchone()
-    if not ensure:
+    if not table_exists(conn, "llm_usage_events"):
         return 0.0
     today = _utc_today_prefix()
     row = conn.execute(
@@ -88,25 +86,22 @@ def _llm_spend_today(conn) -> float:
         """,
         (today,),
     ).fetchone()
-    return float(row[0] or 0.0)
+    return float(scalar(row) or 0.0)
 
 
 def _llm_spend_run_window(conn, started_at: str | None) -> float | None:
     if not started_at:
         return None
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='llm_usage_events'"
-    ).fetchone()
-    if not row:
+    if not table_exists(conn, "llm_usage_events"):
         return None
     r2 = conn.execute(
         """
-        SELECT COALESCE(SUM(cost_usd), 0) FROM llm_usage_events
-        WHERE created_at >= ?
+        SELECT COALESCE(SUM(cost_usd), 0) AS s FROM llm_usage_events
+        WHERE created_at::timestamptz >= ?::timestamptz
         """,
         (started_at,),
     ).fetchone()
-    return float(r2[0] or 0.0)
+    return float(scalar(r2) or 0.0)
 
 
 def _apply_attempts_today(conn) -> int:
@@ -121,7 +116,7 @@ def _apply_attempts_today(conn) -> int:
         """,
         (today,),
     ).fetchone()
-    return int(row[0] or 0)
+    return int(scalar(row) or 0)
 
 
 def _apply_tailor_today(conn) -> tuple[int, int]:
@@ -129,14 +124,14 @@ def _apply_tailor_today(conn) -> tuple[int, int]:
     apply_attempts = _apply_attempts_today(conn)
     tailor_row = conn.execute(
         """
-        SELECT COUNT(*) FROM jobs
+        SELECT COUNT(*) AS c FROM jobs
         WHERE tailored_resume_path IS NOT NULL
           AND tailored_at IS NOT NULL
           AND substr(tailored_at, 1, 10) = ?
         """,
         (today,),
     ).fetchone()
-    return apply_attempts, int(tailor_row[0] or 0)
+    return apply_attempts, int(scalar(tailor_row) or 0)
 
 
 def _latest_stage_progress_map(run_id: str) -> dict[str, dict[str, Any]]:
@@ -182,7 +177,7 @@ def _run_event_error_count(run_id: str) -> int:
         """,
         (run_id,),
     ).fetchone()
-    return int(row[0] or 0)
+    return int(scalar(row) or 0)
 
 
 def _step_label(stage: str) -> str:
@@ -243,8 +238,8 @@ def _filter_step_snapshot(conn: Connection, total: int) -> dict[str, Any]:
     rejected_row = conn.execute(
         "SELECT COUNT(*) FROM jobs WHERE pre_filter_rejected_at IS NOT NULL"
     ).fetchone()
-    kept = int(kept_row[0] or 0)
-    rejected = int(rejected_row[0] or 0)
+    kept = int(scalar(kept_row) or 0)
+    rejected = int(scalar(rejected_row) or 0)
     done = kept + rejected
     pending = max(0, total - done)
     denom = done + pending
@@ -372,7 +367,7 @@ def _build_funnel(raw: dict[str, Any], conn: Connection) -> list[dict[str, Any]]
     scored_ge7_row = conn.execute(
         "SELECT COUNT(*) FROM jobs WHERE fit_score IS NOT NULL AND fit_score >= 7"
     ).fetchone()
-    scored_ge7 = int(scored_ge7_row[0] or 0)
+    scored_ge7 = int(scalar(scored_ge7_row) or 0)
     tailored = int(raw.get("tailored") or 0)
     cover = int(raw.get("with_cover_letter") or 0)
     applied = int(raw.get("applied") or 0)
@@ -410,7 +405,7 @@ def _score_dist_detail(raw: dict[str, Any], conn: Connection) -> dict[str, Any]:
     elig_row = conn.execute(
         "SELECT COUNT(*) FROM jobs WHERE fit_score IS NOT NULL AND fit_score >= 7"
     ).fetchone()
-    apply_eligible = int(elig_row[0] or 0)
+    apply_eligible = int(scalar(elig_row) or 0)
     return {
         "buckets": buckets,
         "mean": mean,
@@ -574,8 +569,8 @@ def build_overview() -> dict[str, Any]:
         row = conn.execute(
             "SELECT ts FROM dashboard_activity_events ORDER BY id DESC LIMIT 1"
         ).fetchone()
-        if row and row[0]:
-            last_event_ts = str(row[0])
+        if row and row.get("ts"):
+            last_event_ts = str(row["ts"])
     except Exception:
         last_event_ts = None
     last_age_s: int | None = None

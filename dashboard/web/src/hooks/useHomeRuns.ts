@@ -16,6 +16,10 @@ import {
   applySettingsToCliOptions,
   buildApplyCliCommand,
 } from "../utils/applyCliCommand";
+import {
+  buildPipelineCliCommand,
+  orderedPipelineStages,
+} from "../utils/pipelineRunPlan";
 
 export function useHomeRuns() {
   const queryClient = useQueryClient();
@@ -91,6 +95,8 @@ export function useHomeRuns() {
   const { data: stagesMeta } = useQuery({
     queryKey: ["stages"],
     queryFn: fetchStages,
+    refetchInterval: false,
+    staleTime: 60_000,
   });
 
   const stageOrder = stagesMeta?.order ?? [...PIPELINE_STAGE_IDS];
@@ -125,7 +131,7 @@ export function useHomeRuns() {
         .then(syncActiveRunPoll)
         .catch(() => {});
     };
-    const id = window.setInterval(tick, 3000);
+    const id = window.setInterval(tick, 10_000);
     return () => window.clearInterval(id);
   }, [syncActiveRunPoll]);
 
@@ -146,14 +152,6 @@ export function useHomeRuns() {
           if (next.length > 2000) return next.slice(-1500);
           return next;
         });
-        if (
-          event.event_type === "stats_tick" ||
-          event.event_type === "stage_progress" ||
-          event.event_type === "worker_heartbeat"
-        ) {
-          queryClient.invalidateQueries({ queryKey: ["stats"] });
-          queryClient.invalidateQueries({ queryKey: ["jobs"] });
-        }
         if (event.event_type === "log" || event.event_type === "stage_error") {
           queryClient.invalidateQueries({ queryKey: ["overview"] });
         }
@@ -177,14 +175,24 @@ export function useHomeRuns() {
     }
   }, [activeRun?.run_type, activeRun?.status, pipelineStartRequested]);
 
-  const toggleStage = useCallback((stage: PipelineStageId) => {
-    setSelectedStages((prev) => {
-      if (prev.includes(stage)) {
-        return prev.filter((s) => s !== stage);
-      }
-      return [...prev, stage];
-    });
-  }, []);
+  const toggleStage = useCallback(
+    (stage: PipelineStageId) => {
+      setSelectedStages((prev) => {
+        const next = prev.includes(stage)
+          ? prev.filter((s) => s !== stage)
+          : [...prev, stage];
+        return orderedPipelineStages(next, stageOrder);
+      });
+    },
+    [stageOrder],
+  );
+
+  const setSelectedStagesOrdered = useCallback(
+    (stages: PipelineStageId[]) => {
+      setSelectedStages(orderedPipelineStages(stages, stageOrder));
+    },
+    [stageOrder],
+  );
 
   const handleStartPipeline = useCallback(async () => {
     if (selectedStages.length === 0) {
@@ -196,9 +204,10 @@ export function useHomeRuns() {
     setStarting(true);
     setEvents([]);
     try {
+      const stages = orderedPipelineStages(selectedStages, stageOrder);
       const run = await startRun({
         run_type: "pipeline",
-        stages: selectedStages,
+        stages,
         stream,
         dry_run: dryRun,
         min_score: pipelineMinScore,
@@ -217,6 +226,7 @@ export function useHomeRuns() {
     }
   }, [
     selectedStages,
+    stageOrder,
     stream,
     dryRun,
     pipelineMinScore,
@@ -275,14 +285,18 @@ export function useHomeRuns() {
     }
   }, [activeRun?.id, queryClient, refreshRun]);
 
-  const pipelineCli = useMemo(() => {
-    const parts = ["applypilot", "run", ...selectedStages];
-    parts.push("--min-score", String(pipelineMinScore));
-    parts.push("--workers", String(workers));
-    if (stream) parts.push("--stream");
-    if (dryRun) parts.push("--dry-run");
-    return parts.join(" ");
-  }, [selectedStages, pipelineMinScore, workers, stream, dryRun]);
+  const pipelineCli = useMemo(
+    () =>
+      buildPipelineCliCommand({
+        selectedStages,
+        stageOrder,
+        minScore: pipelineMinScore,
+        workers,
+        stream,
+        dryRun,
+      }),
+    [selectedStages, stageOrder, pipelineMinScore, workers, stream, dryRun],
+  );
 
   const applyCli = useMemo(
     () =>
@@ -330,6 +344,7 @@ export function useHomeRuns() {
     pipelineStartRequested,
     stageOrder,
     selectedStages,
+    setSelectedStages: setSelectedStagesOrdered,
     toggleStage,
     stream,
     setStream,

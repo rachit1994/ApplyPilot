@@ -8,13 +8,18 @@ not park them before the Driver gets a chance to fill the form.
 from __future__ import annotations
 
 from applypilot.apply.direct.adapters.base import Adapter
-from applypilot.apply.direct.generic import ADAPTER as GENERIC_ADAPTER
+from applypilot.apply.direct.generic_defaults import (
+    GENERIC_APPLY_BUTTON_TEXTS,
+    GENERIC_EXPIRED_MARKERS,
+    GENERIC_SUBMIT_BUTTON_TEXTS,
+    GENERIC_SUCCESS_MARKERS,
+)
 
 ADAPTER = Adapter(
     family="workable",
-    apply_button_texts=GENERIC_ADAPTER.apply_button_texts,
-    submit_button_texts=GENERIC_ADAPTER.submit_button_texts,
-    success_markers=GENERIC_ADAPTER.success_markers
+    apply_button_texts=GENERIC_APPLY_BUTTON_TEXTS,
+    submit_button_texts=GENERIC_SUBMIT_BUTTON_TEXTS,
+    success_markers=GENERIC_SUCCESS_MARKERS
     + (
         "your application was sent",
         "application sent",
@@ -26,5 +31,5 @@ ADAPTER = Adapter(
         "your application is complete",
         "thanks for your application",
     ),
-    expired_markers=GENERIC_ADAPTER.expired_markers,
+    expired_markers=GENERIC_EXPIRED_MARKERS,
 )

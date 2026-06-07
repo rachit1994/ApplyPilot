@@ -7,6 +7,7 @@ from typing import Any
 from applypilot import config
 from applypilot.apply.eligibility import ats_priority_sql_case
 from applypilot.database import get_connection, init_db
+from applypilot.db.dialect import scalar, sql_created_at_since_param, sql_ts_coalesce
 from applypilot.server.job_pipeline_stage import (
     resolve_stage_label,
     stage_filter_clause,
@@ -26,11 +27,13 @@ _PIPELINE_STAGES: dict[str, str] = {
     "applied": "apply_status = 'applied'",
 }
 
+_ACTIVITY_TS = sql_ts_coalesce("scored_at", "discovered_at")
+
 _SORT_ORDERS: dict[str, str] = {
-    "activity_desc": "datetime(COALESCE(scored_at, discovered_at)) DESC, COALESCE(fit_score, 0) DESC",
-    "activity_asc": "datetime(COALESCE(scored_at, discovered_at)) ASC, COALESCE(fit_score, 0) ASC",
-    "fit_score_desc": "COALESCE(fit_score, 0) DESC, datetime(COALESCE(scored_at, discovered_at)) DESC",
-    "fit_score_asc": "COALESCE(fit_score, 0) ASC, datetime(COALESCE(scored_at, discovered_at)) DESC",
+    "activity_desc": f"{_ACTIVITY_TS} DESC, COALESCE(fit_score, 0) DESC",
+    "activity_asc": f"{_ACTIVITY_TS} ASC, COALESCE(fit_score, 0) ASC",
+    "fit_score_desc": f"COALESCE(fit_score, 0) DESC, {_ACTIVITY_TS} DESC",
+    "fit_score_asc": f"COALESCE(fit_score, 0) ASC, {_ACTIVITY_TS} DESC",
     "discovered_at_desc": "discovered_at DESC",
     "discovered_at_asc": "discovered_at ASC",
     "scored_at_desc": "COALESCE(scored_at, '') DESC, discovered_at DESC",
@@ -121,8 +124,8 @@ def count_jobs_matching(clauses: list[str], params: list[Any]) -> int:
     init_db()
     conn = get_connection()
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-    row = conn.execute(f"SELECT COUNT(*) FROM jobs {where}", params).fetchone()
-    return int(row[0] if row else 0)
+    row = conn.execute(f"SELECT COUNT(*) AS c FROM jobs {where}", params).fetchone()
+    return int(scalar(row) or 0)
 
 
 def fetch_triage_counts_filtered(
@@ -200,9 +203,9 @@ def query_jobs(
     )
 
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-    total = conn.execute(
-        f"SELECT COUNT(*) FROM jobs {where}", params
-    ).fetchone()[0]
+    total = int(scalar(conn.execute(
+        f"SELECT COUNT(*) AS c FROM jobs {where}", params
+    ).fetchone()) or 0)
 
     order_by = _SORT_ORDERS.get(sort, _SORT_ORDERS["activity_desc"])
     rows = conn.execute(
@@ -228,8 +231,8 @@ def query_recent_jobs(minutes: int = 60, limit: int = 50) -> list[dict[str, Any]
         SELECT {_JOB_SELECT_COLUMNS}
         FROM jobs
         WHERE (
-            discovered_at >= datetime('now', ?)
-            OR scored_at >= datetime('now', ?)
+            {sql_created_at_since_param("discovered_at")}
+            OR {sql_created_at_since_param("scored_at")}
         )
         ORDER BY COALESCE(scored_at, discovered_at) DESC
         LIMIT ?

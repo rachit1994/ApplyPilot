@@ -2,35 +2,28 @@
 
 from __future__ import annotations
 
-import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from applypilot.apply.direct import review_log as rl
+from applypilot.db.dialect import table_columns, table_exists
 
 
 @pytest.fixture
-def conn():
-    c = sqlite3.connect(":memory:")
-    c.row_factory = sqlite3.Row
+def conn(isolated_db):
+    from applypilot import database as db
+
+    db.close_connection()
+    c = db.init_db()
     yield c
-    c.close()
+    db.close_connection()
 
 
 def test_ensure_review_log_table_creates_schema(conn):
     rl.ensure_review_log_table(conn)
-    tables = {
-        r[0]
-        for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()
-    }
-    assert "review_log" in tables
-    cols = {
-        r[1]
-        for r in conn.execute("PRAGMA table_info(review_log)").fetchall()
-    }
+    assert table_exists(conn, "review_log")
+    cols = table_columns(conn, "review_log")
     assert "state_sig" in cols
     assert "tier" in cols
     assert "cost_usd" in cols
@@ -92,9 +85,7 @@ def test_cache_hit_rate_math(conn):
     rl.log_event(conn, state_sig="s2", tier="replay", ts=recent_ts)
     rl.log_event(conn, state_sig="s3", tier="gemini", ts=recent_ts)
     rl.log_event(conn, state_sig="s4", tier="claude", ts=recent_ts)
-    # Outside window — should not count
     rl.log_event(conn, state_sig="s5", tier="replay", ts=old_ts)
-    # Deterministic tier — not replay or LLM
     rl.log_event(conn, state_sig="s6", tier="deterministic", ts=recent_ts)
 
     stats = rl.cache_hit_rate(conn, since_hours=24)

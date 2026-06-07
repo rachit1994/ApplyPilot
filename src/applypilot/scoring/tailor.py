@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from applypilot.config import RESUME_PATH, TAILORED_DIR, load_profile
+from applypilot.job_log import format_job_line
 from applypilot.scoring.templates import (
     classify_archetype,
     is_a_grade_job,
@@ -582,7 +583,7 @@ def run_tailoring(min_score: int = 7, limit: int = 0,
             if report["status"] in ("approved", "approved_with_judge_warning"):
                 try:
                     from applypilot.scoring.pdf import convert_to_pdf
-                    pdf_path = str(convert_to_pdf(txt_path))
+                    pdf_path = str(convert_to_pdf(txt_path, job=job))
                 except Exception:
                     log.debug("PDF generation failed for %s", txt_path, exc_info=True)
 
@@ -600,7 +601,13 @@ def run_tailoring(min_score: int = 7, limit: int = 0,
                 "url": job["url"], "title": job["title"], "site": job["site"],
                 "status": "error", "attempts": 0, "path": None, "pdf_path": None,
             }
-            log.error("%d/%d [ERROR] %s -- %s", completed, len(jobs), job["title"][:40], e)
+            log.error(
+                "%d/%d [ERROR] %s -- %s",
+                completed,
+                len(jobs),
+                format_job_line(job),
+                e,
+            )
 
         results.append(result)
         stats[result.get("status", "error")] = stats.get(result.get("status", "error"), 0) + 1
@@ -609,11 +616,12 @@ def run_tailoring(min_score: int = 7, limit: int = 0,
         rate = completed / elapsed if elapsed > 0 else 0
         log.info(
             "%d/%d [%s] attempts=%s | %.1f jobs/min | %s",
-            completed, len(jobs),
+            completed,
+            len(jobs),
             result["status"].upper(),
             result.get("attempts", "?"),
             rate * 60,
-            result["title"][:40],
+            format_job_line(job),
         )
 
     # Persist to DB: increment attempt counter for ALL, save path only for approved

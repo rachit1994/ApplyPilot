@@ -38,6 +38,8 @@ _PIPELINE_KEYS = (
     "submitted_unverified",
     "apply_errors",
     "ready_to_apply",
+    "prepare_review",
+    "staged",
 )
 
 _CARD_KEYS = ("total", "scored", "with_description", "tailored", "ready_to_apply", "applied")

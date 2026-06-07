@@ -8,8 +8,10 @@ import html
 import logging
 import re
 from pathlib import Path
+from typing import Any
 
 from applypilot.config import TAILORED_DIR
+from applypilot.job_log import format_job_line, lookup_job_by_artifact
 
 log = logging.getLogger(__name__)
 
@@ -419,7 +421,10 @@ def render_pdf(html: str, output_path: str) -> None:
 # ── Public API ───────────────────────────────────────────────────────────
 
 def convert_to_pdf(
-    text_path: Path, output_path: Path | None = None, html_only: bool = False
+    text_path: Path,
+    output_path: Path | None = None,
+    html_only: bool = False,
+    job: dict[str, Any] | None = None,
 ) -> Path:
     """Convert a text resume/cover letter to PDF.
 
@@ -428,6 +433,7 @@ def convert_to_pdf(
         output_path: Optional override for the output path. Defaults to same
             name with .pdf extension.
         html_only: If True, output HTML instead of PDF.
+        job: Optional job dict so logs include title/site/url.
 
     Returns:
         Path to the generated PDF (or HTML) file.
@@ -447,7 +453,15 @@ def convert_to_pdf(
     out = output_path or text_path.with_suffix(".pdf")
     out = Path(out)
     render_pdf(html, str(out))
-    log.info("PDF generated: %s", out)
+    context = format_job_line(job) if job else None
+    if not context:
+        match = lookup_job_by_artifact(text_path)
+        if match:
+            context = format_job_line(match)
+    if context:
+        log.info("PDF generated: %s | %s", out, context)
+    else:
+        log.info("PDF generated: %s", out)
     return out
 
 

@@ -6,7 +6,7 @@ resolved (the Driver escalates the whole job to Claude rescue if any REQUIRED
 field is unresolved).
 
     Tier 0  profile_binding rules   ~70% of fields   $0
-    Tier 1  qa_bank SQLite cache    most screening   $0 (after warm-up)
+    Tier 1  qa_bank cache           most screening   $0 (after warm-up)
     Tier 2  Gemini batch resolve    novel forms      ~$0.001 / form (one call)
 
 First hit wins. Tier 2 sends ONE Gemini call for ALL of a form's leftover

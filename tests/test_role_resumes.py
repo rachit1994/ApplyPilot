@@ -803,7 +803,7 @@ def test_resolve_job_resume_tailored_stale_role_pdf_path(tmp_path: Path):
         "tailored_resume_path": str(family / "resume.pdf"),
     }
     resolution = role_resumes.resolve_job_resume(job, output_dir=role_dir)
-    assert resolution.source == "tailored"
+    assert resolution.source == "role_resume"
     assert resolution.path == str(pdf)
 
 
@@ -1150,6 +1150,126 @@ def test_resolve_job_resume_uses_score_role_key_when_title_match_agrees(tmp_path
     assert resolution.jd_score == 9
 
 
+def test_bind_role_resume_paths_skips_when_jd_mismatch(tmp_path: Path, monkeypatch):
+    import uuid
+
+    from applypilot import config
+    from applypilot import role_resumes
+    from applypilot.database import get_connection, init_db
+
+    ap_dir = tmp_path / "ap"
+    ap_dir.mkdir()
+    monkeypatch.setenv("APPLYPILOT_DIR", str(ap_dir))
+    monkeypatch.setattr(config, "APP_DIR", ap_dir)
+    monkeypatch.setattr(config, "ROLE_RESUME_DIR", tmp_path / "role_resumes")
+    init_db()
+
+    role_dir = tmp_path / "role_resumes"
+    role_dir.mkdir()
+    pdf = role_dir / "frontend-developer.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    txt = role_dir / "frontend-developer.txt"
+    txt.write_text("Python backend APIs and databases only.", encoding="utf-8")
+    (role_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "roles": [
+                    {
+                        "key": "frontend-developer",
+                        "title": "Frontend Developer",
+                        "aliases": ["frontend engineer", "react engineer"],
+                        "keywords": ["react", "typescript", "ui"],
+                        "pdf_path": str(pdf),
+                        "txt_path": str(txt),
+                        "audit_pass": True,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    slug = uuid.uuid4().hex[:12]
+    url = f"https://example.com/fe-{slug}"
+    conn = get_connection()
+    conn.execute(
+        """
+        INSERT INTO jobs (
+            url, title, site, full_description, fit_score, discovered_at
+        ) VALUES (?, ?, ?, ?, ?, datetime('now'))
+        """,
+        (
+            url,
+            "Senior React Frontend Engineer",
+            "TestBoard",
+            "Build React and TypeScript UI components. Improve frontend performance "
+            "and component architecture. Work with design systems, CSS modules, "
+            "webpack bundling, and browser testing across modern SPAs. "
+            "Collaborate with product and design.",
+            9,
+        ),
+    )
+    conn.commit()
+
+    result = role_resumes.bind_role_resume_paths(min_score=7)
+    assert result["bound"] == 0
+
+    row = conn.execute(
+        "SELECT tailored_resume_path FROM jobs WHERE url = ?",
+        (url,),
+    ).fetchone()
+    assert row[0] is None
+
+    job_row = conn.execute(
+        """
+        SELECT title, site, full_description, description, strategy,
+               tailored_resume_path, tailor_attempts, fit_score,
+               score_role_key, score_jd_fit
+        FROM jobs WHERE url = ?
+        """,
+        (url,),
+    ).fetchone()
+    job = dict(zip(job_row.keys(), job_row))
+    assert role_resumes.job_needs_per_job_tailor(job, output_dir=role_dir)
+
+
+def test_job_needs_tailor_when_db_has_stale_role_binding(tmp_path: Path):
+    from applypilot import role_resumes
+
+    role_dir = tmp_path / "role_resumes"
+    role_dir.mkdir()
+    pdf = role_dir / "frontend-developer.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    txt = role_dir / "resume.txt"
+    txt.write_text("Python backend APIs and databases only.", encoding="utf-8")
+    (role_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "roles": [
+                    {
+                        "key": "frontend-developer",
+                        "title": "Frontend Developer",
+                        "aliases": ["frontend engineer"],
+                        "keywords": ["react", "typescript"],
+                        "pdf_path": str(pdf),
+                        "txt_path": str(txt),
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    job = {
+        "title": "Senior React Frontend Engineer",
+        "full_description": (
+            "Build React and TypeScript UI components. Improve frontend performance."
+        ),
+        "tailored_resume_path": str(pdf),
+        "tailor_attempts": 0,
+    }
+    assert role_resumes.job_needs_per_job_tailor(job, output_dir=role_dir)
+
+
 def test_bind_role_resume_paths_sets_tailored_resume_path(tmp_path: Path, monkeypatch):
     import uuid
 
@@ -1205,7 +1325,10 @@ def test_bind_role_resume_paths_sets_tailored_resume_path(tmp_path: Path, monkey
             url,
             "Senior React Frontend Engineer",
             "TestBoard",
-            "Build React and TypeScript UI components. Improve frontend performance.",
+            "Build React and TypeScript UI components. Improve frontend performance "
+            "and component architecture. Work with design systems, CSS modules, "
+            "webpack bundling, and browser testing across modern SPAs. "
+            "Collaborate with product and design.",
             9,
         ),
     )
@@ -1300,8 +1423,6 @@ def test_resolve_job_resume_base_when_allow_base_and_no_tailor(tmp_path: Path, m
 def test_acquire_job_uses_role_resume_for_high_fit_untailored_job(tmp_path: Path, monkeypatch):
     from applypilot import config, database
     from applypilot.apply import launcher
-
-    db_path = tmp_path / "applypilot.db"
     role_dir = tmp_path / "role_resumes"
     role_dir.mkdir()
     frontend_pdf = role_dir / "frontend-developer.pdf"
@@ -1339,15 +1460,13 @@ def test_acquire_job_uses_role_resume_for_high_fit_untailored_job(tmp_path: Path
         return pdf.resolve()
 
     monkeypatch.setattr(config, "APP_DIR", tmp_path)
-    monkeypatch.setattr(config, "DB_PATH", db_path)
     monkeypatch.setattr(config, "ROLE_RESUME_DIR", role_dir)
-    monkeypatch.setattr(database, "DB_PATH", db_path)
     monkeypatch.setattr(launcher, "_load_blocked", lambda: (set(), []))
     monkeypatch.setattr(launcher, "role_resumes_available", lambda: True)
     monkeypatch.setattr(launcher.prompt_mod, "ensure_resume_pdf", fake_ensure_resume_pdf)
     monkeypatch.setattr(config, "load_profile", lambda: {})
-    database.close_connection(db_path)
-    conn = database.init_db(db_path)
+    database.close_connection()
+    conn = database.init_db()
     conn.execute(
         """
         INSERT INTO jobs (
@@ -1371,7 +1490,7 @@ def test_acquire_job_uses_role_resume_for_high_fit_untailored_job(tmp_path: Path
         "SELECT apply_status FROM jobs WHERE url = 'https://jobs.example/frontend'"
     ).fetchone()
     assert row["apply_status"] == "in_progress"
-    database.close_connection(db_path)
+    database.close_connection()
 
 
 def test_role_catalog_includes_ui_architect_and_stack_roles():

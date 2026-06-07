@@ -8,7 +8,6 @@ search configuration YAML (searches.yaml) rather than being hardcoded.
 """
 
 import logging
-import sqlite3
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -23,6 +22,8 @@ from applypilot.apply.apply_url_extract import (
     coerce_application_url,
     extract_best_apply_url_from_text,
 )
+from applypilot.db.connection import Connection
+from applypilot.db.dialect import is_unique_violation, scalar
 from applypilot.database import get_connection, init_db, store_jobs
 
 log = logging.getLogger(__name__)
@@ -173,9 +174,9 @@ def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> 
     return False
 
 
-# -- DB storage (JobSpy DataFrame -> SQLite) ---------------------------------
+# -- DB storage (JobSpy DataFrame -> Postgres) ---------------------------------
 
-def store_jobspy_results(conn: sqlite3.Connection, df, source_label: str) -> tuple[int, int]:
+def store_jobspy_results(conn: Connection, df, source_label: str) -> tuple[int, int]:
     """Store JobSpy DataFrame results into the DB. Returns (new, existing)."""
     now = datetime.now(timezone.utc).isoformat()
     new = 0
@@ -237,7 +238,9 @@ def store_jobspy_results(conn: sqlite3.Connection, df, source_label: str) -> tup
                  full_description, apply_url, detail_scraped_at),
             )
             new += 1
-        except sqlite3.IntegrityError:
+        except Exception as exc:
+            if not is_unique_violation(exc):
+                raise
             existing += 1
 
     conn.commit()
@@ -447,7 +450,7 @@ def search_jobs(
     new, existing = store_jobspy_results(conn, df, query)
     log.info("Stored: %d new, %d already in DB", new, existing)
 
-    db_total = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+    db_total = int(scalar(conn.execute("SELECT COUNT(*) AS c FROM jobs").fetchone()) or 0)
     from applypilot.enrichment.pending import count_pending_detail
 
     pending = count_pending_detail(conn)
@@ -527,7 +530,7 @@ def _full_crawl(
 
     # Final stats
     conn = get_connection()
-    db_total = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+    db_total = int(scalar(conn.execute("SELECT COUNT(*) AS c FROM jobs").fetchone()) or 0)
 
     log.info("Full crawl complete: %d new | %d dupes | %d errors | %d total in DB",
              total_new, total_existing, total_errors, db_total)

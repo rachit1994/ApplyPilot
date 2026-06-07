@@ -10,6 +10,7 @@ from applypilot.apply.apply_log_parser import (
     load_apply_log_detail,
 )
 from applypilot.database import ensure_apply_outcomes_table, get_connection, init_db
+from applypilot.db.dialect import scalar, sql_ts_coalesce
 
 
 _APPLY_LEDGER_STATUSES = (
@@ -17,6 +18,11 @@ _APPLY_LEDGER_STATUSES = (
     "submitted_unverified",
     "failed",
     "manual",
+)
+
+_REVIEW_QUEUE_STATUSES = (
+    "prepare_review",
+    "staged",
 )
 
 _CLAUDE_ESCALATED_SQL = """(
@@ -92,7 +98,8 @@ def query_applied_jobs(
         clauses.append(scope_sql)
         params.extend(scope_params)
     elif status:
-        if status not in _APPLY_LEDGER_STATUSES:
+        allowed = set(_APPLY_LEDGER_STATUSES) | set(_REVIEW_QUEUE_STATUSES)
+        if status not in allowed:
             return [], 0
         clauses.append("apply_status = ?")
         params.append(status)
@@ -116,19 +123,20 @@ def query_applied_jobs(
 
     where = "WHERE " + " AND ".join(clauses) if clauses else ""
 
-    total = conn.execute(
-        f"SELECT COUNT(*) FROM jobs {where}",
+    total = int(scalar(conn.execute(
+        f"SELECT COUNT(*) AS c FROM jobs {where}",
         params,
-    ).fetchone()[0]
+    ).fetchone()) or 0)
     rows = conn.execute(
         f"""
         SELECT url, title, site, location, salary, fit_score,
                application_url, apply_status, apply_error, applied_at,
                last_attempted_at, apply_duration_ms, apply_attempts,
-               apply_log_path, verification_confidence, apply_form_filled
+               apply_log_path, verification_confidence, tailored_resume_path,
+               apply_form_filled
         FROM jobs
         {where}
-        ORDER BY datetime(COALESCE(applied_at, last_attempted_at)) DESC
+        ORDER BY {sql_ts_coalesce("applied_at", "last_attempted_at")} DESC
         LIMIT ? OFFSET ?
         """,
         (*params, limit, offset),
@@ -137,6 +145,11 @@ def query_applied_jobs(
     for row in rows:
         item = dict(row)
         item["form_filled"] = form_filled_from_stored_json(item.pop("apply_form_filled", None))
+        if not item.get("tailored_resume_path"):
+            ff = item.get("form_filled") or {}
+            resume_pdf = str(ff.get("resume_pdf") or "").strip()
+            if resume_pdf:
+                item["tailored_resume_path"] = resume_pdf
         apps.append(item)
     return apps, total
 
@@ -146,6 +159,10 @@ def _attach_form_filled(job: dict[str, Any], log_detail: dict[str, Any]) -> dict
     stored = form_filled_from_stored_json(job.pop("apply_form_filled", None))
     if stored:
         job["form_filled"] = stored
+        if not job.get("tailored_resume_path"):
+            resume_pdf = str(stored.get("resume_pdf") or "").strip()
+            if resume_pdf:
+                job["tailored_resume_path"] = resume_pdf
         return job
 
     excerpt = log_detail.get("log_excerpt") or ""
@@ -216,6 +233,91 @@ def retry_application(job_url: str) -> bool:
     return cur.rowcount > 0
 
 
+def stage_application(job_url: str) -> bool:
+    """Promote prepare_review job into the submit batch."""
+    from applypilot.database import invalidate_stats_cache
+
+    init_db()
+    conn = get_connection()
+    cur = conn.execute(
+        """
+        UPDATE jobs
+        SET apply_status = 'staged',
+            agent_id = NULL
+        WHERE url = ? AND apply_status = 'prepare_review'
+        """,
+        (job_url,),
+    )
+    conn.commit()
+    if cur.rowcount:
+        invalidate_stats_cache()
+    return cur.rowcount > 0
+
+
+def unstage_application(job_url: str) -> bool:
+    """Move staged job back to prepare review."""
+    from applypilot.database import invalidate_stats_cache
+
+    init_db()
+    conn = get_connection()
+    cur = conn.execute(
+        """
+        UPDATE jobs
+        SET apply_status = 'prepare_review',
+            agent_id = NULL
+        WHERE url = ? AND apply_status = 'staged'
+        """,
+        (job_url,),
+    )
+    conn.commit()
+    if cur.rowcount:
+        invalidate_stats_cache()
+    return cur.rowcount > 0
+
+
+def dismiss_application(job_url: str) -> bool:
+    """Return prepare_review job to the normal apply queue (keeps form snapshot)."""
+    from applypilot.database import invalidate_stats_cache
+
+    init_db()
+    conn = get_connection()
+    cur = conn.execute(
+        """
+        UPDATE jobs
+        SET apply_status = NULL,
+            agent_id = NULL
+        WHERE url = ? AND apply_status = 'prepare_review'
+        """,
+        (job_url,),
+    )
+    conn.commit()
+    if cur.rowcount:
+        invalidate_stats_cache()
+    return cur.rowcount > 0
+
+
+def bulk_stage_applications(urls: list[str], action: str) -> dict[str, Any]:
+    """Batch stage, unstage, or dismiss prepare/staged jobs."""
+    normalized = [u.strip() for u in urls if (u or "").strip()]
+    if action not in ("stage", "unstage", "dismiss"):
+        raise ValueError(f"invalid action: {action}")
+
+    handler = {
+        "stage": stage_application,
+        "unstage": unstage_application,
+        "dismiss": dismiss_application,
+    }[action]
+
+    updated = 0
+    skipped: list[str] = []
+    for job_url in normalized:
+        if handler(job_url):
+            updated += 1
+        else:
+            skipped.append(job_url)
+    return {"updated": updated, "skipped": skipped, "action": action}
+
+
 def get_application_detail(job_url: str) -> dict[str, Any] | None:
     init_db()
     conn = get_connection()
@@ -282,16 +384,17 @@ def query_attention_jobs(
     scope_sql, scope_params = _needs_attention_where()
     where = f"WHERE {scope_sql}"
 
-    total = int(conn.execute(f"SELECT COUNT(*) FROM jobs {where}", scope_params).fetchone()[0])
+    total = int(scalar(conn.execute(f"SELECT COUNT(*) AS c FROM jobs {where}", scope_params).fetchone()) or 0)
     rows = conn.execute(
         f"""
         SELECT url, title, site, location, salary, fit_score,
                application_url, apply_status, apply_error, applied_at,
                last_attempted_at, apply_duration_ms, apply_attempts,
-               apply_log_path, verification_confidence, apply_form_filled
+               apply_log_path, verification_confidence, tailored_resume_path,
+               apply_form_filled
         FROM jobs
         {where}
-        ORDER BY datetime(COALESCE(last_attempted_at, applied_at)) DESC
+        ORDER BY {sql_ts_coalesce("last_attempted_at", "applied_at")} DESC
         LIMIT ? OFFSET ?
         """,
         (*scope_params, limit, offset),
@@ -301,6 +404,11 @@ def query_attention_jobs(
     for row in rows:
         item = dict(row)
         item["form_filled"] = form_filled_from_stored_json(item.pop("apply_form_filled", None))
+        if not item.get("tailored_resume_path"):
+            ff = item.get("form_filled") or {}
+            resume_pdf = str(ff.get("resume_pdf") or "").strip()
+            if resume_pdf:
+                item["tailored_resume_path"] = resume_pdf
         apps.append(item)
     return apps, total
 

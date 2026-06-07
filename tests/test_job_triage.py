@@ -21,12 +21,9 @@ def temp_db(monkeypatch):
 
         config.load_env()
         monkeypatch.setattr(config, "APP_DIR", Path(tmp))
-        monkeypatch.setattr(config, "DB_PATH", db)
-        monkeypatch.setattr(database, "DB_PATH", db)
-        monkeypatch.setattr(events, "DB_PATH", db)
         database.close_connection()
         yield db
-        database.close_connection(db)
+        database.close_connection()
 
 
 def _seed_jobs(conn) -> None:

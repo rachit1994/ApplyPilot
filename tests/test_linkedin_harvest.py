@@ -110,16 +110,13 @@ def test_is_linkedin_url():
 
 
 @pytest.fixture
-def inbox_db(monkeypatch, tmp_path):
-    db = Path(tmp_path) / "applypilot.db"
+def inbox_db(monkeypatch, tmp_path, isolated_db):
     monkeypatch.setattr("applypilot.config.APP_DIR", Path(tmp_path))
-    monkeypatch.setattr("applypilot.config.DB_PATH", db)
     import applypilot.database as database
 
-    monkeypatch.setattr(database, "DB_PATH", db)
     database.close_connection()
     database.init_db()
-    yield db
+    yield isolated_db
     database.close_connection()
 
 

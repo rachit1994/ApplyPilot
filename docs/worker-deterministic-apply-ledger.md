@@ -38,6 +38,21 @@ STOP block (when §9 of the handbook applies — not a logic bug):
 
 ## Entries
 
+## 2026-06-07 — Workable resume/cover mis-upload + optional gaps skipped
+- Cluster: workable / pre-submit audit `resume_not_uploaded` / cover PDF on resume slot (CoverGo repro)
+- Repro URL: https://apply.workable.com/covergo/j/ED7B412F0D/apply/
+- Root layer: **fill method** + **detection** — `input_files_*` IDs are photo (image-only) + resume (PDF), not cover;
+  generic cover hints caused cover PDF to replace resume; optional fields only filled when required path ran
+- Recipe applied: **R4/R5** — accept-aware `_upload_files()` (resume-first, skip image-only, idempotent re-upload);
+  `_fill_optional_gaps()` after page loop; `_fill_cover_prose_fallback()` when no cover file slot;
+  pre-submit audit checks filename on resume slots; dry-run visit ledger bypass (`force=dry_run`, dry_run outcomes non-blocking);
+  tier-0 prose in `profile_binding` for cover/motivation textareas
+- Verify: `tests/test_direct_driver.py` + `test_direct_profile_binding.py` + `test_apply_visit_ledger.py` 96 PASS;
+  repro dry-run fills 29 fields, resume slot `senior-full-stack-engineer.pdf`, no audit block
+- Cache-hit-rate before→after: 84.62% replay (unchanged this iteration)
+- Commit: (uncommitted WIP)
+- Follow-ups: verify Greenhouse/Lever jobs with explicit cover **file** inputs; top non-capped gemini clusters are generic nav/wait (Wells Fargo, Moka, Expedia)
+
 ## 2026-06-07 — Workable Turnstile sitekey + captcha diagnostics
 - Cluster: workable united-field `manual|captcha_unsolved` (instant park, no CapSolver attempt)
 - Repro URL: https://apply.workable.com/united-field-services-inc/j/E4BEE08722/apply/

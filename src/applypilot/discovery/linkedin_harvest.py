@@ -305,7 +305,7 @@ def listing_page_budget(max_jobs: int) -> int:
 def store_harvested_jobs(jobs: list[dict[str, Any]]) -> dict[str, int]:
     """Insert harvested India rows keyed by the company/ATS URL (not LinkedIn).
 
-    Uses INSERT OR IGNORE on the ``url`` primary key so re-running is idempotent
+    Uses INSERT ... ON CONFLICT DO NOTHING on the ``url`` primary key so re-running is idempotent
     and a company's role seen via search + company-expansion de-dupes cleanly.
     """
     from datetime import datetime, timezone
@@ -329,10 +329,11 @@ def store_harvested_jobs(jobs: list[dict[str, Any]]) -> dict[str, int]:
         full_description = (f"Company: {company}\n{desc}".strip() if company else desc) or None
         cur = conn.execute(
             """
-            INSERT OR IGNORE INTO jobs
+            INSERT INTO jobs
                 (url, title, site, strategy, location,
                  application_url, full_description, discovered_at)
             VALUES (?, ?, 'LinkedIn->Company', 'linkedin_external', ?, ?, ?, ?)
+            ON CONFLICT (url) DO NOTHING
             """,
             (
                 url,

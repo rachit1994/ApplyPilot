@@ -21,8 +21,6 @@ STAMP="$(date +%Y%m%d-%H%M%S)"
 LOG="$LOG_DIR/overnight-${STAMP}.log"
 exec >>"$LOG" 2>&1
 
-DB="$HOME/.applypilot/applypilot.db"
-
 snapshot() {
   local label="$1"
   echo ""
@@ -34,16 +32,35 @@ for ms in (7, 5):
     n = count_acquirable_jobs(min_score=ms, include_untailored=True)
     print(f"acquirable min_score={ms}: {n}")
 PY
-  sqlite3 "$DB" "
-    SELECT 'applied_total', COUNT(*) FROM jobs
-      WHERE applied_at IS NOT NULL OR apply_status IN ('applied','submitted');
-    SELECT 'applied_tonight', COUNT(*) FROM jobs
-      WHERE applied_at IS NOT NULL
-        AND datetime(applied_at) >= datetime('now', 'start of day');
-    SELECT apply_status, COUNT(*) FROM jobs
-      WHERE fit_score >= 7 AND applied_at IS NULL
-      GROUP BY apply_status ORDER BY 2 DESC;
-  "
+  uv run python - <<'PY'
+from applypilot.database import get_connection
+
+conn = get_connection()
+applied_total = conn.execute(
+    """
+    SELECT COUNT(*) AS c FROM jobs
+    WHERE applied_at IS NOT NULL OR apply_status IN ('applied', 'submitted')
+    """
+).fetchone()["c"]
+applied_today = conn.execute(
+    """
+    SELECT COUNT(*) AS c FROM jobs
+    WHERE applied_at IS NOT NULL
+      AND applied_at::date = CURRENT_DATE
+    """
+).fetchone()["c"]
+print(f"applied_total {applied_total}")
+print(f"applied_today {applied_today}")
+rows = conn.execute(
+    """
+    SELECT apply_status, COUNT(*) AS c FROM jobs
+    WHERE fit_score >= 7 AND applied_at IS NULL
+    GROUP BY apply_status ORDER BY c DESC
+    """
+).fetchall()
+for row in rows:
+    print(f"pending_status {row['apply_status'] or 'NULL'} {row['c']}")
+PY
 }
 
 echo "Overnight run started $(date -Iseconds)"

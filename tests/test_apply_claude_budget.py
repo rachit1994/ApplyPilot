@@ -10,12 +10,8 @@ def apply_db(tmp_path: Path, monkeypatch):
     from applypilot import config
     from applypilot import database
     from applypilot.apply import launcher
-
-    db_path = tmp_path / "applypilot.db"
     monkeypatch.setattr(config, "APP_DIR", tmp_path)
     monkeypatch.setattr(config, "LOG_DIR", tmp_path / "logs")
-    monkeypatch.setattr(config, "DB_PATH", db_path)
-    monkeypatch.setattr(database, "DB_PATH", db_path)
     monkeypatch.setattr(launcher, "_load_blocked", lambda: (set(), []))
     monkeypatch.setattr(launcher, "role_resumes_available", lambda: False)
     monkeypatch.setattr(config, "load_profile", lambda: {})
@@ -30,11 +26,11 @@ def apply_db(tmp_path: Path, monkeypatch):
         return pdf.resolve()
 
     monkeypatch.setattr(launcher.prompt_mod, "ensure_resume_pdf", fake_ensure_resume_pdf)
-    database.close_connection(db_path)
-    conn = database.init_db(db_path)
+    database.close_connection()
+    conn = database.init_db()
     config.LOG_DIR.mkdir(parents=True, exist_ok=True)
     yield conn
-    database.close_connection(db_path)
+    database.close_connection()
 
 
 @pytest.fixture(autouse=True)

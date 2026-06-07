@@ -18,11 +18,9 @@ def temp_db(monkeypatch):
 
         config.load_env()
         monkeypatch.setattr(config, "APP_DIR", Path(tmp))
-        monkeypatch.setattr(config, "DB_PATH", db)
-        monkeypatch.setattr(database, "DB_PATH", db)
         database.close_connection()
         yield db
-        database.close_connection(db)
+        database.close_connection()
 
 
 def test_search_application_receipt_matches_company_and_received_copy(monkeypatch):
@@ -220,7 +218,7 @@ def test_reconcile_on_page_submissions_promotes_kula(temp_db):
     from applypilot.database import get_connection, init_db
     from applypilot.apply.launcher import reconcile_on_page_submissions
 
-    init_db(temp_db)
+    init_db()
     conn = get_connection()
     form = json.dumps({"submitted": True, "fields": []})
     conn.execute(

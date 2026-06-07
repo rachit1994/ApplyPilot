@@ -1,7 +1,5 @@
 """Tests for pre-acquire apply eligibility classification."""
 
-import sqlite3
-
 from applypilot.apply.eligibility import (
     ApplyDecision,
     apply_location_passes,
@@ -152,12 +150,11 @@ def test_ats_only_accepts_greenhouse_sourced_company_apply_url():
 
 
 def test_workatastartup_is_prioritized_as_direct_adapter_sql():
-    conn = sqlite3.connect(":memory:")
-    conn.execute(
-        "CREATE TABLE jobs (site TEXT, url TEXT, application_url TEXT, full_description TEXT)"
-    )
+    from applypilot.database import get_connection
+
+    conn = get_connection()
     conn.executemany(
-        "INSERT INTO jobs VALUES (?, ?, ?, ?)",
+        "INSERT INTO jobs (site, url, application_url, full_description) VALUES (?, ?, ?, ?)",
         [
             (
                 "Work at a Startup",
@@ -168,9 +165,10 @@ def test_workatastartup_is_prioritized_as_direct_adapter_sql():
             for i in range(10)
         ],
     )
+    conn.commit()
     direct_count = conn.execute(
-        f"SELECT COUNT(*) FROM jobs WHERE {direct_adapter_priority_sql()} = 0"
-    ).fetchone()[0]
+        f"SELECT COUNT(*) AS c FROM jobs WHERE {direct_adapter_priority_sql()} = 0"
+    ).fetchone()["c"]
     assert direct_count == 10
 
 

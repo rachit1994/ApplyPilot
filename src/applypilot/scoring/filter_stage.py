@@ -3,37 +3,41 @@
 from __future__ import annotations
 
 import logging
-import sqlite3
 from datetime import datetime, timezone
 
 from applypilot.config import load_profile, load_search_config
+from applypilot.db.connection import Connection
+from applypilot.db.dialect import scalar
 from applypilot.database import ensure_columns, get_connection, init_db
 from applypilot.scoring.pre_filter import pre_score_filter
 
 log = logging.getLogger(__name__)
 
 
-def count_pending_filter(conn: sqlite3.Connection | None = None) -> int:
+def count_pending_filter(conn: Connection | None = None) -> int:
     """Jobs that have not received an algorithmic pre-score yet."""
     if conn is None:
         conn = get_connection()
     ensure_columns(conn)
     return int(
-        conn.execute(
-            """
-            SELECT COUNT(*) FROM jobs
-            WHERE fit_score IS NULL
-              AND pre_fit_score IS NULL
-              AND (
-                full_description IS NOT NULL
-                OR detail_scraped_at IS NOT NULL
-              )
-            """
-        ).fetchone()[0]
+        scalar(
+            conn.execute(
+                """
+                SELECT COUNT(*) AS c FROM jobs
+                WHERE fit_score IS NULL
+                  AND pre_fit_score IS NULL
+                  AND (
+                    full_description IS NOT NULL
+                    OR detail_scraped_at IS NOT NULL
+                  )
+                """
+            ).fetchone()
+        )
+        or 0
     )
 
 
-def run_filter(limit: int = 0, conn: sqlite3.Connection | None = None) -> dict[str, int | str]:
+def run_filter(limit: int = 0, conn: Connection | None = None) -> dict[str, int | str]:
     """Pre-score jobs and reject obvious non-fits before LLM scoring.
 
     Rejected jobs are marked as scored with a low pre-score. Survivors keep

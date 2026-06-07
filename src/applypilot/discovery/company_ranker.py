@@ -244,20 +244,19 @@ def score_company_row(
 
 def load_source_history(days: int = 30) -> dict[str, float]:
     """Read existing source telemetry as a ranking hint. Fails closed."""
-    if not config.DB_PATH.exists():
-        return {}
     try:
         from applypilot.database import get_connection
+        from applypilot.db.dialect import sql_created_at_since_param
 
         conn = get_connection()
         rows = conn.execute(
-            """
+            f"""
             SELECT
                 source,
                 SUM(discovered) AS discovered,
                 SUM(scored_ge7) AS scored_ge7
             FROM discover_source_stats
-            WHERE created_at >= datetime('now', ?)
+            WHERE {sql_created_at_since_param('created_at')}
             GROUP BY source
             """,
             (f"-{max(1, int(days))} days",),

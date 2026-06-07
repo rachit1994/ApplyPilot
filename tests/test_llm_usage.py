@@ -5,12 +5,8 @@ import httpx
 
 def test_record_llm_usage_monthly_rollup(tmp_path, monkeypatch):
     from applypilot import config, database
-
-    db_path = tmp_path / "applypilot.db"
-    monkeypatch.setattr(config, "DB_PATH", db_path)
-    monkeypatch.setattr(database, "DB_PATH", db_path)
-    database.close_connection(db_path)
-    database.init_db(db_path)
+    database.close_connection()
+    database.init_db()
 
     database.record_llm_usage(
         provider="gemini",

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from applypilot.database import get_connection, init_db
+from applypilot.db.dialect import scalar, sql_discovered_hours_param, sql_ts_coalesce
 from applypilot.outreach.config import load_outreach_config, outreach_is_configured
 from applypilot.outreach.openoutreach_client import check_openoutreach_health
 from applypilot.outreach.orchestrator import (
@@ -84,7 +85,7 @@ def query_referrals(
     min_fit = min_score if min_score is not None else settings.min_fit_score
     where_parts = [
         "fit_score >= ?",
-        "discovered_at >= datetime('now', ? || ' hours')",
+        sql_discovered_hours_param("discovered_at"),
         filt,
     ]
     params: list[Any] = [min_fit, f"-{settings.max_job_age_hours}"]
@@ -97,7 +98,7 @@ def query_referrals(
         params.extend([q, q, q, q])
 
     where = " AND ".join(where_parts)
-    total = conn.execute(f"SELECT COUNT(*) FROM jobs WHERE {where}", params).fetchone()[0]
+    total = int(scalar(conn.execute(f"SELECT COUNT(*) AS c FROM jobs WHERE {where}", params).fetchone()) or 0)
     rows = conn.execute(
         f"""
         SELECT url, title, site, location, fit_score, discovered_at,
@@ -107,7 +108,7 @@ def query_referrals(
                tailored_resume_path, score_reasoning
         FROM jobs
         WHERE {where}
-        ORDER BY datetime(COALESCE(referral_message_at, referral_connect_at, applied_at, discovered_at)) DESC
+        ORDER BY {sql_ts_coalesce("referral_message_at", "referral_connect_at", "applied_at", "discovered_at")} DESC
         LIMIT ? OFFSET ?
         """,
         [*params, limit, offset],

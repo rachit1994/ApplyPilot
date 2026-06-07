@@ -20,12 +20,9 @@ def temp_db(monkeypatch):
 
         config.load_env()
         monkeypatch.setattr(config, "APP_DIR", Path(tmp))
-        monkeypatch.setattr(config, "DB_PATH", db)
-        monkeypatch.setattr(database, "DB_PATH", db)
-        monkeypatch.setattr(events, "DB_PATH", db)
         database.close_connection()
         yield db
-        database.close_connection(db)
+        database.close_connection()
 
 
 def test_learning_stats_review_clusters_and_promote(temp_db):
@@ -35,7 +32,7 @@ def test_learning_stats_review_clusters_and_promote(temp_db):
     from applypilot.database import get_connection, init_db
     from applypilot.server.app import create_app
 
-    init_db(temp_db)
+    init_db()
     conn = get_connection(temp_db)
     seed_nav_playbooks(conn, families=["greenhouse"])
     row = conn.execute(
@@ -103,7 +100,7 @@ def test_learning_promote_missing_returns_404(temp_db):
     from applypilot.database import init_db
     from applypilot.server.app import create_app
 
-    init_db(temp_db)
+    init_db()
     client = TestClient(create_app())
     res = client.post(
         "/api/learning/promote",
@@ -118,7 +115,7 @@ def test_learning_tier_mix_escalations_and_induction(temp_db):
     from applypilot.database import get_connection, init_db
     from applypilot.server.app import create_app
 
-    init_db(temp_db)
+    init_db()
     conn = get_connection(temp_db)
     playbook.ensure_playbook_tables(conn)
 

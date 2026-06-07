@@ -68,12 +68,16 @@ def latest_apply_visit(apply_url: str, *, conn=None) -> dict | None:
         FROM apply_outcomes
         WHERE canonical_url = ?
            OR lower(rtrim(url, '/')) = ?
-        ORDER BY datetime(created_at) DESC
+        ORDER BY created_at::timestamptz DESC
         LIMIT 1
         """,
         (canon, canon),
     ).fetchone()
     return dict(row) if row else None
+
+
+def _is_dry_run_result(result: str | None) -> bool:
+    return "dry_run" in str(result or "").lower()
 
 
 def visit_should_skip(
@@ -89,6 +93,8 @@ def visit_should_skip(
     if not visit:
         return False, None, None
     result = str(visit.get("result") or "")
+    if _is_dry_run_result(result):
+        return False, None, visit
     if _is_success_result(result):
         return True, f"already_applied:{result}", visit
     minutes = _minutes_since(visit.get("created_at"))

@@ -15,45 +15,20 @@ from __future__ import annotations
 import os
 
 from applypilot.apply.direct.adapters.base import Adapter
-
-GENERIC_FAMILY = "generic"
+from applypilot.apply.direct.generic_defaults import (
+    GENERIC_APPLY_BUTTON_TEXTS,
+    GENERIC_EXPIRED_MARKERS,
+    GENERIC_FAMILY,
+    GENERIC_SUBMIT_BUTTON_TEXTS,
+    GENERIC_SUCCESS_MARKERS,
+)
 
 ADAPTER = Adapter(
     family=GENERIC_FAMILY,
-    apply_button_texts=(
-        "apply", "apply now", "apply for this job", "apply for this role",
-        "i'm interested", "i am interested", "apply on company site",
-        "apply for this position", "submit application", "start application",
-    ),
-    submit_button_texts=(
-        "submit application", "submit", "send application", "apply",
-        "submit my application", "finish", "send",
-    ),
-    success_markers=(
-        "thank you for applying",
-        "application received",
-        "application has been received",
-        "we have received your application",
-        "your application has been submitted",
-        "successfully submitted",
-        "application submitted",
-        "thanks for applying",
-        "thank you for your application",
-        "thank you for your interest",
-        # Micro1 / similar career pages show a modal when the candidate already applied.
-        "you have already applied",
-        "already applied for this job",
-        "already applied for this position",
-    ),
-    expired_markers=(
-        "no longer accepting",
-        "position has been filled",
-        "this job is no longer",
-        "job not found",
-        "page not found",
-        "404",
-        "applications are closed",
-    ),
+    apply_button_texts=GENERIC_APPLY_BUTTON_TEXTS,
+    submit_button_texts=GENERIC_SUBMIT_BUTTON_TEXTS,
+    success_markers=GENERIC_SUCCESS_MARKERS,
+    expired_markers=GENERIC_EXPIRED_MARKERS,
 )
 
 

@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from applypilot.apply import apply_settings
 from applypilot.apply.direct import fingerprint
 from applypilot.database import ensure_apply_outcomes_table, get_connection
+from applypilot.db.dialect import scalar
 
 # apply_outcomes.result values that represent a real form submission to the site.
 _SUBMIT_RESULTS = (
@@ -50,9 +51,9 @@ def _submit_count(conn, *, ats_family: str | None, apex: str | None) -> int:
         where += " AND url LIKE ?"
         params.append(f"%{apex}%")
     row = conn.execute(
-        f"SELECT COUNT(*) FROM apply_outcomes WHERE {where}", params
+        f"SELECT COUNT(*) AS c FROM apply_outcomes WHERE {where}", params
     ).fetchone()
-    return int(row[0]) if row else 0
+    return int(scalar(row) or 0)
 
 
 def check_caps(url: str, *, conn=None) -> tuple[bool, str | None]:

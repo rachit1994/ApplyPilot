@@ -806,6 +806,39 @@ def _sponsorship_details_field(field: Field, tokens: dict) -> Resolution | None:
     return None
 
 
+def _default_prose_message(tokens: dict) -> str:
+    """Short role-specific message when no cover letter text is available."""
+    name = str(tokens.get("preferred_name") or tokens.get("full_name") or "").strip()
+    title = str(tokens.get("job_title") or tokens.get("current_job_title") or "this role").strip()
+    company = str(tokens.get("company") or "your team").strip()
+    current = str(tokens.get("current_job_title") or "software engineer").strip()
+    years = str(tokens.get("years_experience") or "").strip()
+    exp = f" with {years} years of experience" if years else ""
+    opener = f"Hi, I'm {name}. " if name else ""
+    return (
+        f"{opener}I'm interested in the {title} role at {company}. "
+        f"My background is in {current}{exp}, with hands-on work across production "
+        "software, automation, and AI-enabled systems. I'd like to explore whether "
+        "my experience fits what you're building."
+    )
+
+
+def _prose_application_message(field: Field, tokens: dict) -> Resolution | None:
+    """Tier-0 answers for cover-letter / why-us / additional-info textareas."""
+    label = _norm(field.label)
+    is_prose = field.tag == "textarea" or bool(_FREE_TEXT_RE.search(field.label or ""))
+    if not is_prose:
+        return None
+    if field.type in {"file", "hidden", "submit", "button"}:
+        return None
+
+    cover_text = str(tokens.get("cover_letter_text") or "").strip()
+    if cover_text:
+        return Resolution(answer=cover_text[:4000], confidence=0.9, via="cover_letter")
+
+    return Resolution(answer=_default_prose_message(tokens)[:4000], confidence=0.82, via="prose_default")
+
+
 def _workatastartup_message(field: Field, tokens: dict) -> str | None:
     """Deterministic answer for YC Work at a Startup's required Message box."""
     job_url = _norm(tokens.get("job_url"))
@@ -821,18 +854,7 @@ def _workatastartup_message(field: Field, tokens: dict) -> str | None:
     if cover_text:
         return cover_text[:1800]
 
-    name = str(tokens.get("preferred_name") or tokens.get("full_name") or "").strip()
-    title = str(tokens.get("job_title") or "this role").strip()
-    company = str(tokens.get("company") or "your team").strip()
-    current = str(tokens.get("current_job_title") or "software engineer").strip()
-    years = str(tokens.get("years_experience") or "").strip()
-    exp = f" with {years} years of experience" if years else ""
-    return (
-        f"Hi, I'm {name}. I'm interested in the {title} role at {company}. "
-        f"My background is in {current}{exp}, with hands-on work across production "
-        "software, automation, and AI-enabled systems. I'd like to explore whether "
-        "my experience fits what you're building."
-    )
+    return _default_prose_message(tokens)
 
 
 def resolve_field(field: Field, tokens: dict) -> Resolution | None:
@@ -897,10 +919,10 @@ def resolve_field(field: Field, tokens: dict) -> Resolution | None:
     if waas_message:
         return Resolution(answer=waas_message, confidence=0.86, via="label")
 
-    # 5. Free-text is intentionally NOT answered here. Generic boilerplate is
-    #    exactly what recruiters bin, so company-specific prose ("why this
-    #    role") flows to Tier 2 (Gemini) with live {company, role} context, or
-    #    is left blank when optional. Tier 0 stays factual-only.
+    prose = _prose_application_message(field, tokens)
+    if prose:
+        return prose
+
     return None
 
 

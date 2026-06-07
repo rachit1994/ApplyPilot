@@ -1,7 +1,8 @@
 """Connect eligibility respects require_applied_before_send."""
 
-import sqlite3
+from datetime import datetime, timezone
 
+from applypilot.database import get_connection
 from applypilot.outreach.config import OutreachSettings
 from applypilot.outreach.orchestrator import _eligible_connect_rows
 
@@ -32,32 +33,47 @@ def _settings(**kwargs) -> OutreachSettings:
 
 
 def test_connect_requires_applied_at():
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.executescript(
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_connection()
+    conn.execute(
         """
-        CREATE TABLE jobs (
-            url TEXT PRIMARY KEY,
-            title TEXT,
-            site TEXT,
-            fit_score INTEGER,
-            discovered_at TEXT,
-            recruiter_public_id TEXT,
-            referral_message TEXT,
-            referral_status TEXT,
-            applied_at TEXT
-        );
-        INSERT INTO jobs VALUES (
-            'https://linkedin.com/jobs/1', 'Eng', 'linkedin', 8,
-            datetime('now'), 'recruiter1', 'hello', 'pending_connect', NULL
-        );
-        INSERT INTO jobs VALUES (
-            'https://linkedin.com/jobs/2', 'Eng2', 'linkedin', 8,
-            datetime('now'), 'recruiter2', 'hello', 'pending_connect',
-            datetime('now')
-        );
-        """
+        INSERT INTO jobs (
+            url, title, site, fit_score, discovered_at,
+            recruiter_public_id, referral_message, referral_status, applied_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "https://linkedin.com/jobs/1",
+            "Eng",
+            "linkedin",
+            8,
+            now,
+            "recruiter1",
+            "hello",
+            "pending_connect",
+            None,
+        ),
     )
+    conn.execute(
+        """
+        INSERT INTO jobs (
+            url, title, site, fit_score, discovered_at,
+            recruiter_public_id, referral_message, referral_status, applied_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "https://linkedin.com/jobs/2",
+            "Eng2",
+            "linkedin",
+            8,
+            now,
+            "recruiter2",
+            "hello",
+            "pending_connect",
+            now,
+        ),
+    )
+    conn.commit()
     settings = _settings()
     rows = _eligible_connect_rows(conn, settings)
     assert len(rows) == 1

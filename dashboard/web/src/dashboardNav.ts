@@ -1,5 +1,4 @@
-import type { Job, Stats } from "./api";
-import { jobPipelineStage } from "./utils/jobPipeline";
+import type { Stats } from "./api";
 
 /** Run pipeline stages (CLI / API), not dashboard pages. */
 export const PIPELINE_STAGE_IDS = [
@@ -59,33 +58,6 @@ export function isDashboardPage(value: string): value is DashboardPage {
     value === "learning" ||
     value === "settings"
   );
-}
-
-const STAGE_JOB_LABELS: Record<PipelineStageId, string[]> = {
-  discover: ["Discovered"],
-  enrich: ["Enriched", "Enrich error"],
-  filter: ["Rejected"],
-  score: ["Scored", "Tailor exhausted"],
-  tailor: ["Tailored", "Cover"],
-  cover: ["Cover"],
-  pdf: ["Tailored", "Cover", "Ready"],
-};
-
-export function jobMatchesStage(job: Job, stage: PipelineStageId): boolean {
-  const label = jobPipelineStage(job);
-  return STAGE_JOB_LABELS[stage].includes(label);
-}
-
-export function filterEventsForStage<T extends { stage?: string | null; event_type?: string }>(
-  events: T[],
-  stage: PipelineStageId,
-): T[] {
-  return events.filter((e) => {
-    if (e.stage === stage) return true;
-    if (e.event_type === "run_started" || e.event_type === "run_finished") return true;
-    if (e.event_type === "stats_tick") return true;
-    return false;
-  });
 }
 
 export function pageGreeting(): string {

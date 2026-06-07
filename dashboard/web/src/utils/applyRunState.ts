@@ -1,4 +1,7 @@
-import type { Run } from "../api";
+import type { Run, RunEvent } from "../api";
+import { extractJobUrl } from "./devlog";
+
+const RUNNING_AGENT_RE = /Running apply agent for (.+)$/i;
 
 export type ApplyAgentPhase =
   | "idle"
@@ -171,6 +174,57 @@ export function deriveApplyAgentState(
     statusbarClassName: "statusbar",
     pulse: false,
   };
+}
+
+export type CurrentApplyTarget = {
+  url: string | null;
+  title: string | null;
+};
+
+export function deriveCurrentApplyTarget(
+  events: RunEvent[],
+  running: boolean,
+): CurrentApplyTarget {
+  if (!running) return { url: null, title: null };
+
+  let title: string | null = null;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    const url = extractJobUrl(e.message, e.payload, null);
+    if (url) return { url, title: null };
+
+    const candidates = [e.message ?? ""];
+    if (e.event_type === "worker_heartbeat") {
+      const detail = (e.payload as { detail?: string } | undefined)?.detail;
+      if (detail) candidates.push(detail);
+    }
+    for (const text of candidates) {
+      const match = RUNNING_AGENT_RE.exec(text.trim());
+      if (match?.[1]) {
+        title = match[1].trim();
+        break;
+      }
+    }
+    if (title) break;
+  }
+
+  return { url: null, title };
+}
+
+export function applicationMatchesApplyTarget(
+  app: { url: string; title?: string | null },
+  target: CurrentApplyTarget,
+): boolean {
+  if (target.url && app.url === target.url) return true;
+  if (!target.title || !app.title) return false;
+  const rowTitle = app.title.trim().toLowerCase();
+  const needle = target.title.trim().toLowerCase();
+  if (!rowTitle || !needle) return false;
+  return (
+    rowTitle === needle ||
+    rowTitle.startsWith(needle) ||
+    needle.startsWith(rowTitle.slice(0, Math.min(rowTitle.length, 80)))
+  );
 }
 
 export function summarizeWorkers(workers: WorkerHeartbeatInfo[]): string {

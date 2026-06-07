@@ -402,8 +402,84 @@ def test_partition_checkbox_radio_groups():
 
 def test_file_hint_classifiers():
     assert driver._file_hint_is_cover("Cover letter (optional)")
+    assert not driver._file_hint_is_cover(
+        "input_files_input_F3bomLqD20FjxxV9 input_files_input_F3bomLqD20FjxxV9"
+    )
+    assert driver._upload_accepts_images_only(".jpg,.jpeg,.gif,.png,image/jpeg")
+    assert driver._is_cover_file_upload(
+        {
+            "label": "Cover letter",
+            "name": "cover",
+            "accept": ".pdf",
+            "required": False,
+        },
+        family="workable",
+    )
+    assert not driver._is_cover_file_upload(
+        {
+            "label": "input_files_input_x",
+            "name": "input_files_input_x",
+            "accept": ".jpg,.jpeg,.png,image/png",
+            "required": False,
+        },
+        family="workable",
+    )
     assert driver._file_hint_is_resume("Upload resume / CV")
+    assert driver._file_hint_is_resume("Replace file")
     assert driver._file_hint_is_photo("Profile photo")
+
+
+def test_enrich_audit_file_rows_fills_empty_file_values():
+    from applypilot.apply.direct import extractor
+
+    class _Page:
+        def inner_text(self, _sel: str) -> str:
+            return "senior-full-stack-engineer.pdf uploaded"
+
+    form = extractor.FormState(
+        fields=[
+            extractor.Field(
+                label="Attach",
+                type="file",
+                tag="input",
+                name_attr="cover_letter",
+            ),
+        ],
+    )
+    audit_rows = [
+        driver._record_row("Attach", "", ftype="file", via="dom"),
+    ]
+    uploads = [
+        {
+            "label": "Attach",
+            "name": "cover_letter",
+            "required": False,
+            "has_file": False,
+            "file_name": "",
+        },
+    ]
+    resume_path = "/tmp/role_resumes/senior-full-stack-engineer.pdf"
+    driver._enrich_audit_file_rows(
+        audit_rows,
+        form,
+        uploads,
+        resume_pdf=resume_path,
+        cover_pdf=None,
+        page=_Page(),
+        family="greenhouse",
+    )
+    assert audit_rows[0]["label"] == "Resume (PDF)"
+    assert resume_path in audit_rows[0]["value"]
+    assert audit_rows[1]["value"] == ""
+
+
+def test_page_shows_filename():
+    class _Page:
+        def inner_text(self, _sel: str) -> str:
+            return "Attached senior-full-stack-engineer.pdf"
+
+    assert driver._page_shows_filename(_Page(), "senior-full-stack-engineer.pdf")
+    assert not driver._page_shows_filename(_Page(), "ab")
 
 
 def test_ashby_autofill_file_is_not_submission_resume():

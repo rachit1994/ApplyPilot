@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import re
-import sqlite3
 from datetime import datetime, timezone
 from playwright.sync_api import sync_playwright
 
@@ -12,6 +11,8 @@ from pathlib import Path
 
 from applypilot import config
 from applypilot.apply.salary import salary_meets_regional_minimum
+from applypilot.db.connection import Connection
+from applypilot.db.dialect import is_unique_violation
 from applypilot.database import get_connection, init_db
 
 WAAS_STORAGE_STATE = config.APP_DIR / "waas_storage_state.json"
@@ -262,7 +263,7 @@ def _merge_listing_job_urls(page, list_urls: list[str], *, max_links: int = 500)
     return merged
 
 
-def _store_job(conn: sqlite3.Connection, job: dict, now: str) -> str:
+def _store_job(conn: Connection, job: dict, now: str) -> str:
     try:
         conn.execute(
             """
@@ -287,7 +288,9 @@ def _store_job(conn: sqlite3.Connection, job: dict, now: str) -> str:
         )
         conn.commit()
         return "new"
-    except sqlite3.IntegrityError:
+    except Exception as exc:
+        if not is_unique_violation(exc):
+            raise
         conn.execute(
             """
             UPDATE jobs SET

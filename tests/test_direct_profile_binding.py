@@ -282,12 +282,18 @@ def test_monthly_usd_salary_converts_from_inr_annual():
     assert resolved.answer == "5000"
 
 
-def test_free_text_not_answered_by_tier0():
-    # Tier 0 is factual-only; free-text flows to Gemini (Tier 2) with context.
+def test_prose_text_answered_by_tier0():
+    req = Field(label="Why do you want to work here?", tag="textarea", required=True)
+    resolved = resolve_field(req, TOKENS)
+    assert resolved is not None
+    assert "interested" in resolved.answer.lower()
+    assert resolved.via in {"cover_letter", "prose_default"}
+
+
+def test_free_text_detector_still_identifies_prose_fields():
     from applypilot.apply.direct.profile_binding import is_free_text
 
     req = Field(label="Why do you want to work here?", tag="textarea", required=True)
-    assert resolve_field(req, TOKENS) is None
     assert is_free_text(req)
     assert is_free_text(Field(label="Anything else?", tag="textarea"))
     assert not is_free_text(Field(label="Email", type="email"))

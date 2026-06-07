@@ -6,6 +6,7 @@ import logging
 import os
 import subprocess
 import sys
+from pathlib import Path
 from typing import Optional
 
 import typer
@@ -555,6 +556,16 @@ def apply(
         "--include-untailored",
         help="Also attempt jobs without tailored resumes (uses base resume.pdf).",
     ),
+    prepare: bool = typer.Option(
+        False,
+        "--prepare",
+        help="Fill forms only (no submit); land each attempted job in Prepare review.",
+    ),
+    staged_only: bool = typer.Option(
+        False,
+        "--staged-only",
+        help="Submit only jobs you staged from Prepare review.",
+    ),
     prompt_mode: Optional[str] = typer.Option(
         None,
         "--prompt-mode",
@@ -585,6 +596,14 @@ def apply(
 
     if priority_boards_only:
         os.environ["APPLYPILOT_PRIORITY_BOARDS_ONLY"] = "1"
+
+    if prepare:
+        dry_run = True
+    if prepare and staged_only:
+        console.print("[red]Cannot use --prepare with --staged-only[/red]")
+        raise typer.Exit(code=1)
+
+    queue_mode = "staged_only" if staged_only else ("prepare" if prepare else "default")
 
     from applypilot.config import check_tier, get_chrome_path, PROFILE_PATH as _profile_path
     from applypilot.database import get_connection
@@ -740,6 +759,7 @@ def apply(
             ats_only=ats_only,
             priority_boards_only=priority_boards_only,
             include_untailored=include_untailored,
+            queue_mode=queue_mode,
         )
         if acquirable == 0:
             hint = format_apply_queue_hint(
@@ -748,8 +768,16 @@ def apply(
                 priority_boards_only=priority_boards_only,
                 include_untailored=include_untailored,
             )
-            console.print("[red]No jobs available to apply right now.[/red]")
-            console.print(hint)
+            if staged_only:
+                console.print("[red]No staged jobs to submit.[/red]")
+                console.print(
+                    "[dim]Stage jobs from Prepare review in the dashboard, then run Submit staged.[/dim]"
+                )
+            elif prepare:
+                console.print("[red]No jobs available to prepare.[/red]")
+            else:
+                console.print("[red]No jobs available to apply right now.[/red]")
+                console.print(hint)
             run_id = os.environ.get("APPLYPILOT_RUN_ID", "").strip()
             if run_id:
                 from applypilot.orchestration.events import emit_run_event
@@ -806,6 +834,7 @@ def apply(
             ats_only=ats_only,
             priority_boards_only=priority_boards_only,
             include_untailored=include_untailored,
+            queue_mode=queue_mode if not url else "default",
         )
 
     if watch:
@@ -844,6 +873,10 @@ def apply(
         console.print("  ATS only: on (skip non-ATS apply URLs)")
     if priority_boards_only:
         console.print("  Boards:   LinkedIn + Wellfound only")
+    if prepare:
+        console.print("  Mode:     prepare (fill only, no submit)")
+    elif staged_only:
+        console.print("  Mode:     submit staged jobs only")
     if deterministic_only:
         console.print("  Mode:     deterministic-only (no Claude; needs_adapter parking)")
     console.print()
@@ -865,6 +898,8 @@ def apply(
         priority_boards_only=priority_boards_only,
         min_experience_years=min_experience_years,
         include_untailored=include_untailored,
+        prepare=prepare,
+        staged_only=staged_only,
     )
 
     if not continuous and not dry_run:
@@ -1725,14 +1760,13 @@ def debug_verification_checklist(
     from applypilot.apply.gmail_auth import CREDENTIALS_PATH, OAUTH_KEYS_PATH
     from applypilot.config import load_env
     from applypilot.database import get_connection
+    from applypilot.db.dialect import scalar, table_exists
 
     load_env()
 
     selected_month = month or datetime.now(timezone.utc).strftime("%Y-%m")
     conn = get_connection()
-    has_usage_table = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'llm_usage_events'"
-    ).fetchone()
+    has_usage_table = table_exists(conn, "llm_usage_events")
     if has_usage_table:
         usage_rows = conn.execute(
             """
@@ -1740,7 +1774,7 @@ def debug_verification_checklist(
                    SUM(input_tokens) AS input_tokens,
                    SUM(output_tokens) AS output_tokens,
                    SUM(cost_usd) AS cost_usd,
-                   SUM(CASE WHEN estimated THEN 1 ELSE 0 END) AS estimated_calls
+                   SUM(CASE WHEN estimated IS NOT NULL AND estimated != 0 THEN 1 ELSE 0 END) AS estimated_calls
             FROM llm_usage_events
             WHERE substr(created_at, 1, 7) = ?
             GROUP BY provider, model, operation
@@ -1754,24 +1788,35 @@ def debug_verification_checklist(
     gemini_cost = sum(
         float(r["cost_usd"]) for r in usage_rows if r["provider"] == "gemini"
     )
-    invalid_quota = conn.execute(
-        """
-        SELECT COUNT(*) FROM jobs
-        WHERE apply_status = 'failed'
-          AND apply_not_before IS NOT NULL
-          AND datetime(apply_not_before) IS NULL
-          AND COALESCE(apply_error, '') LIKE '%claude_quota_exhausted%'
-        """
-    ).fetchone()[0]
-    parked_quota = conn.execute(
-        """
-        SELECT COUNT(*) FROM jobs
-        WHERE apply_status = 'failed'
-          AND apply_not_before IS NOT NULL
-          AND datetime(apply_not_before) > datetime('now')
-          AND COALESCE(apply_error, '') LIKE '%claude_quota_exhausted%'
-        """
-    ).fetchone()[0]
+    invalid_quota = int(
+        scalar(
+            conn.execute(
+                """
+                SELECT COUNT(*) AS c FROM jobs
+                WHERE apply_status = 'failed'
+                  AND apply_not_before IS NOT NULL
+                  AND btrim(apply_not_before) <> ''
+                  AND apply_not_before !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
+                  AND COALESCE(apply_error, '') LIKE '%claude_quota_exhausted%'
+                """
+            ).fetchone()
+        )
+        or 0
+    )
+    parked_quota = int(
+        scalar(
+            conn.execute(
+                """
+                SELECT COUNT(*) AS c FROM jobs
+                WHERE apply_status = 'failed'
+                  AND apply_not_before IS NOT NULL
+                  AND apply_not_before::timestamptz > NOW()
+                  AND COALESCE(apply_error, '') LIKE '%claude_quota_exhausted%'
+                """
+            ).fetchone()
+        )
+        or 0
+    )
     priority_ready = conn.execute(
         """
         SELECT
@@ -1913,6 +1958,131 @@ def render_templates_cmd() -> None:
             console.print(f"[green]OK[/green] {pdf_path.name}")
         except Exception as exc:
             console.print(f"[red]FAIL[/red] {txt_path.name}: {exc}")
+
+
+serve_daemon_app = typer.Typer(
+    help="Detached dashboard server with auto-restart (survives terminal close).",
+    no_args_is_help=True,
+)
+app.add_typer(serve_daemon_app, name="serve-daemon")
+
+db_app = typer.Typer(
+    help="Postgres database setup and status.",
+    no_args_is_help=True,
+)
+app.add_typer(db_app, name="db")
+
+
+@db_app.command("init")
+def db_init() -> None:
+    """Create ApplyPilot schema on the configured Postgres database (idempotent)."""
+    from applypilot.database import init_db
+
+    try:
+        init_db()
+    except ConnectionError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    console.print("[green]OK[/green] Postgres schema initialized.")
+
+
+@db_app.command("status")
+def db_status() -> None:
+    """Show DSN (password redacted), Postgres version, and table row counts."""
+    from applypilot.db.status import database_status
+
+    try:
+        info = database_status()
+    except ConnectionError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    console.print(f"Database: [cyan]{info['database_url']}[/cyan]")
+    if info.get("postgres_version"):
+        version = str(info["postgres_version"]).split(",")[0]
+        console.print(f"Postgres: {version}")
+    table = Table(title="Table row counts")
+    table.add_column("Table")
+    table.add_column("Rows", justify="right")
+    for name, count in sorted(info.get("table_counts", {}).items()):
+        table.add_row(name, str(count))
+    console.print(table)
+    console.print(f"Total rows: {info.get('total_rows', 0)}")
+
+
+@serve_daemon_app.command("start")
+def serve_daemon_start(
+    host: str = typer.Option("127.0.0.1", help="Bind address."),
+    port: int = typer.Option(9477, help="HTTP port."),
+) -> None:
+    """Start dashboard watchdog in the background."""
+    from applypilot.server.runtime import start
+
+    ok, message = start(host=host, port=port)
+    color = "green" if ok else "red"
+    console.print(f"[{color}]{message}[/{color}]")
+    if not ok:
+        raise typer.Exit(1)
+
+
+@serve_daemon_app.command("stop")
+def serve_daemon_stop() -> None:
+    """Stop background dashboard watchdog."""
+    from applypilot.server.runtime import stop
+
+    _, message = stop()
+    console.print(message)
+
+
+@serve_daemon_app.command("restart")
+def serve_daemon_restart(
+    host: str = typer.Option("127.0.0.1", help="Bind address."),
+    port: int = typer.Option(9477, help="HTTP port."),
+) -> None:
+    """Restart background dashboard watchdog."""
+    from applypilot.server.runtime import start, stop
+
+    stop()
+    ok, message = start(host=host, port=port)
+    color = "green" if ok else "red"
+    console.print(f"[{color}]{message}[/{color}]")
+    if not ok:
+        raise typer.Exit(1)
+
+
+@serve_daemon_app.command("status")
+def serve_daemon_status(
+    host: str = typer.Option("127.0.0.1", help="Bind address."),
+    port: int = typer.Option(9477, help="HTTP port."),
+) -> None:
+    """Show dashboard watchdog / HTTP status."""
+    from applypilot.server.runtime import status
+
+    console.print(status(host=host, port=port))
+
+
+@serve_daemon_app.command("install-launchagent")
+def serve_daemon_install_launchagent(
+    host: str = typer.Option("127.0.0.1", help="Bind address."),
+    port: int = typer.Option(9477, help="HTTP port."),
+) -> None:
+    """Install macOS LaunchAgent so launchd keeps the dashboard alive."""
+    from applypilot.server.runtime import install_launch_agent
+
+    ok, message = install_launch_agent(host=host, port=port)
+    color = "green" if ok else "red"
+    console.print(f"[{color}]{message}[/{color}]")
+    if not ok:
+        raise typer.Exit(1)
+
+
+@serve_daemon_app.command("uninstall-launchagent")
+def serve_daemon_uninstall_launchagent() -> None:
+    """Remove macOS LaunchAgent and stop dashboard."""
+    from applypilot.server.runtime import uninstall_launch_agent
+
+    _, message = uninstall_launch_agent()
+    console.print(message)
 
 
 @app.command("serve")

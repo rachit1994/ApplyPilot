@@ -34,8 +34,10 @@ export function ApplyRunPlanModal({
     <RunPlanModal
       open={open}
       title="Start apply queue"
+      subtitle="Configure how many jobs to submit and how Chrome should behave."
       cliCommand={cliCommand}
       summaryLines={summaryLines}
+      wide
       onCancel={onCancel}
       onConfirm={onConfirm}
     >

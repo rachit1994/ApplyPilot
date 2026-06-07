@@ -2,32 +2,13 @@
 
 from __future__ import annotations
 
-import sqlite3
-
-import pytest
-
 from applypilot import database
+from applypilot.db.connection import Connection
 from applypilot.orchestration.run_controller import get_run
 from applypilot.orchestration.stage_ui import effective_current_stage
 
 
-@pytest.fixture
-def temp_db(monkeypatch, tmp_path):
-    db_path = tmp_path / "stage_ui.db"
-    monkeypatch.setenv("APPLYPILOT_DIR", str(tmp_path))
-    from applypilot import config
-
-    config.load_env()
-    monkeypatch.setattr(config, "APP_DIR", tmp_path)
-    monkeypatch.setattr(config, "DB_PATH", db_path)
-    monkeypatch.setattr(database, "DB_PATH", db_path)
-    database.close_connection()
-    database.init_db()
-    yield db_path
-    database.close_connection()
-
-
-def _insert_job(conn: sqlite3.Connection, url: str, **fields) -> None:
+def _insert_job(conn: Connection, url: str, **fields) -> None:
     cols = ["url", "title", "site"]
     vals = [url, fields.pop("title", "Engineer"), fields.pop("site", "test")]
     for k, v in fields.items():
@@ -41,7 +22,7 @@ def _insert_job(conn: sqlite3.Connection, url: str, **fields) -> None:
     conn.commit()
 
 
-def test_effective_current_stage_ignores_idle_cover_marker(temp_db):
+def test_effective_current_stage_ignores_idle_cover_marker():
     conn = database.get_connection()
     _insert_job(
         conn,
@@ -82,7 +63,7 @@ def test_effective_current_stage_ignores_idle_cover_marker(temp_db):
     assert run["current_stage"] == "enrich"
 
 
-def test_overview_stepper_marks_enrich_active_during_stream(temp_db):
+def test_overview_stepper_marks_enrich_active_during_stream():
     conn = database.get_connection()
     _insert_job(
         conn,
@@ -93,7 +74,6 @@ def test_overview_stepper_marks_enrich_active_during_stream(temp_db):
     _insert_job(conn, "https://a.example/pending")
 
     from applypilot.orchestration.events import init_run_schema
-    from applypilot.orchestration.run_controller import _active_process, _active_run_id
     import applypilot.orchestration.run_controller as rc
 
     init_run_schema(conn)

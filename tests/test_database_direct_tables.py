@@ -1,55 +1,33 @@
-"""Tests for the Direct-Apply DB additions: qa_bank, apply_outcomes, WAL."""
+"""Tests for the Direct-Apply DB additions: qa_bank, apply_outcomes."""
 
 from __future__ import annotations
-
-from pathlib import Path
 
 import pytest
 
 from applypilot import database as db
+from applypilot.db.dialect import table_exists
 
 
 @pytest.fixture
-def conn(tmp_path: Path, monkeypatch):
-    from applypilot import config
-
-    db_path = tmp_path / "applypilot.db"
-    monkeypatch.setattr(config, "DB_PATH", db_path)
-    monkeypatch.setattr(db, "DB_PATH", db_path)
-    db.close_connection(db_path)
-    c = db.init_db(db_path)
+def conn(isolated_db):
+    db.close_connection()
+    c = db.init_db()
     yield c
-    db.close_connection(db_path)
+    db.close_connection()
 
 
 def test_new_tables_created(conn):
-    tables = {
-        r[0]
-        for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()
-    }
-    assert "qa_bank" in tables
-    assert "apply_outcomes" in tables
+    assert table_exists(conn, "qa_bank")
+    assert table_exists(conn, "apply_outcomes")
 
 
-def test_wal_mode_enabled(conn):
-    mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
-    assert mode.lower() == "wal"
-
-
-def test_init_db_is_idempotent(tmp_path, monkeypatch):
-    from applypilot import config
-
-    db_path = tmp_path / "applypilot.db"
-    monkeypatch.setattr(config, "DB_PATH", db_path)
-    monkeypatch.setattr(db, "DB_PATH", db_path)
-    db.close_connection(db_path)
-    db.init_db(db_path)
-    db.close_connection(db_path)
-    # Second init must not raise (CREATE TABLE IF NOT EXISTS).
-    c = db.init_db(db_path)
-    assert c.execute("SELECT COUNT(*) FROM qa_bank").fetchone()[0] == 0
+def test_init_db_is_idempotent(isolated_db):
+    db.close_connection()
+    db.init_db()
+    db.close_connection()
+    db.init_db()
+    row = db.get_connection().execute("SELECT COUNT(*) AS c FROM qa_bank").fetchone()
+    assert int(row["c"]) == 0
 
 
 def test_record_apply_outcome(conn):

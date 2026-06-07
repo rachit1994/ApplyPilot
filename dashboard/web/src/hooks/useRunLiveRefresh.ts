@@ -1,19 +1,24 @@
 import { useEffect, useRef } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { fetchActiveRun, subscribeRunEvents } from "../api";
+import { useQueryClient } from "@tanstack/react-query";
+import type { Run } from "../api";
+import { subscribeRunEvents } from "../api";
+import { createInvalidateThrottle } from "../utils/queryInvalidateThrottle";
+
+const LIVE_INVALIDATE_MS = 4000;
 
 /** Invalidate stats + jobs when the active run emits pipeline progress. */
-export function useRunLiveRefresh() {
+export function useRunLiveRefresh(activeRun: Run | null | undefined) {
   const queryClient = useQueryClient();
-  const { data: activeRun } = useQuery({
-    queryKey: ["runs", "active"],
-    queryFn: fetchActiveRun,
-    refetchInterval: 5000,
-  });
   const lastEventId = useRef(0);
+  const throttleRef = useRef(createInvalidateThrottle(LIVE_INVALIDATE_MS));
+
+  useEffect(() => {
+    throttleRef.current = createInvalidateThrottle(LIVE_INVALIDATE_MS);
+  }, [activeRun?.id]);
 
   useEffect(() => {
     if (!activeRun?.id || activeRun.status !== "running") return;
+    const invalidateLive = throttleRef.current;
     const unsub = subscribeRunEvents(
       activeRun.id,
       (event) => {
@@ -22,10 +27,12 @@ export function useRunLiveRefresh() {
           event.event_type === "stage_progress" ||
           event.event_type === "worker_heartbeat"
         ) {
-          queryClient.invalidateQueries({ queryKey: ["stats"] });
-          queryClient.invalidateQueries({ queryKey: ["jobs"] });
-          queryClient.invalidateQueries({ queryKey: ["jobs-triage-counts"] });
-          queryClient.invalidateQueries({ queryKey: ["jobs-recent"] });
+          invalidateLive(() => {
+            void queryClient.invalidateQueries({ queryKey: ["stats"] });
+            void queryClient.invalidateQueries({ queryKey: ["jobs"] });
+            void queryClient.invalidateQueries({ queryKey: ["jobs-triage-counts"] });
+            void queryClient.invalidateQueries({ queryKey: ["jobs-recent"] });
+          });
         }
       },
       lastEventId.current,

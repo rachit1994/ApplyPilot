@@ -1,4 +1,4 @@
-"""Dashboard-wide activity log (SQLite + SSE)."""
+"""Dashboard-wide activity log (Postgres + SSE)."""
 
 from __future__ import annotations
 
@@ -7,8 +7,6 @@ import json
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from typing import Any
-
-import sqlite3
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
@@ -50,7 +48,7 @@ def emit_dashboard_activity(
     return int(cur.lastrowid) if cur.lastrowid else None
 
 
-def _row_to_item(row: sqlite3.Row) -> dict[str, Any]:
+def _row_to_item(row: dict[str, Any]) -> dict[str, Any]:
     meta: dict[str, Any] = {}
     if row["meta_json"]:
         try:

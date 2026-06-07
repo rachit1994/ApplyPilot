@@ -6,7 +6,7 @@ Layering (no import cycles):
 
     fingerprint.py   -- URL/DOM -> canonical ATS family + provider fingerprint
         ^
-    qa_bank.py       -- Resolver Tier-1 SQLite answer cache
+    qa_bank.py       -- Resolver Tier-1 answer cache
         ^
     (adapters, resolver, driver -- Phase B/C, added on top)
 

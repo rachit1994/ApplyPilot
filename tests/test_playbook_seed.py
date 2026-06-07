@@ -20,14 +20,12 @@ def temp_db(monkeypatch):
         monkeypatch.setenv("APPLYPILOT_DIR", tmp)
         config.load_env()
         monkeypatch.setattr(config, "APP_DIR", Path(tmp))
-        monkeypatch.setattr(config, "DB_PATH", db)
-        monkeypatch.setattr(database, "DB_PATH", db)
         database.close_connection()
-        database.init_db(db)
-        conn = database.get_connection(db)
+        database.init_db()
+        conn = database.get_connection()
         playbook.ensure_playbook_tables(conn)
         yield conn
-        database.close_connection(db)
+        database.close_connection()
 
 
 def test_load_nav_playbooks_yaml():

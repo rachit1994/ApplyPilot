@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from itertools import groupby
 
 from applypilot.config import RESUME_PATH, get_target_roles, load_profile, load_search_config
+from applypilot.job_log import format_job_line
 from applypilot.database import get_connection, get_jobs_by_stage, refresh_source_stats_scores
 from applypilot.llm import get_client
 from applypilot.role_resumes import (
@@ -401,7 +402,7 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
             "distribution": [],
         }
 
-    # Convert sqlite3.Row to dicts if needed
+    # Convert row mappings to dicts if needed
     if jobs and not isinstance(jobs[0], dict):
         columns = jobs[0].keys()
         jobs = [dict(zip(columns, row)) for row in jobs]
@@ -596,13 +597,13 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
                 scored_rows.append((job, result))
                 resolution = job["_scoring_resolution"]
                 log.info(
-                    "[%d/%d] score=%d role=%s jd_fit=%s title=%s",
+                    "[%d/%d] score=%d role=%s jd_fit=%s | %s",
                     completed,
                     len(survivors),
                     result["score"],
                     resolution.role_key or "base",
                     resolution.jd_score if resolution.jd_score is not None else "-",
-                    str(job.get("title", "?"))[:60],
+                    format_job_line(job),
                 )
 
     for job, result in scored_rows:
@@ -622,11 +623,11 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
 
     # Score distribution
     dist = conn.execute("""
-        SELECT fit_score, COUNT(*) FROM jobs
+        SELECT fit_score, COUNT(*) AS cnt FROM jobs
         WHERE fit_score IS NOT NULL
         GROUP BY fit_score ORDER BY fit_score DESC
     """).fetchall()
-    distribution = [(row[0], row[1]) for row in dist]
+    distribution = [(row["fit_score"], row["cnt"]) for row in dist]
 
     return {
         "scored": len(scored_rows),

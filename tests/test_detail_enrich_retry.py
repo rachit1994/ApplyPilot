@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import sqlite3
 from datetime import datetime, timezone
 
-import pytest
-
-from applypilot.database import ensure_columns, init_db
+from applypilot.database import ensure_columns, get_connection
+from applypilot.db.connection import Connection
 from applypilot.enrichment.pending import (
     MAX_DETAIL_ENRICH_ATTEMPTS,
     count_pending_detail,
@@ -17,25 +15,14 @@ from applypilot.enrichment.pending import (
 )
 
 
-@pytest.fixture
-def temp_db(monkeypatch, tmp_path):
-    from applypilot import config, database
-
-    db_path = tmp_path / "enrich_retry.db"
-    monkeypatch.setenv("APPLYPILOT_DIR", str(tmp_path))
-    monkeypatch.setattr(database, "DB_PATH", db_path)
-    monkeypatch.setattr(config, "DB_PATH", db_path)
-    database.close_connection()
-    conn = init_db()
+def _conn() -> Connection:
+    conn = get_connection()
     ensure_columns(conn)
-    yield conn
-    conn.close()
-    database.close_connection()
-    database.invalidate_stats_cache()
+    return conn
 
 
 def _insert_job(
-    conn: sqlite3.Connection,
+    conn: Connection,
     url: str,
     *,
     detail_error: str | None = None,
@@ -72,8 +59,8 @@ def test_is_retryable_detail_error():
     assert not is_retryable_detail_error(None)
 
 
-def test_timeout_with_scraped_at_still_pending(temp_db):
-    conn = temp_db
+def test_timeout_with_scraped_at_still_pending():
+    conn = _conn()
     scraped = datetime.now(timezone.utc).isoformat()
     _insert_job(
         conn,
@@ -85,8 +72,8 @@ def test_timeout_with_scraped_at_still_pending(temp_db):
     assert count_pending_detail(conn) == 1
 
 
-def test_timeout_exhausted_not_pending(temp_db):
-    conn = temp_db
+def test_timeout_exhausted_not_pending():
+    conn = _conn()
     scraped = datetime.now(timezone.utc).isoformat()
     _insert_job(
         conn,
@@ -98,8 +85,8 @@ def test_timeout_exhausted_not_pending(temp_db):
     assert count_pending_detail(conn) == 0
 
 
-def test_persist_retryable_failure_clears_scraped_at(temp_db):
-    conn = temp_db
+def test_persist_retryable_failure_clears_scraped_at():
+    conn = _conn()
     url = "https://example.com/job/3"
     now = datetime.now(timezone.utc).isoformat()
     _insert_job(conn, url, detail_scraped_at=now, detail_enrich_attempts=0)
@@ -116,13 +103,13 @@ def test_persist_retryable_failure_clears_scraped_at(temp_db):
         "SELECT detail_error, detail_scraped_at, detail_enrich_attempts FROM jobs WHERE url = ?",
         (url,),
     ).fetchone()
-    assert row[0] == "timeout"
-    assert row[1] is None
-    assert row[2] == 1
+    assert row["detail_error"] == "timeout"
+    assert row["detail_scraped_at"] is None
+    assert row["detail_enrich_attempts"] == 1
 
 
-def test_persist_retryable_exhausted_sets_scraped_at(temp_db):
-    conn = temp_db
+def test_persist_retryable_exhausted_sets_scraped_at():
+    conn = _conn()
     url = "https://example.com/job/4"
     now = datetime.now(timezone.utc).isoformat()
     _insert_job(
@@ -143,12 +130,12 @@ def test_persist_retryable_exhausted_sets_scraped_at(temp_db):
         "SELECT detail_error, detail_scraped_at, detail_enrich_attempts FROM jobs WHERE url = ?",
         (url,),
     ).fetchone()
-    assert row[0] == "timeout"
-    assert row[1] == now
-    assert row[2] == MAX_DETAIL_ENRICH_ATTEMPTS
+    assert row["detail_error"] == "timeout"
+    assert row["detail_scraped_at"] == now
+    assert row["detail_enrich_attempts"] == MAX_DETAIL_ENRICH_ATTEMPTS
 
 
-def test_detail_pending_clause_is_valid_sql(temp_db):
-    conn = temp_db
+def test_detail_pending_clause_is_valid_sql():
+    conn = _conn()
     clause = detail_pending_clause()
     conn.execute(f"SELECT COUNT(*) FROM jobs WHERE {clause}").fetchone()

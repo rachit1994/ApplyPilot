@@ -9,7 +9,15 @@ from pathlib import Path
 APP_DIR = Path(os.environ.get("APPLYPILOT_DIR", Path.home() / ".applypilot"))
 
 # Core paths
-DB_PATH = APP_DIR / "applypilot.db"
+DEFAULT_DATABASE_URL = "postgresql://127.0.0.1:5432/applypilot"
+DATABASE_URL = os.environ.get("APPLYPILOT_DATABASE_URL", DEFAULT_DATABASE_URL)
+
+
+def refresh_database_url() -> str:
+    """Re-read ``APPLYPILOT_DATABASE_URL`` from the environment (after ``load_env``)."""
+    global DATABASE_URL
+    DATABASE_URL = os.environ.get("APPLYPILOT_DATABASE_URL", DEFAULT_DATABASE_URL)
+    return DATABASE_URL
 PROFILE_PATH = APP_DIR / "profile.json"
 RESUME_PATH = APP_DIR / "resume.txt"
 RESUME_PDF_PATH = APP_DIR / "resume.pdf"
@@ -332,6 +340,7 @@ def load_env():
         load_dotenv(ENV_PATH)
     # Also try CWD .env as fallback
     load_dotenv()
+    refresh_database_url()
 
 
 # ---------------------------------------------------------------------------

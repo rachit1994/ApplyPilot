@@ -6,6 +6,7 @@ import logging
 from datetime import datetime, timezone
 
 from applypilot.database import get_connection
+from applypilot.db.dialect import scalar, sql_discovered_hours_param
 from applypilot.outreach.config import OutreachSettings, load_outreach_config
 from applypilot.outreach.openoutreach_client import OpenOutreachClient, OpenOutreachError
 from applypilot.outreach.referral_draft import finalize_referral_message
@@ -25,11 +26,11 @@ def _weekly_connects_used(conn) -> int:
     row = conn.execute(
         """
         SELECT COUNT(*) FROM jobs
-        WHERE referral_connect_at >= datetime('now', '-7 days')
+        WHERE referral_connect_at::timestamptz >= NOW() - INTERVAL '7 days'
           AND referral_connect_at IS NOT NULL
         """
     ).fetchone()
-    return int(row[0]) if row else 0
+    return int(scalar(row) or 0)
 
 
 def _applied_clause(settings: OutreachSettings) -> str:
@@ -62,7 +63,7 @@ def _eligible_connect_rows(
           AND referral_message IS NOT NULL
           AND referral_message != ''
           AND (referral_status IS NULL OR referral_status = 'pending_connect')
-          AND discovered_at >= datetime('now', ? || ' hours')
+          AND {sql_discovered_hours_param("discovered_at")}
           {applied_clause}
         ORDER BY fit_score DESC, discovered_at DESC
     """
@@ -72,8 +73,7 @@ def _eligible_connect_rows(
     rows = conn.execute(query, params).fetchall()
     if not rows:
         return []
-    columns = rows[0].keys()
-    return [dict(zip(columns, row)) for row in rows]
+    return [dict(row) for row in rows]
 
 
 def _eligible_message_rows(
@@ -98,8 +98,7 @@ def _eligible_message_rows(
     rows = conn.execute(query, params).fetchall()
     if not rows:
         return []
-    columns = rows[0].keys()
-    return [dict(zip(columns, row)) for row in rows]
+    return [dict(row) for row in rows]
 
 
 def _deal_state_by_public_id(client: OpenOutreachClient, settings: OutreachSettings) -> dict[str, str]:

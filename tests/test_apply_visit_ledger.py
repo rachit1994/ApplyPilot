@@ -28,16 +28,12 @@ def reset_apply_globals():
 def apply_db(tmp_path: Path, monkeypatch):
     from applypilot import config
     from applypilot import database
-
-    db_path = tmp_path / "applypilot.db"
     monkeypatch.setattr(config, "APP_DIR", tmp_path)
-    monkeypatch.setattr(config, "DB_PATH", db_path)
-    monkeypatch.setattr(database, "DB_PATH", db_path)
-    database.close_connection(db_path)
-    init_db(db_path)
-    conn = get_connection(db_path)
+    database.close_connection()
+    init_db()
+    conn = get_connection()
     yield conn
-    database.close_connection(db_path)
+    database.close_connection()
 
 
 def test_canonical_apply_url_strips_query_and_trailing_slash():
@@ -75,6 +71,20 @@ def test_visit_should_skip_after_success(apply_db):
     assert skip is True
     assert reason is not None
     assert "already_applied" in reason
+
+
+def test_visit_should_not_skip_after_dry_run(apply_db):
+    apply_url = "https://apply.workable.com/covergo/j/ED7B412F0D/apply/"
+    record_apply_outcome(
+        conn=apply_db,
+        url=apply_url,
+        result="skipped:direct_dry_run",
+        ats_family="workable",
+    )
+    skip, reason, visit = visit_ledger.visit_should_skip(apply_url, conn=apply_db)
+    assert skip is False
+    assert reason is None
+    assert visit is not None
 
 
 def test_visit_allows_retry_after_cooldown(apply_db, monkeypatch):

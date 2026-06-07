@@ -9,6 +9,7 @@ from typing import Any
 from applypilot import __version__
 from applypilot.apply import apply_settings
 from applypilot.database import get_connection, get_llm_usage_monthly, init_db
+from applypilot.db.dialect import scalar, sql_created_at_since_param, table_exists
 
 
 def _utc_today() -> str:
@@ -19,16 +20,8 @@ def _utc_month() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m")
 
 
-def _table_exists(conn, name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-        (name,),
-    ).fetchone()
-    return row is not None
-
-
 def _sum_cost(conn, *, provider: str | None, day: str | None, month: str | None) -> float:
-    if not _table_exists(conn, "llm_usage_events"):
+    if not table_exists(conn, "llm_usage_events"):
         return 0.0
     clauses: list[str] = []
     params: list[Any] = []
@@ -46,7 +39,7 @@ def _sum_cost(conn, *, provider: str | None, day: str | None, month: str | None)
         f"SELECT COALESCE(SUM(cost_usd), 0) FROM llm_usage_events {where}",
         params,
     ).fetchone()
-    return float(row[0] or 0.0)
+    return float(scalar(row) or 0.0)
 
 
 def _aggregate(
@@ -57,7 +50,7 @@ def _aggregate(
     month: str | None,
     day: str | None,
 ) -> list[dict[str, Any]]:
-    if not _table_exists(conn, "llm_usage_events"):
+    if not table_exists(conn, "llm_usage_events"):
         return []
     clauses: list[str] = []
     params: list[Any] = []
@@ -103,9 +96,9 @@ def _aggregate(
 
 
 def _daily_series(conn, *, provider: str, days: int = 7) -> list[dict[str, Any]]:
-    if not _table_exists(conn, "llm_usage_events"):
+    if not table_exists(conn, "llm_usage_events"):
         return []
-    clauses = ["created_at >= datetime('now', ?)"]
+    clauses = [sql_created_at_since_param("created_at")]
     params: list[Any] = [f"-{int(days)} days"]
     if provider:
         clauses.append("provider = ?")
@@ -139,7 +132,7 @@ def _daily_series(conn, *, provider: str, days: int = 7) -> list[dict[str, Any]]
 
 
 def _recent_events(conn, *, provider: str | None, limit: int = 25) -> list[dict[str, Any]]:
-    if not _table_exists(conn, "llm_usage_events"):
+    if not table_exists(conn, "llm_usage_events"):
         return []
     clauses: list[str] = []
     params: list[Any] = []
@@ -187,25 +180,25 @@ def _recent_events(conn, *, provider: str | None, limit: int = 25) -> list[dict[
 
 
 def _apply_quota_stats(conn) -> dict[str, int]:
-    if not _table_exists(conn, "jobs"):
+    if not table_exists(conn, "jobs"):
         return {"quota_blocked_jobs": 0, "quota_blocked_recent": 0}
     blocked = conn.execute(
         """
-        SELECT COUNT(*) FROM jobs
+        SELECT COUNT(*) AS c FROM jobs
         WHERE COALESCE(apply_error, '') LIKE '%claude_quota_exhausted%'
         """
     ).fetchone()
     recent = conn.execute(
         """
-        SELECT COUNT(*) FROM jobs
+        SELECT COUNT(*) AS c FROM jobs
         WHERE COALESCE(apply_error, '') LIKE '%claude_quota_exhausted%'
           AND last_attempted_at IS NOT NULL
-          AND date(substr(last_attempted_at, 1, 10)) >= date('now', '-7 days')
+          AND last_attempted_at::timestamptz >= NOW() - INTERVAL '7 days'
         """
     ).fetchone()
     return {
-        "quota_blocked_jobs": int(blocked[0] or 0) if blocked else 0,
-        "quota_blocked_recent": int(recent[0] or 0) if recent else 0,
+        "quota_blocked_jobs": int(scalar(blocked) or 0),
+        "quota_blocked_recent": int(scalar(recent) or 0),
     }
 
 
@@ -240,14 +233,15 @@ def build_llm_usage_detail(*, month: str | None = None) -> dict[str, Any]:
     apply_calls_today = sum(int(r["calls"]) for r in apply_today)
     cache_today_row = conn.execute(
         """
-        SELECT COALESCE(SUM(cache_read_tokens), 0), COALESCE(SUM(input_tokens), 0)
+        SELECT COALESCE(SUM(cache_read_tokens), 0) AS cache_read,
+               COALESCE(SUM(input_tokens), 0) AS input_tokens
         FROM llm_usage_events
         WHERE provider = 'anthropic' AND substr(created_at, 1, 10) = ?
         """,
         (today,),
-    ).fetchone() if _table_exists(conn, "llm_usage_events") else None
-    cache_read_today = int(cache_today_row[0] or 0) if cache_today_row else 0
-    input_today = int(cache_today_row[1] or 0) if cache_today_row else 0
+    ).fetchone() if table_exists(conn, "llm_usage_events") else None
+    cache_read_today = int(cache_today_row["cache_read"] or 0) if cache_today_row else 0
+    input_today = int(cache_today_row["input_tokens"] or 0) if cache_today_row else 0
     cache_hit_rate = (
         round(100.0 * cache_read_today / max(1, input_today), 1) if input_today else None
     )
@@ -258,7 +252,7 @@ def build_llm_usage_detail(*, month: str | None = None) -> dict[str, Any]:
         "month": selected_month,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "app_version": __version__,
-        "ledger_available": _table_exists(conn, "llm_usage_events"),
+        "ledger_available": table_exists(conn, "llm_usage_events"),
         "summary": {
             "claude_today_usd": anthropic_today,
             "claude_month_usd": anthropic_month,

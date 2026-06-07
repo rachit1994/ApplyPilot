@@ -17,8 +17,9 @@ from pathlib import Path
 
 from rich.console import Console
 
-from applypilot.config import APP_DIR, DB_PATH
+from applypilot.config import APP_DIR
 from applypilot.database import get_connection
+from applypilot.db.dialect import scalar
 
 console = Console()
 
@@ -37,17 +38,17 @@ def generate_dashboard(output_path: str | None = None) -> str:
     conn = get_connection()
 
     # Stats
-    total = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
-    ready = conn.execute(
-        "SELECT COUNT(*) FROM jobs "
+    total = int(scalar(conn.execute("SELECT COUNT(*) AS c FROM jobs").fetchone()) or 0)
+    ready = int(scalar(conn.execute(
+        "SELECT COUNT(*) AS c FROM jobs "
         "WHERE full_description IS NOT NULL AND application_url IS NOT NULL"
-    ).fetchone()[0]
-    scored = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE fit_score IS NOT NULL"
-    ).fetchone()[0]
-    high_fit = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE fit_score >= 7"
-    ).fetchone()[0]
+    ).fetchone()) or 0)
+    scored = int(scalar(conn.execute(
+        "SELECT COUNT(*) AS c FROM jobs WHERE fit_score IS NOT NULL"
+    ).fetchone()) or 0)
+    high_fit = int(scalar(conn.execute(
+        "SELECT COUNT(*) AS c FROM jobs WHERE fit_score >= 7"
+    ).fetchone()) or 0)
 
     # Score distribution
     score_dist: dict[int, int] = {}

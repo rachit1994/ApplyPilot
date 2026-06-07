@@ -5,6 +5,7 @@ import { PIPELINE_STAGE_IDS } from "../dashboardNav";
 import { useApplyRun } from "../hooks/useApplyRun";
 import { useHomeRuns } from "../hooks/useHomeRuns";
 import { ApplyRunPlanModal } from "./ApplyRunPlanModal";
+import { PipelineRunPlanModal } from "./PipelineRunPlanModal";
 import { ClaudeUsagePanel } from "./ClaudeUsagePanel";
 import { sourceEfficiencyPercent } from "../utils/format";
 import { PageCanvas } from "./layout/PageCanvas";
@@ -13,6 +14,7 @@ export function PipelineDashboardPage() {
   const runControl = useHomeRuns();
   const applyRun = useApplyRun();
   const [applyPlanOpen, setApplyPlanOpen] = useState(false);
+  const [pipelinePlanOpen, setPipelinePlanOpen] = useState(false);
 
   const { data: overview } = useQuery({
     queryKey: ["overview"],
@@ -113,7 +115,7 @@ export function PipelineDashboardPage() {
               type="button"
               className="btn btn--accent"
               disabled={runControl.starting || runControl.pipelineStartRequested || isRunning}
-              onClick={() => void runControl.handleStartPipeline()}
+              onClick={() => setPipelinePlanOpen(true)}
             >
               {runControl.starting ? "Starting…" : "New run"}
             </button>
@@ -239,6 +241,30 @@ export function PipelineDashboardPage() {
         onConfirm={() => {
           setApplyPlanOpen(false);
           void applyRun.handleStart();
+        }}
+      />
+
+      <PipelineRunPlanModal
+        open={pipelinePlanOpen}
+        settings={{
+          stageOrder: runControl.stageOrder,
+          selectedStages: runControl.selectedStages,
+          toggleStage: runControl.toggleStage,
+          setSelectedStages: runControl.setSelectedStages,
+          stream: runControl.stream,
+          setStream: runControl.setStream,
+          dryRun: runControl.dryRun,
+          setDryRun: runControl.setDryRun,
+          pipelineMinScore: runControl.pipelineMinScore,
+          setPipelineMinScore: runControl.setPipelineMinScore,
+          workers: runControl.workers,
+          setWorkers: runControl.setWorkers,
+          isRunning: runControl.isRunning,
+        }}
+        onCancel={() => setPipelinePlanOpen(false)}
+        onConfirm={() => {
+          setPipelinePlanOpen(false);
+          void runControl.handleStartPipeline();
         }}
       />
     </PageCanvas>

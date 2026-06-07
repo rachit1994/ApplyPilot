@@ -3367,6 +3367,80 @@ def _role_resume_cleared_for_apply(
     return False
 
 
+def _path_is_role_resume(path: str | Path, output_dir: Path | None = None) -> bool:
+    """True when ``path`` lives under the role-resume tree (not a per-job tailored file)."""
+    raw = Path(path)
+    if not str(raw).strip():
+        return False
+    try:
+        resolved = raw.resolve()
+    except OSError:
+        resolved = raw
+    role_root = Path(output_dir or role_resume_dir()).resolve()
+    try:
+        resolved.relative_to(role_root)
+        return True
+    except ValueError:
+        pass
+    resolved_str = str(resolved)
+    for item in _usable_manifest_items_by_key(output_dir).values():
+        pdf = _resolve_role_pdf_path(item, output_dir=output_dir)
+        if pdf and str(pdf.resolve()) == resolved_str:
+            return True
+    return False
+
+
+def _per_job_tailored_resume_path(
+    job: dict[str, Any],
+    *,
+    output_dir: Path | None = None,
+) -> str | None:
+    """Stored resume path only when it is a real per-job tailor artifact."""
+    raw = job.get("tailored_resume_path")
+    if not raw or not str(raw).strip():
+        return None
+    if _path_is_role_resume(raw, output_dir):
+        return None
+    return str(raw)
+
+
+def _role_resume_bind_candidate(
+    job: dict[str, Any],
+    *,
+    output_dir: Path | None = None,
+    jd_min_score: int | None = None,
+) -> dict[str, Any] | None:
+    """Best manifest role whose PDF clears the JD threshold for this job."""
+    if not role_resumes_available(output_dir):
+        return None
+    jd_min = role_resume_jd_min_score() if jd_min_score is None else max(1, min(10, jd_min_score))
+    by_key = _usable_manifest_items_by_key(output_dir)
+    seen_keys: set[str] = set()
+    options: list[dict[str, Any]] = []
+    score_role_key = job.get("score_role_key")
+    if score_role_key:
+        item = by_key.get(str(score_role_key))
+        if item:
+            options.append(item)
+            seen_keys.add(str(item.get("key") or ""))
+    matched = match_role_resume(job, output_dir)
+    if matched:
+        key = str(matched.get("key") or "")
+        if key not in seen_keys:
+            options.append(matched)
+            seen_keys.add(key)
+    best: tuple[int, dict[str, Any]] | None = None
+    for item in options:
+        jd_score = _jd_score_for_role_apply(job, item)
+        if not _role_resume_cleared_for_apply(
+            job, item, jd_score, jd_min, output_dir=output_dir
+        ):
+            continue
+        if best is None or jd_score > best[0]:
+            best = (jd_score, item)
+    return best[1] if best else None
+
+
 def _role_resume_text(item: dict[str, Any]) -> str:
     for key in ("txt_path", "resume_txt_path"):
         raw = item.get(key)
@@ -3484,7 +3558,7 @@ def resolve_job_resume(
                 jd_score=jd_score,
                 role_key=role_key,
             )
-        tailored = job.get("tailored_resume_path")
+        tailored = _per_job_tailored_resume_path(job, output_dir=output_dir)
         if tailored:
             pdf = _resolve_stored_resume_pdf_path(
                 tailored,
@@ -3519,7 +3593,7 @@ def resolve_job_resume(
             role_key=role_key,
         )
 
-    tailored = job.get("tailored_resume_path")
+    tailored = _per_job_tailored_resume_path(job, output_dir=output_dir)
     if tailored:
         pdf = _resolve_stored_resume_pdf_path(tailored, output_dir=output_dir)
         return ResumeResolution(
@@ -3531,6 +3605,16 @@ def resolve_job_resume(
             path=str(config.RESUME_PDF_PATH),
             source="base",
         )
+    stored = job.get("tailored_resume_path")
+    if stored and str(stored).strip():
+        pdf = _resolve_stored_resume_pdf_path(stored, output_dir=output_dir)
+        if pdf:
+            source = (
+                "role_resume"
+                if _path_is_role_resume(stored, output_dir)
+                else "tailored"
+            )
+            return ResumeResolution(path=str(pdf), source=source)
     return ResumeResolution(path=None, source="none")
 
 
@@ -3753,9 +3837,9 @@ def job_needs_per_job_tailor(
     output_dir: Path | None = None,
 ) -> bool:
     """True when per-job LLM tailoring is still required (role resume is not enough)."""
-    if job.get("tailored_resume_path"):
-        return False
     if int(job.get("tailor_attempts") or 0) >= _max_tailor_attempts():
+        return False
+    if _per_job_tailored_resume_path(job, output_dir=output_dir):
         return False
     resolution = resolve_job_resume(
         job,
@@ -3776,6 +3860,7 @@ _TAILOR_CANDIDATE_COLUMNS = (
     "tailor_attempts",
     "fit_score",
     "score_role_key",
+    "score_jd_fit",
 )
 
 
@@ -3795,7 +3880,6 @@ def _iter_tailor_candidates(
             SELECT {cols} FROM jobs
             WHERE fit_score >= ?
               AND full_description IS NOT NULL
-              AND tailored_resume_path IS NULL
               AND COALESCE(tailor_attempts, 0) < ?
             ORDER BY fit_score DESC, discovered_at DESC
             LIMIT ? OFFSET ?
@@ -3804,9 +3888,8 @@ def _iter_tailor_candidates(
         ).fetchall()
         if not rows:
             return
-        columns = rows[0].keys()
         for row in rows:
-            yield dict(zip(columns, row))
+            yield dict(row)
         if len(rows) < batch_size:
             return
         offset += batch_size
@@ -3818,11 +3901,11 @@ def bind_role_resume_paths(
     min_score: int = 7,
     batch_size: int = 500,
 ) -> dict[str, int]:
-    """Set ``tailored_resume_path`` to a matched role-resume PDF for high-score jobs.
+    """Set ``tailored_resume_path`` to a role-resume PDF when JD alignment is strong enough.
 
     Downstream pipeline stages (cover, PDF, dashboard counts, apply queue) key off
-    ``tailored_resume_path``. Role-resume-ready jobs skip per-job LLM tailor but still
-    need this column populated so they are not stuck at scored-only.
+    ``tailored_resume_path``. Jobs whose best role resume fails the JD threshold are
+    left unbound so per-job tailor can run.
     """
     if conn is None:
         from applypilot.database import get_connection
@@ -3835,6 +3918,7 @@ def bind_role_resume_paths(
     now = datetime.now(timezone.utc).isoformat()
     bound = 0
     skipped = 0
+    cleared = 0
     offset = 0
     cols = ", ".join((*_TAILOR_CANDIDATE_COLUMNS, "url"))
     while True:
@@ -3843,39 +3927,51 @@ def bind_role_resume_paths(
             SELECT {cols} FROM jobs
             WHERE fit_score >= ?
               AND full_description IS NOT NULL
-              AND (tailored_resume_path IS NULL OR tailored_resume_path = '')
+              AND COALESCE(tailor_attempts, 0) < ?
             ORDER BY fit_score DESC, discovered_at DESC
             LIMIT ? OFFSET ?
             """,
-            (min_score, batch_size, offset),
+            (min_score, _max_tailor_attempts(), batch_size, offset),
         ).fetchall()
         if not rows:
             break
         columns = rows[0].keys()
         for row in rows:
-            job = dict(zip(columns, row))
-            score_role_key = job.get("score_role_key")
-            matched = None
-            if score_role_key:
-                by_key = _usable_manifest_items_by_key()
-                matched = by_key.get(str(score_role_key))
+            job = dict(row)
+            if _per_job_tailored_resume_path(job):
+                continue
+            matched = _role_resume_bind_candidate(job)
             if not matched:
-                matched = match_role_resume(job)
-            if not matched:
+                existing = job.get("tailored_resume_path")
+                if existing and _path_is_role_resume(existing):
+                    cur = conn.execute(
+                        """
+                        UPDATE jobs
+                        SET tailored_resume_path = NULL, tailored_at = NULL
+                        WHERE url = ?
+                          AND tailored_resume_path = ?
+                        """,
+                        (job["url"], existing),
+                    )
+                    if cur.rowcount:
+                        cleared += 1
                 skipped += 1
                 continue
             pdf = _resolve_role_pdf_path(matched)
             if not pdf:
                 skipped += 1
                 continue
+            pdf_str = str(pdf.resolve())
+            existing = job.get("tailored_resume_path")
+            if existing == pdf_str:
+                continue
             cur = conn.execute(
                 """
                 UPDATE jobs
                 SET tailored_resume_path = ?, tailored_at = ?
                 WHERE url = ?
-                  AND (tailored_resume_path IS NULL OR tailored_resume_path = '')
                 """,
-                (str(pdf.resolve()), now, job["url"]),
+                (pdf_str, now, job["url"]),
             )
             if cur.rowcount:
                 bound += 1
@@ -3883,19 +3979,21 @@ def bind_role_resume_paths(
             break
         offset += batch_size
 
-    if bound:
+    if bound or cleared:
         conn.commit()
         invalidate_tailor_count_cache()
         from applypilot.database import invalidate_stats_cache
 
         invalidate_stats_cache()
         log.info(
-            "Bound %d high-score jobs to role resumes (score >= %d; %d had no match).",
+            "Bound %d jobs to role resumes with JD clearance (score >= %d; "
+            "%d need tailor; %d stale role bindings cleared).",
             bound,
             min_score,
             skipped,
+            cleared,
         )
-    return {"bound": bound, "skipped": skipped}
+    return {"bound": bound, "skipped": skipped, "cleared": cleared}
 
 
 def fetch_jobs_needing_tailor(
@@ -3968,14 +4066,14 @@ def _job_needs_tailor_with_manifest(
     min_score: int | None = None,
     output_dir: Path | None = None,
 ) -> bool:
-    if job.get("tailored_resume_path"):
-        return False
     if int(job.get("tailor_attempts") or 0) >= _max_tailor_attempts():
+        return False
+    if _per_job_tailored_resume_path(job, output_dir=output_dir):
         return False
     jd_min = role_resume_jd_min_score() if min_score is None else max(1, min(10, min_score))
     matched = _match_role_resume_from_manifest(manifest, job, output_dir=output_dir)
     if matched:
-        jd_score = score_role_resume_jd_fit(matched, job)
+        jd_score = _jd_score_for_role_apply(job, matched)
         if _role_resume_cleared_for_apply(
             job, matched, jd_score, jd_min, output_dir=output_dir
         ):

@@ -29,7 +29,7 @@ def collect_new_db_events(
     last_id: int,
     sent_ids: set[int],
 ) -> tuple[list[dict[str, Any]], int, bool]:
-    """Fetch SQLite events not yet sent (subprocess writes bypass in-memory subscribers)."""
+    """Fetch persisted events not yet sent (subprocess writes bypass in-memory subscribers)."""
     out: list[dict[str, Any]] = []
     finished = False
     for event in list_run_events(run_id, after_id=last_id):

@@ -1,8 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { fetchApplications, fetchStats } from "../api";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { bulkStageApplications, fetchApplications, fetchStats } from "../api";
 import { useApplyRun } from "../hooks/useApplyRun";
+import {
+  applyRunSummaryLines,
+  applySettingsToCliOptions,
+  buildApplyCliCommand,
+} from "../utils/applyCliCommand";
 import { ApplyRunPlanModal } from "./ApplyRunPlanModal";
+import { GlobalFieldOverridesPanel } from "./GlobalFieldOverridesPanel";
+import { RunPlanModal } from "./RunPlanModal";
 import { ApplicationDetailPanel } from "./ApplicationDetailPanel";
 import {
   ApplicationRowActions,
@@ -28,6 +35,11 @@ import {
 import { useDebouncedValue } from "../utils/useDebouncedValue";
 import { companyInitials, companyLabelFromSite } from "../utils/jobFacts";
 import { statusbarClass } from "../utils/statusbar";
+import {
+  applicationMatchesApplyTarget,
+  deriveCurrentApplyTarget,
+} from "../utils/applyRunState";
+import { StopSquareIcon } from "./StopSquareIcon";
 
 const APP_ROW_PX = 56;
 const PAGE_SIZES = [25, 50, 100] as const;
@@ -75,8 +87,13 @@ export function AppliedApplicationsPage({
   onSearchParamsChange,
   showApplyControls = false,
 }: Props) {
+  const queryClient = useQueryClient();
   const applyRun = useApplyRun();
   const [applyPlanOpen, setApplyPlanOpen] = useState(false);
+  const [preparePlanOpen, setPreparePlanOpen] = useState(false);
+  const [stagedPlanOpen, setStagedPlanOpen] = useState(false);
+  const [selectedUrls, setSelectedUrls] = useState<Set<string>>(() => new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
   const paramsKey = searchParams.toString();
   const filters = useMemo(() => parseAppsParams(searchParams), [paramsKey]);
   const [searchInput, setSearchInput] = useState(() => filters.search);
@@ -107,6 +124,8 @@ export function AppliedApplicationsPage({
           next.set("filter", "unverified");
         } else if (slug === "claude_escalated") {
           next.set("filter", "claude");
+        } else if (slug === "prepare_review") {
+          next.set("filter", "prep");
         } else if (typeof slug === "string") {
           next.set("filter", slug === "needs_action" ? "needs" : slug);
         }
@@ -227,10 +246,23 @@ export function AppliedApplicationsPage({
     });
   }, [manualRows, statusFilter]);
 
-  const displayRows = useMemo(
-    () => (pinnedNeedsRows.length > 0 ? [...pinnedNeedsRows, ...sortedMainRows] : sortedMainRows),
-    [pinnedNeedsRows, sortedMainRows],
+  const activeApplyTarget = useMemo(
+    () => deriveCurrentApplyTarget(applyRun.events, applyRun.isRunning),
+    [applyRun.events, applyRun.isRunning],
   );
+
+  const displayRows = useMemo(() => {
+    const base =
+      pinnedNeedsRows.length > 0 ? [...pinnedNeedsRows, ...sortedMainRows] : sortedMainRows;
+    if (!activeApplyTarget.url && !activeApplyTarget.title) return base;
+
+    const idx = base.findIndex((row) => applicationMatchesApplyTarget(row, activeApplyTarget));
+    if (idx <= 0) return base;
+
+    const rows = [...base];
+    const [activeRow] = rows.splice(idx, 1);
+    return [activeRow, ...rows];
+  }, [pinnedNeedsRows, sortedMainRows, activeApplyTarget]);
 
   const showPagination = pages > 1;
 
@@ -257,6 +289,31 @@ export function AppliedApplicationsPage({
   const needsActionCount = submittedUnverifiedCount + manualCount;
   const claudeEscalatedCount =
     (stats?.extra?.claude_escalated as number | undefined) ?? 0;
+  const prepareReviewCount = (pipeline.prepare_review as number | undefined) ?? 0;
+  const stagedCount = (pipeline.staged as number | undefined) ?? 0;
+  const bulkMode = statusFilter === "prepare_review" || statusFilter === "staged";
+  const applyCliOpts = useMemo(
+    () => applySettingsToCliOptions(applyRun.applySettings),
+    [applyRun.applySettings],
+  );
+  const prepareCli = useMemo(
+    () => buildApplyCliCommand({ ...applyCliOpts, prepare: true, dryRun: true, watch: true }),
+    [applyCliOpts],
+  );
+  const stagedCli = useMemo(
+    () =>
+      buildApplyCliCommand({
+        ...applyCliOpts,
+        stagedOnly: true,
+        continuous: false,
+        watch: true,
+      }),
+    [applyCliOpts],
+  );
+
+  useEffect(() => {
+    setSelectedUrls(new Set());
+  }, [statusFilter]);
 
   useEffect(() => {
     if (isPending || pages === 0) return;
@@ -279,7 +336,46 @@ export function AppliedApplicationsPage({
     patchParams({ filter: next, page: 1 });
   };
 
+  const toggleSelected = (url: string) => {
+    setSelectedUrls((prev) => {
+      const next = new Set(prev);
+      if (next.has(url)) next.delete(url);
+      else next.add(url);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    const urls = displayRows.map((row) => row.url).filter(Boolean);
+    setSelectedUrls((prev) => {
+      if (prev.size >= urls.length) return new Set();
+      return new Set(urls);
+    });
+  };
+
+  const runBulkAction = async (action: "stage" | "unstage" | "dismiss") => {
+    const urls = [...selectedUrls];
+    if (urls.length === 0) return;
+    setBulkBusy(true);
+    try {
+      const result = await bulkStageApplications({ urls, action });
+      setSelectedUrls(new Set());
+      setQueueNotice(
+        `${result.updated} job${result.updated === 1 ? "" : "s"} updated` +
+          (result.skipped.length ? ` · ${result.skipped.length} skipped` : ""),
+      );
+      void queryClient.invalidateQueries({ queryKey: ["applications"] });
+      void queryClient.invalidateQueries({ queryKey: ["stats"] });
+    } catch (e) {
+      setQueueNotice(e instanceof Error ? e.message : "Bulk action failed");
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
   const filterChips: { key: ApplyStatusFilter; label: string; count?: number }[] = [
+    { key: "prepare_review", label: "Prepare review", count: prepareReviewCount },
+    { key: "staged", label: "Staged", count: stagedCount },
     { key: "all", label: "All", count: allAttemptsCount },
     { key: "applied", label: "Applied (all time)", count: appliedCount },
     { key: "failed", label: "Failed", count: failedCount },
@@ -287,21 +383,6 @@ export function AppliedApplicationsPage({
     { key: "claude_escalated", label: "Escalated to Claude", count: claudeEscalatedCount },
     { key: "needs_action", label: "Needs help", count: needsActionCount },
   ];
-
-  const panelCount =
-    statusFilter === "all"
-      ? allAttemptsCount
-      : statusFilter === "applied"
-        ? appliedCount
-        : statusFilter === "failed"
-          ? failedCount
-          : statusFilter === "submitted_unverified"
-            ? submittedUnverifiedCount
-            : statusFilter === "claude_escalated"
-              ? claudeEscalatedCount
-              : statusFilter === "needs_action"
-                ? needsActionCount
-                : total;
 
   return (
     <PageCanvas wide className="apps-page">
@@ -327,7 +408,26 @@ export function AppliedApplicationsPage({
                 disabled={!applyRun.isRunning}
                 onClick={() => void applyRun.handleStop()}
               >
+                <StopSquareIcon />
                 Pause queue
+              </button>
+              <button
+                type="button"
+                className="btn btn--ghost"
+                disabled={applyRun.isRunning || applyRun.starting}
+                onClick={() => setPreparePlanOpen(true)}
+              >
+                Prepare queue
+              </button>
+              <button
+                type="button"
+                className="btn btn--accent"
+                disabled={
+                  applyRun.isRunning || applyRun.starting || stagedCount === 0
+                }
+                onClick={() => setStagedPlanOpen(true)}
+              >
+                Submit staged{stagedCount > 0 ? ` (${stagedCount})` : ""}
               </button>
               <button
                 type="button"
@@ -373,6 +473,8 @@ export function AppliedApplicationsPage({
         </div>
       ) : null}
 
+      <GlobalFieldOverridesPanel />
+
       <div className="apps">
         <div className="apps__list">
           <div className="apps__filterbar">
@@ -391,6 +493,53 @@ export function AppliedApplicationsPage({
               );
             })}
           </div>
+
+          {bulkMode ? (
+            <div className="apps__bulkbar" aria-label="Bulk review actions">
+              <label className="apps__bulk-check">
+                <input
+                  type="checkbox"
+                  checked={
+                    displayRows.length > 0 && selectedUrls.size >= displayRows.length
+                  }
+                  onChange={toggleSelectAll}
+                />
+                Select all on page
+              </label>
+              <span className="apps__bulk-meta panel__sub">
+                {selectedUrls.size} selected
+              </span>
+              {statusFilter === "prepare_review" ? (
+                <>
+                  <button
+                    type="button"
+                    className="btn btn--sm btn--accent"
+                    disabled={selectedUrls.size === 0 || bulkBusy}
+                    onClick={() => void runBulkAction("stage")}
+                  >
+                    Stage selected
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn--sm btn--ghost"
+                    disabled={selectedUrls.size === 0 || bulkBusy}
+                    onClick={() => void runBulkAction("dismiss")}
+                  >
+                    Dismiss
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  className="btn btn--sm btn--ghost"
+                  disabled={selectedUrls.size === 0 || bulkBusy}
+                  onClick={() => void runBulkAction("unstage")}
+                >
+                  Unstage
+                </button>
+              )}
+            </div>
+          ) : null}
 
           <div className="apps__controls apps__controls--compact" aria-label="Search and sort applications">
             <input
@@ -419,32 +568,6 @@ export function AppliedApplicationsPage({
           </div>
 
           <div className="apps__ledger">
-            <div className="apps__ledger-hd panel__head panel__head--inset">
-              <div>
-                <div className="panel__title">
-                  {statusFilter === "failed"
-                    ? "Failed"
-                    : statusFilter === "submitted_unverified"
-                      ? "Unverified"
-                      : statusFilter === "needs_action"
-                        ? "Needs help"
-                        : statusFilter === "claude_escalated"
-                          ? "Escalated to Claude"
-                          : statusFilter === "applied"
-                            ? "Applied"
-                            : "All attempts"}
-                </div>
-                <div className="panel__sub">
-                  {panelCount || "—"}{" "}
-                  {statusFilter === "applied"
-                    ? "verified submissions · all time"
-                    : statusFilter === "all" && pinnedNeedsRows.length > 0
-                      ? `${pinnedNeedsRows.length} need you · audit ledger`
-                      : "matching · audit ledger"}
-                </div>
-              </div>
-            </div>
-
             {error ? (
               <div className="apps__scroll apps__scroll--empty">
                 <p className="panel__sub" style={{ padding: 16 }}>
@@ -460,8 +583,13 @@ export function AppliedApplicationsPage({
             ) : (
               <div className="apps__table">
                 <div className="apps__grid-viewport">
-                  <div className="apps__grid-inner">
+                    <div
+                      className={
+                        bulkMode ? "apps__grid-inner apps__grid-inner--bulk" : "apps__grid-inner"
+                      }
+                    >
                     <div className="apps__thead" role="row">
+                      {bulkMode ? <span className="apps__th apps__th--check" /> : null}
                       <SortableTh label="Status" sortKey="status" sort={sort} onSort={toggleSort} />
                       <SortableTh
                         label="Role / Company"
@@ -500,6 +628,9 @@ export function AppliedApplicationsPage({
                           app={app}
                           manual={needsHumanIntervention(app)}
                           selected={selectedUrl === app.url}
+                          bulkMode={bulkMode}
+                          bulkChecked={selectedUrls.has(app.url)}
+                          onBulkToggle={() => toggleSelected(app.url)}
                           onSelect={() => setSelectedUrl(app.url)}
                           onApplyListAction={handleApplyListAction}
                         />
@@ -572,16 +703,48 @@ export function AppliedApplicationsPage({
       </div>
 
       {showApplyControls ? (
-        <ApplyRunPlanModal
-          open={applyPlanOpen}
-          settings={applyRun.applySettings}
-          readyCount={stats?.ready_to_apply ?? readyCount}
-          onCancel={() => setApplyPlanOpen(false)}
-          onConfirm={() => {
-            setApplyPlanOpen(false);
-            void applyRun.handleStart();
-          }}
-        />
+        <>
+          <ApplyRunPlanModal
+            open={applyPlanOpen}
+            settings={applyRun.applySettings}
+            readyCount={stats?.ready_to_apply ?? readyCount}
+            onCancel={() => setApplyPlanOpen(false)}
+            onConfirm={() => {
+              setApplyPlanOpen(false);
+              void applyRun.handleStart();
+            }}
+          />
+          <RunPlanModal
+            open={preparePlanOpen}
+            title="Prepare queue"
+            subtitle="Fill forms in visible Chrome without submitting. Every attempted job lands in Prepare review."
+            cliCommand={prepareCli}
+            summaryLines={applyRunSummaryLines(
+              { ...applyCliOpts, prepare: true, dryRun: true, watch: true },
+              readyCount,
+            )}
+            onCancel={() => setPreparePlanOpen(false)}
+            onConfirm={() => {
+              setPreparePlanOpen(false);
+              void applyRun.handleStartPrepare();
+            }}
+          />
+          <RunPlanModal
+            open={stagedPlanOpen}
+            title="Submit staged jobs"
+            subtitle="Re-fill from profile + global overrides and submit only jobs you promoted to Staged."
+            cliCommand={stagedCli}
+            summaryLines={applyRunSummaryLines(
+              { ...applyCliOpts, stagedOnly: true, continuous: false, watch: true },
+              stagedCount,
+            )}
+            onCancel={() => setStagedPlanOpen(false)}
+            onConfirm={() => {
+              setStagedPlanOpen(false);
+              void applyRun.handleStartStaged();
+            }}
+          />
+        </>
       ) : null}
     </PageCanvas>
   );
@@ -591,12 +754,18 @@ function AppRow({
   app,
   manual = false,
   selected,
+  bulkMode = false,
+  bulkChecked = false,
+  onBulkToggle,
   onSelect,
   onApplyListAction,
 }: {
   app: import("../api").Application;
   manual?: boolean;
   selected: boolean;
+  bulkMode?: boolean;
+  bulkChecked?: boolean;
+  onBulkToggle?: () => void;
   onSelect: () => void;
   onApplyListAction?: (info: ApplyListActionInfo) => void;
 }) {
@@ -627,6 +796,16 @@ function AppRow({
       }
       onClick={onSelect}
     >
+      {bulkMode ? (
+        <span className="app-row__check" onClick={(e) => e.stopPropagation()}>
+          <input
+            type="checkbox"
+            checked={bulkChecked}
+            aria-label={`Select ${app.title ?? "job"}`}
+            onChange={() => onBulkToggle?.()}
+          />
+        </span>
+      ) : null}
       <span className={statusbarClass(label)}>{label}</span>
       <button type="button" className="app-row__main app-row__select" onClick={onSelect}>
         <div className="app-row__title-line">

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from applypilot.config import load_profile
 from applypilot.database import get_connection
+from applypilot.db.dialect import sql_discovered_hours_param
 from applypilot.outreach.config import OutreachSettings, load_outreach_config
 from applypilot.outreach.referral_resume import company_from_job
 
@@ -72,14 +73,14 @@ def _eligible_queue_rows(
     *,
     urls: list[str] | None = None,
 ) -> list[dict]:
-    query = """
+    query = f"""
         SELECT * FROM jobs
         WHERE fit_score >= ?
           AND recruiter_public_id IS NOT NULL
           AND recruiter_public_id != ''
           AND (referral_message IS NULL OR referral_message = '')
           AND (referral_status IS NULL OR referral_status = '' OR referral_status = 'pending_connect')
-          AND discovered_at >= datetime('now', ? || ' hours')
+          AND {sql_discovered_hours_param("discovered_at")}
     """
     params: list = [settings.min_fit_score, f"-{settings.max_job_age_hours}"]
     if urls:
@@ -90,7 +91,7 @@ def _eligible_queue_rows(
     if not rows:
         return []
     columns = rows[0].keys()
-    return [dict(zip(columns, row)) for row in rows]
+    return [dict(row) for row in rows]
 
 
 def _resume_path_for_job(job: dict) -> str | None:
